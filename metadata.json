@@ -1,0 +1,6 @@
+{
+  "name": "AxisPole Studio",
+  "description": "Interactive 3D pole setup generator with studio and home spatial planning, PBR finish customization, step-by-step torque assembly animation, athlete scale visualization, CAD export, and AR preview.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
