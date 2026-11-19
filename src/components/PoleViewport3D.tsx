@@ -403,10 +403,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       }[] {
         const s = stateRef.current;
         if (s.arCameraActive) {
-          // Room-first workflow: hide pole during Stage 1 (4-pt Floor) and Stage 2 (Cloud Scan)
-          if (s.arScanPhase === 'scanning' || s.arScanPhase === 'surface-calibrate') {
-            return [];
-          }
+          // Always keep the 3D pole visible live on the camera feed!
           const active = s.poles.find((p) => p.id === s.activePoleId) ?? s.poles[0];
           const arHeightCm = Math.max(225, Math.min(350, s.arMeasurement.ceilingHeightCm));
           const calibratedZ = s.arSurfaceCalibration?.valid

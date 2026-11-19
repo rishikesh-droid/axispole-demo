@@ -70,14 +70,15 @@ export default function App() {
   const [playbackMode, setPlaybackMode] = useState<'idle' | 'assemble' | 'dismantle'>('idle');
   const [soundEnabled, setSoundEnabled] = useState(false);
 
-  // Live Camera AR Surface Calibration & Real-Time Point Cloud state
+  // Live Camera AR Pole Fit & Optional Room Calibration state
   const [arCameraActive, setArCameraActive] = useState(false);
+  const [arStream, setArStream] = useState<MediaStream | null>(null);
   const [arCameraError, setArCameraError] = useState<string | null>(null);
   const [arMarkers, setArMarkers] = useState<ARMarkerState>(DEFAULT_AR_MARKERS);
-  const [arScanPhase, setArScanPhase] = useState<ARScanPhase>('surface-calibrate');
+  const [arScanPhase, setArScanPhase] = useState<ARScanPhase>('pole-ready');
   const [arFloorTaps, setArFloorTaps] = useState<FloorTapPoint2D[]>([]);
   const [arPointCloud, setArPointCloud] = useState<ARPoint3D[]>([]);
-  const [arShowPointCloud, setArShowPointCloud] = useState(true);
+  const [arShowPointCloud, setArShowPointCloud] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const viewportRef = useRef<PoleViewportHandle | null>(null);
@@ -313,6 +314,7 @@ export default function App() {
     if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
+    setArStream(null);
     setArCameraActive(false);
     setArCameraError(null);
     setArPointCloud([]);
@@ -347,35 +349,53 @@ export default function App() {
     setAssemblyProgress(1.0);
     setExplodedFactor(0.0);
     setCameraMotion('manual');
-    setArScanPhase('surface-calibrate');
+    // Immediately place the live 3D pole directly onto the real camera view!
+    setArScanPhase('pole-ready');
     setArFloorTaps([]);
     setArPointCloud([]);
-    setArShowPointCloud(true);
+    setArShowPointCloud(false);
     setArCameraActive(true);
     setArCameraError(null);
 
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
-      setArCameraError('Camera unavailable. Showing calibrated AR room grid.');
+      setArCameraError('Camera unavailable on this device/browser.');
       return;
     }
+
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: { ideal: 'environment' },
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-        },
-        audio: false,
-      });
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play().catch(() => {});
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: 'environment' },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          },
+          audio: false,
+        });
+      } catch {
+        // Fallback for devices/browsers that reject rear-camera constraints
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false,
+        });
       }
+      streamRef.current = stream;
+      setArStream(stream);
     } catch {
-      setArCameraError('Camera unavailable. Showing calibrated AR room grid.');
+      setArCameraError('Camera permission unavailable. Allow camera access to see live room view.');
     }
   }, []);
+
+  // Reliably attach MediaStream to <video> element after it mounts
+  useEffect(() => {
+    const videoEl = videoRef.current;
+    if (!arCameraActive || !arStream || !videoEl) return;
+    if (videoEl.srcObject !== arStream) {
+      videoEl.srcObject = arStream;
+    }
+    videoEl.play().catch(() => {});
+  }, [arCameraActive, arStream]);
 
   useEffect(() => {
     return () => {
@@ -441,17 +461,20 @@ export default function App() {
 
       {/* Live AR Camera Pass-Through Layer behind transparent 3D WebGL Canvas */}
       {arCameraActive && (
-        <div className="fixed inset-0 z-0 bg-[#0b0d14]">
-          <video ref={videoRef} playsInline muted className="w-full h-full object-cover" />
+        <div className="fixed inset-0 z-0 bg-black">
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            className="w-full h-full object-cover"
+          />
           {arCameraError && (
-            <div
-              className="absolute inset-0 pointer-events-none"
-              style={{
-                backgroundImage:
-                  'radial-gradient(circle at 50% 45%, rgba(56, 189, 248, 0.12), transparent 60%), linear-gradient(rgba(255,255,255,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.06) 1px, transparent 1px)',
-                backgroundSize: '100% 100%, 40px 40px, 40px 40px',
-              }}
-            />
+            <div className="absolute inset-0 bg-gradient-to-b from-[#131620] via-[#0d1018] to-[#090b11] pointer-events-none flex items-start justify-center pt-16 px-4">
+              <div className="px-3 py-1.5 rounded-lg bg-black/75 border border-white/15 text-zinc-300 text-[11px] text-center">
+                {arCameraError}
+              </div>
+            </div>
           )}
         </div>
       )}
