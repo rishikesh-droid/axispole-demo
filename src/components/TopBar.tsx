@@ -65,7 +65,7 @@ export function TopBar({
   return (
     <>
       <header
-        className={`fixed top-0 left-0 right-0 z-30 h-12 px-3.5 sm:px-6 flex items-center justify-between gap-3 md:gap-8 border-b transition-colors duration-200 ${headerClass}`}
+        className={`fixed top-0 left-0 right-0 z-30 h-11 sm:h-12 px-3 sm:px-6 flex items-center justify-between gap-2.5 md:gap-8 border-b transition-colors duration-200 ${headerClass}`}
       >
         {/* Zone 1: Single wordmark */}
         <span className="font-display text-sm sm:text-base font-bold tracking-tight whitespace-nowrap shrink-0">
@@ -120,7 +120,7 @@ export function TopBar({
         </nav>
 
         {/* Zone 3: Desktop Single Primary CTA + Mobile Clean Action Cluster (AR always visible!) */}
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           {/* Mobile Prominent AR Room Measure Button */}
           <button
             type="button"
@@ -129,7 +129,7 @@ export function TopBar({
               onStartArCamera();
             }}
             data-testid="mobile-ar-button"
-            className={`md:hidden min-h-[34px] px-2.5 py-1 text-xs font-semibold rounded-lg border inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${arMobileBtnClass}`}
+            className={`md:hidden min-h-[32px] px-2.5 py-1 text-[11px] font-semibold rounded-lg border inline-flex items-center gap-1 whitespace-nowrap shrink-0 transition-colors ${arMobileBtnClass}`}
           >
             <Camera className="w-3.5 h-3.5" aria-hidden="true" />
             <span>AR Room</span>
@@ -142,7 +142,7 @@ export function TopBar({
               setMobileMenuOpen(false);
               onOpenModal('export-ar');
             }}
-            className={`min-h-[34px] px-3 sm:px-3.5 py-1.5 text-xs font-semibold rounded-lg whitespace-nowrap shrink-0 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 ${ctaClass}`}
+            className={`min-h-[32px] sm:min-h-[34px] px-2.5 sm:px-3.5 py-1 sm:py-1.5 text-[11px] sm:text-xs font-semibold rounded-lg whitespace-nowrap shrink-0 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 ${ctaClass}`}
           >
             <span className="sm:hidden">CAD</span>
             <span className="hidden sm:inline">Export CAD</span>
@@ -155,7 +155,7 @@ export function TopBar({
             aria-expanded={mobileMenuOpen}
             aria-label="Open studio menu"
             data-testid="mobile-menu-button"
-            className={`md:hidden min-h-[34px] min-w-[34px] rounded-lg border flex items-center justify-center transition-colors ${
+            className={`md:hidden min-h-[32px] min-w-[32px] rounded-lg border flex items-center justify-center transition-colors ${
               isDark
                 ? 'border-white/15 bg-white/5 text-zinc-200 hover:bg-white/10'
                 : 'border-stone-300 bg-white text-stone-800 hover:bg-stone-100'

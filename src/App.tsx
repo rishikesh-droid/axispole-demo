@@ -331,12 +331,29 @@ export default function App() {
         roomWidthM: result.roomWidthM,
         roomDepthM: result.roomDepthM,
       });
-      handleChangeActivePole({
-        mount: result.recommendedMount,
-        diameterMm: result.recommendedDiameterMm,
-      });
+      setPoles((prev) =>
+        prev.map((p) => {
+          if (p.id !== activePole.id) return p;
+          const others = prev.filter((o) => o.id !== p.id);
+          const clampedPos = clampPolePosition(
+            result.poleOffsetXM,
+            0,
+            result.roomWidthM,
+            result.roomDepthM,
+            result.recommendedMount,
+            others
+          );
+          return {
+            ...p,
+            mount: result.recommendedMount,
+            diameterMm: result.recommendedDiameterMm,
+            x: clampedPos.x,
+            z: clampedPos.z,
+          };
+        })
+      );
     },
-    [handleChangeConfig, handleChangeActivePole]
+    [handleChangeConfig, activePole.id]
   );
 
   const startArCamera = useCallback(async () => {
@@ -480,7 +497,7 @@ export default function App() {
       )}
 
       {/* Full-Bleed Unobstructed 3D Interactive Studio Viewport */}
-      <main className={`relative z-10 w-full h-full ${arCameraActive ? 'pt-0' : 'pt-12'}`}>
+      <main className={`relative z-10 w-full h-full ${arCameraActive ? 'pt-0' : 'pt-11 sm:pt-12'}`}>
         <PoleViewport3D
           ref={viewportRef}
           config={activeRigConfig}

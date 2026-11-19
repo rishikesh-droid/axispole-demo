@@ -34,8 +34,8 @@ const CATEGORY_COLORS: Record<PointCloudCategory, [number, number, number]> = {
   clutter: [0.95, 0.32, 0.45],       // rose-500 (filtered objects)
 };
 
-// 14 line segments (28 vertices) for room bounding wireframe (back wall + calibrated 4-corner floor/ceiling box + risers)
-const WIRE_VERT_COUNT = 28;
+// Up to 16 line segments (32 vertices) for room bounding wireframe & calibrated floor outline
+const WIRE_VERT_COUNT = 32;
 
 export function createARPointCloudRig(scene: THREE.Scene): ARPointCloudRigHandle {
   const group = new THREE.Group();
@@ -69,12 +69,12 @@ export function createARPointCloudRig(scene: THREE.Scene): ARPointCloudRigHandle
   const spriteTex = new THREE.CanvasTexture(spriteCanvas);
 
   const ptMat = new THREE.PointsMaterial({
-    size: 0.082,
+    size: 0.075,
     map: spriteTex,
     sizeAttenuation: true,
     vertexColors: true,
     transparent: true,
-    opacity: 0.9,
+    opacity: 0.88,
     alphaTest: 0.06,
     depthWrite: false,
   });
@@ -119,7 +119,7 @@ export function createARPointCloudRig(scene: THREE.Scene): ARPointCloudRigHandle
   group.add(floorQuadMesh);
 
   // 4. 4 Calibrated Floor Corner Anchor Discs on physical ground plane
-  const pinGeo = new THREE.RingGeometry(0.045, 0.085, 24);
+  const pinGeo = new THREE.RingGeometry(0.045, 0.088, 28);
   const pinMat = new THREE.MeshBasicMaterial({
     color: 0x34d399,
     transparent: true,
@@ -137,12 +137,19 @@ export function createARPointCloudRig(scene: THREE.Scene): ARPointCloudRigHandle
   }
 
   // 5. Floor Pole Spin-Clearance Ring (0.85m radius visual footprint on real floor)
-  const ringSegs = 40;
+  const ringSegs = 48;
   const ringPts: THREE.Vector3[] = [];
+  const baseHubPts: THREE.Vector3[] = [];
+  const ceilHaloPts: THREE.Vector3[] = [];
   for (let i = 0; i < ringSegs; i++) {
     const a = (i / ringSegs) * Math.PI * 2;
-    ringPts.push(new THREE.Vector3(Math.cos(a) * 0.85, 0.018, Math.sin(a) * 0.85));
+    const ca = Math.cos(a);
+    const sa = Math.sin(a);
+    ringPts.push(new THREE.Vector3(ca * 0.85, 0.018, sa * 0.85));
+    baseHubPts.push(new THREE.Vector3(ca * 0.21, 0.019, sa * 0.21));
+    ceilHaloPts.push(new THREE.Vector3(ca * 0.23, 0, sa * 0.23));
   }
+
   const ringGeo = new THREE.BufferGeometry().setFromPoints(ringPts);
   const ringMat = new THREE.LineBasicMaterial({
     color: 0x22d3ee,
@@ -153,6 +160,30 @@ export function createARPointCloudRig(scene: THREE.Scene): ARPointCloudRigHandle
   const floorRing = new THREE.LineLoop(ringGeo, ringMat);
   floorRing.visible = false;
   group.add(floorRing);
+
+  // Inner Floor Base Anchor Laser Ring (0.21m radius directly around base plate)
+  const baseHubGeo = new THREE.BufferGeometry().setFromPoints(baseHubPts);
+  const baseHubMat = new THREE.LineBasicMaterial({
+    color: 0x34d399,
+    transparent: true,
+    opacity: 0.72,
+    depthWrite: false,
+  });
+  const baseHubRing = new THREE.LineLoop(baseHubGeo, baseHubMat);
+  baseHubRing.visible = false;
+  group.add(baseHubRing);
+
+  // 6. Ceiling Top-Dome Contact Laser Halo Ring (0.23m radius directly flush at ceilingHeightM)
+  const ceilHaloGeo = new THREE.BufferGeometry().setFromPoints(ceilHaloPts);
+  const ceilHaloMat = new THREE.LineBasicMaterial({
+    color: 0xa78bfa,
+    transparent: true,
+    opacity: 0.68,
+    depthWrite: false,
+  });
+  const ceilingHaloRing = new THREE.LineLoop(ceilHaloGeo, ceilHaloMat);
+  ceilingHaloRing.visible = false;
+  group.add(ceilingHaloRing);
 
   scene.add(group);
 
@@ -189,15 +220,12 @@ export function createARPointCloudRig(scene: THREE.Scene): ARPointCloudRigHandle
       if (!active) return;
 
       const dist = measurement.distanceM;
-      const calibratedZ = surfaceCalibration?.valid
-        ? dist + surfaceCalibration.centroidZ
-        : 0;
+      const calibratedZ = measurement.poleDepthZM;
 
-      // 1. Subtle live feature dots ONLY while actively scanning (never clutters normal camera AR view)
-      void showCloud;
-      pointCloud.visible = phase === 'scanning' && points.length > 0;
-      ptMat.opacity = 0.72;
-      ptMat.size = 0.055;
+      // 1. Live feature dots while actively scanning or when point cloud toggle is enabled
+      pointCloud.visible = (phase === 'scanning' || showCloud) && points.length > 0;
+      ptMat.opacity = phase === 'scanning' ? 0.78 : 0.55;
+      ptMat.size = phase === 'scanning' ? 0.062 : 0.048;
       if (pointCloud.visible) {
         const count = Math.min(points.length, MAX_ACCUMULATED_POINTS);
         for (let i = 0; i < count; i++) {
@@ -216,13 +244,13 @@ export function createARPointCloudRig(scene: THREE.Scene): ARPointCloudRigHandle
         ptColAttr.needsUpdate = true;
       }
 
-      // 2. Floor calibration pins & subtle ground outline ONLY while tapping 4 floor points
-      const showFloorCalib = phase === 'surface-calibrate';
+      // 2. Floor calibration pins & 3D room/floor wireframe
+      const isCalibPhase = phase === 'surface-calibrate';
       const activePins = surfaceCalibration?.valid
         ? surfaceCalibration.points3D
         : partialFloorPoints;
       for (let i = 0; i < 4; i++) {
-        const pin = showFloorCalib ? activePins[i] : undefined;
+        const pin = isCalibPhase ? activePins[i] : undefined;
         if (pin) {
           floorPins[i].visible = true;
           floorPins[i].position.set(pin.x, 0.015, dist + pin.z);
@@ -232,7 +260,7 @@ export function createARPointCloudRig(scene: THREE.Scene): ARPointCloudRigHandle
       }
 
       let segCount = 0;
-      if (showFloorCalib && surfaceCalibration?.valid) {
+      if (surfaceCalibration?.valid && (isCalibPhase || phase === 'pole-ready')) {
         const [bl, br, fr, fl] = surfaceCalibration.points3D;
         const wblZ = dist + bl.z;
         const wbrZ = dist + br.z;
@@ -240,7 +268,7 @@ export function createARPointCloudRig(scene: THREE.Scene): ARPointCloudRigHandle
         const wflZ = dist + fl.z;
 
         floorQuadMesh.visible = true;
-        floorQuadMat.opacity = 0.14;
+        floorQuadMat.opacity = isCalibPhase ? 0.16 : 0.06;
         floorQuadPositions.set([
           bl.x, 0.012, wblZ,
           br.x, 0.012, wbrZ,
@@ -258,7 +286,7 @@ export function createARPointCloudRig(scene: THREE.Scene): ARPointCloudRigHandle
         writeSeg(segCount++, fl.x, 0.016, wflZ, bl.x, 0.016, wblZ, floorCol);
       } else {
         floorQuadMesh.visible = false;
-        if (showFloorCalib && partialFloorPoints.length >= 2) {
+        if (isCalibPhase && partialFloorPoints.length >= 2) {
           for (let i = 0; i < partialFloorPoints.length - 1; i++) {
             const a = partialFloorPoints[i];
             const b = partialFloorPoints[i + 1];
@@ -267,18 +295,43 @@ export function createARPointCloudRig(scene: THREE.Scene): ARPointCloudRigHandle
         }
       }
 
+      // While scanning, draw detected 3D architectural ceiling/floor/corner laser frame at z = 0
+      if (phase === 'scanning') {
+        const lx = measurement.leftWallXM;
+        const rx = measurement.rightWallXM;
+        const ch = measurement.ceilingHeightM;
+        writeSeg(segCount++, lx, ch - 0.015, 0, rx, ch - 0.015, 0, CATEGORY_COLORS.ceiling);
+        writeSeg(segCount++, lx, 0.018, 0, rx, 0.018, 0, CATEGORY_COLORS.floor);
+        writeSeg(segCount++, lx, 0.018, 0, lx, ch - 0.015, 0, CATEGORY_COLORS['wall-corner']);
+        writeSeg(segCount++, rx, 0.018, 0, rx, ch - 0.015, 0, CATEGORY_COLORS['wall-corner']);
+      }
+
       roomWire.visible = segCount > 0;
       if (segCount > 0) {
         wireGeo.setDrawRange(0, segCount * 2);
-        wireMat.opacity = 0.72;
+        wireMat.opacity = isCalibPhase || phase === 'scanning' ? 0.76 : 0.32;
         wirePosAttr.needsUpdate = true;
         wireColAttr.needsUpdate = true;
       }
 
-      // 3. Subtle circular footprint ring directly beneath the visible 3D pole base
+      // 3. Dual floor laser footprint rings + Ceiling top-dome contact laser ring
+      const isCaution = measurement.clearanceStatus !== 'optimal';
+      ringMat.color.setHex(isCaution ? 0xfbbf24 : 0x22d3ee);
       floorRing.visible = true;
-      ringMat.opacity = phase === 'pole-ready' ? 0.45 : 0.25;
+      ringMat.opacity = phase === 'pole-ready' ? 0.5 : 0.28;
       floorRing.position.set(measurement.poleOffsetXM, 0, calibratedZ);
+
+      baseHubRing.visible = true;
+      baseHubMat.opacity = phase === 'pole-ready' ? 0.68 : 0.35;
+      baseHubRing.position.set(measurement.poleOffsetXM, 0, calibratedZ);
+
+      ceilingHaloRing.visible = true;
+      ceilHaloMat.opacity = phase === 'pole-ready' ? 0.62 : 0.38;
+      ceilingHaloRing.position.set(
+        measurement.poleOffsetXM,
+        measurement.ceilingHeightM - 0.012,
+        calibratedZ
+      );
     },
     dispose() {
       scene.remove(group);
@@ -293,6 +346,10 @@ export function createARPointCloudRig(scene: THREE.Scene): ARPointCloudRigHandle
       pinMat.dispose();
       ringGeo.dispose();
       ringMat.dispose();
+      baseHubGeo.dispose();
+      baseHubMat.dispose();
+      ceilHaloGeo.dispose();
+      ceilHaloMat.dispose();
     },
   };
 }

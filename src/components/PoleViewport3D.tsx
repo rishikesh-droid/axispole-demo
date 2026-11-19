@@ -406,9 +406,6 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
           // Always keep the 3D pole visible live on the camera feed!
           const active = s.poles.find((p) => p.id === s.activePoleId) ?? s.poles[0];
           const arHeightCm = Math.max(225, Math.min(350, s.arMeasurement.ceilingHeightCm));
-          const calibratedZ = s.arSurfaceCalibration?.valid
-            ? Number((s.arMeasurement.distanceM + s.arSurfaceCalibration.centroidZ).toFixed(3))
-            : 0;
           return [
             {
               id: active.id,
@@ -422,7 +419,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
                 spinRpm: active.spinRpm,
               },
               x: s.arMeasurement.poleOffsetXM,
-              z: calibratedZ,
+              z: s.arMeasurement.poleDepthZM,
               isSelected: true,
             },
           ];

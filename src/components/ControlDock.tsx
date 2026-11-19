@@ -238,7 +238,7 @@ export function ControlDock({
   return (
     <section
       aria-label="3D Rig Control Dock"
-      className="fixed bottom-2.5 sm:bottom-3 left-1/2 -translate-x-1/2 z-30 w-[min(980px,95vw)]"
+      className="fixed bottom-2 sm:bottom-3 left-1/2 -translate-x-1/2 z-30 w-[min(980px,96vw)] sm:w-[min(980px,95vw)]"
       data-testid="control-dock"
     >
       {/* ===================== MOBILE LUXURY COMPACT DOCK (< md) ===================== */}
@@ -247,7 +247,7 @@ export function ControlDock({
         data-testid="mobile-control-dock"
       >
         {/* Mobile Row 1: Thumb Navigation Tabs + Compact Mode Icons */}
-        <div className={`px-2.5 py-1.5 border-b flex items-center justify-between gap-1.5 ${dividerClass}`}>
+        <div className={`px-2 py-1 border-b flex items-center justify-between gap-1 ${dividerClass}`}>
           <div
             role="tablist"
             aria-label="Mobile configuration sections"
@@ -261,7 +261,7 @@ export function ControlDock({
                 onChangeTab('configure');
                 setMobileConfigPane('finish');
               }}
-              className={`px-2.5 py-1.5 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap ${
+              className={`px-2.5 py-1 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap ${
                 activeTab === 'configure' && mobileConfigPane === 'finish' ? segActive : segIdle
               }`}
             >
@@ -275,7 +275,7 @@ export function ControlDock({
                 onChangeTab('configure');
                 setMobileConfigPane('rig');
               }}
-              className={`px-2.5 py-1.5 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap ${
+              className={`px-2.5 py-1 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap ${
                 activeTab === 'configure' && mobileConfigPane === 'rig' ? segActive : segIdle
               }`}
             >
@@ -286,7 +286,7 @@ export function ControlDock({
               type="button"
               aria-selected={activeTab === 'assembly'}
               onClick={() => onChangeTab('assembly')}
-              className={`px-2.5 py-1.5 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap ${
+              className={`px-2.5 py-1 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap ${
                 activeTab === 'assembly' ? segActive : segIdle
               }`}
             >
@@ -297,7 +297,7 @@ export function ControlDock({
               type="button"
               aria-selected={activeTab === 'space'}
               onClick={() => onChangeTab('space')}
-              className={`px-2.5 py-1.5 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap ${
+              className={`px-2.5 py-1 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap ${
                 activeTab === 'space' ? segActive : segIdle
               }`}
             >
@@ -312,7 +312,7 @@ export function ControlDock({
               onClick={onToggleCompareMode}
               aria-pressed={compareMode}
               aria-label="Compare pole finishes"
-              className={`min-h-[32px] min-w-[32px] rounded-lg border flex items-center justify-center transition-colors ${
+              className={`min-h-[30px] min-w-[30px] rounded-lg border flex items-center justify-center transition-colors ${
                 compareMode ? accentToggleActive : cardBtnIdle
               }`}
             >
@@ -324,7 +324,7 @@ export function ControlDock({
               aria-pressed={moveMode && !compareMode}
               disabled={compareMode}
               aria-label="Move pole position"
-              className={`min-h-[32px] min-w-[32px] rounded-lg border flex items-center justify-center transition-colors ${
+              className={`min-h-[30px] min-w-[30px] rounded-lg border flex items-center justify-center transition-colors ${
                 compareMode
                   ? 'opacity-40 cursor-not-allowed ' + cardBtnIdle
                   : moveMode
@@ -339,15 +339,15 @@ export function ControlDock({
               onClick={onToggleCollapse}
               aria-expanded={true}
               aria-label="Hide controls"
-              className={`min-h-[32px] min-w-[32px] rounded-lg border flex items-center justify-center transition-colors ${cardBtnIdle}`}
+              className={`min-h-[30px] min-w-[30px] rounded-lg border flex items-center justify-center transition-colors ${cardBtnIdle}`}
             >
               <ChevronDown className="w-3.5 h-3.5" aria-hidden="true" />
             </button>
           </div>
         </div>
 
-        {/* Mobile Body: Focused single compact pane (~72px–104px tall) */}
-        <div className="px-2.5 py-2">
+        {/* Mobile Body: Focused single compact pane (~64px–88px tall) */}
+        <div className="px-2 py-1.5">
           {activeTab === 'configure' && compareMode && (
             <div className="space-y-2">
               <div className="grid grid-cols-2 gap-2">
@@ -420,8 +420,8 @@ export function ControlDock({
           )}
 
           {activeTab === 'configure' && !compareMode && mobileConfigPane === 'finish' && (
-            <div className="space-y-2">
-              {/* 4 Rounded Material PFP Tiles */}
+            <div className="space-y-1.5">
+              {/* 4 Sleek Low-Profile Material Pill Tiles */}
               <div className="grid grid-cols-4 gap-1.5" role="group" aria-label="Pole finishes">
                 {FINISH_ORDER.map((fid) => {
                   const spec = POLE_FINISHES[fid];
@@ -432,7 +432,7 @@ export function ControlDock({
                       type="button"
                       onClick={() => onChangeActivePole({ finish: fid })}
                       aria-pressed={selected}
-                      className={`flex flex-col items-center justify-center gap-1 py-1.5 px-1 rounded-xl border transition-colors ${
+                      className={`flex items-center justify-center gap-1.5 py-1.5 px-1.5 rounded-xl border transition-colors ${
                         selected ? cardBtnActive : cardBtnIdle
                       }`}
                     >
@@ -440,7 +440,7 @@ export function ControlDock({
                         src={materialAvatars[fid]}
                         alt=""
                         aria-hidden="true"
-                        className={`w-7 h-7 rounded-full object-cover ring-1 ${
+                        className={`w-5 h-5 rounded-full object-cover shrink-0 ring-1 ${
                           selected
                             ? isNeon
                               ? 'ring-cyan-400'
@@ -450,8 +450,12 @@ export function ControlDock({
                               : 'ring-black/15'
                         }`}
                       />
-                      <span className="text-[10px] font-semibold leading-none truncate max-w-full">
-                        {fid === 'powder-black' ? 'Black' : spec.shortName.split(' ')[0]}
+                      <span className="text-[10.5px] font-semibold leading-none truncate">
+                        {fid === 'powder-black'
+                          ? 'Black'
+                          : fid === 'stainless'
+                            ? 'Steel'
+                            : spec.shortName.split(' ')[0]}
                       </span>
                     </button>
                   );
@@ -472,7 +476,7 @@ export function ControlDock({
                       type="button"
                       onClick={() => onChangeConfig({ lighting: preset.id })}
                       aria-pressed={active}
-                      className={`py-1.5 px-1.5 rounded-md text-[11px] font-medium inline-flex items-center justify-center gap-1 transition-colors whitespace-nowrap ${
+                      className={`py-1 px-1.5 rounded-md text-[11px] font-medium inline-flex items-center justify-center gap-1 transition-colors whitespace-nowrap ${
                         active ? segActive : segIdle
                       }`}
                     >

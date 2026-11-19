@@ -91,13 +91,13 @@ export function InspectorCallout({
 
   return (
     <div
-      className={`fixed top-14 sm:top-15 left-3 right-3 sm:right-auto sm:left-5 z-20 flex flex-col gap-1.5 sm:gap-2 pointer-events-none ${
+      className={`fixed top-12.5 sm:top-15 left-2.5 right-2.5 sm:right-auto sm:left-5 z-20 flex flex-col gap-1.5 sm:gap-2 pointer-events-none ${
         activeTab === 'assembly' && !partSpec ? 'sm:w-[310px]' : 'sm:w-[258px]'
       }`}
     >
       {/* Minimal Rig Spec Strip (1-line slim strip on mobile, crisp card on desktop) */}
       <div
-        className={`pointer-events-auto rounded-xl sm:rounded-lg border px-3 py-1.5 sm:py-2 ${surfaceClass}`}
+        className={`pointer-events-auto rounded-xl sm:rounded-lg border px-2.5 py-1 sm:px-3 sm:py-2 ${surfaceClass}`}
         data-testid="rig-summary-hud"
       >
         {compareMode ? (
@@ -336,7 +336,7 @@ export function InspectorCallout({
           </div>
 
           {/* Actionable Install / Dismantle Instruction (visible cleanly on desktop, concise on mobile) */}
-          <p className={`mt-1.5 text-[11px] leading-relaxed ${isDark ? 'text-zinc-300' : 'text-stone-700'}`}>
+          <p className={`mt-1 sm:mt-1.5 text-[10.5px] sm:text-[11px] leading-snug sm:leading-relaxed line-clamp-2 sm:line-clamp-none ${isDark ? 'text-zinc-300' : 'text-stone-700'}`}>
             {isDismantling ? stepSpec.dismantleInstruction : stepSpec.installInstruction}
           </p>
 

@@ -1,12 +1,16 @@
-import type { BaseMountId, PoleFinishId } from '../types/pole';
+import type { BaseMountId, PoleFinishId } from '../types/pole.ts';
 import {
   analyzeFloorClearance,
   BASE_MOUNTS,
   calculateHeightSolution,
   MAX_ROOM_SIZE_M,
   MIN_ROOM_SIZE_M,
-} from './poleConfig';
-import type { ARMarkerState, ARMeasurementResult } from './arMeasure';
+} from './poleConfig.ts';
+import {
+  projectARScenePointToScreen,
+  type ARMarkerState,
+  type ARMeasurementResult,
+} from './arMeasure.ts';
 
 export interface FloorTapPoint2D {
   id: number;
@@ -103,7 +107,7 @@ export function screenToFloorPoint3D(
   const rawZ = t * dzWorld; // negative into scene
   const groundDist = Math.hypot(rawX, rawZ);
 
-  // Clamp extreme grazing horizon taps (> 10m away) to physical indoor room bounds
+  // Clamp extreme grazing horizon taps (> 11.5m away) to physical indoor room bounds
   if (!Number.isFinite(groundDist) || groundDist < 0.45 || groundDist > 11.5) {
     return null;
   }
@@ -325,7 +329,7 @@ export function solveFloorSurfaceCalibration(
   const widthSymmetry = 1 - Math.abs(backLen - frontLen) / Math.max(0.5, backLen + frontLen);
   const depthSymmetry = 1 - Math.abs(leftLen - rightLen) / Math.max(0.5, leftLen + rightLen);
   const accuracyScore = Math.round(
-    Math.max(68, Math.min(99, 62 + widthSymmetry * 19 + depthSymmetry * 18))
+    Math.max(76, Math.min(99, 66 + widthSymmetry * 17 + depthSymmetry * 16))
   );
 
   return {
@@ -364,7 +368,7 @@ export function buildMeasurementFromSurfaceCalibration(
   markers: ARMarkerState,
   finishId: PoleFinishId = 'brass'
 ): ARMeasurementResult {
-  const [bl, br] = cal.points3D;
+  const [bl, br, fr, fl] = cal.points3D;
   let recommendedMount: BaseMountId = 'tension';
   let isWithinTensionRange = true;
   if (cal.ceilingHeightCm > BASE_MOUNTS.tension.maxHeightCm) {
@@ -380,7 +384,7 @@ export function buildMeasurementFromSurfaceCalibration(
     recommendedMount,
     finishId
   );
-  const clearance = analyzeFloorClearance(cal.roomWidthM, cal.roomDepthM, recommendedMount);
+  const roomClearance = analyzeFloorClearance(cal.roomWidthM, cal.roomDepthM, recommendedMount);
 
   const extensionsLabel =
     heightSol.extensions.length > 0
@@ -389,24 +393,65 @@ export function buildMeasurementFromSurfaceCalibration(
 
   const recommendedDiameterMm: 40 | 45 | 50 = cal.roomWidthM < 3.4 ? 40 : 45;
 
+  const distanceM = Number(Math.max(1.2, Math.min(6.0, -((bl.z + br.z) * 0.5))).toFixed(2));
+  const poleDepthZM = Number((distanceM + cal.centroidZ).toFixed(3));
+
   // Pole lateral shift stays bounded inside the calibrated 4-point floor span
-  const lateralRange = Math.max(0.2, Math.abs(br.x - bl.x) * 0.36);
-  const poleOffsetXM = Number((cal.centroidX + (markers.poleX - 0.5) * 2 * lateralRange).toFixed(2));
+  const lateralRange = Math.max(0.22, Math.abs(br.x - bl.x) * 0.36);
+  const poleOffsetXM = Number(
+    (cal.centroidX + (markers.poleX - cal.centroidScreenU) * 2 * lateralRange).toFixed(2)
+  );
+
+  // Dynamic clearance from the pole's current (poleOffsetXM, centroidZ) to all 4 calibrated floor edges
+  const spinRadiusClearanceM = Number(
+    Math.max(
+      0.25,
+      Math.min(
+        distPointToSegment2D(poleOffsetXM, cal.centroidZ, bl.x, bl.z, br.x, br.z),
+        distPointToSegment2D(poleOffsetXM, cal.centroidZ, br.x, br.z, fr.x, fr.z),
+        distPointToSegment2D(poleOffsetXM, cal.centroidZ, fr.x, fr.z, fl.x, fl.z),
+        distPointToSegment2D(poleOffsetXM, cal.centroidZ, fl.x, fl.z, bl.x, bl.z)
+      )
+    ).toFixed(2)
+  );
+
+  let clearanceStatus = roomClearance.status;
+  let clearanceLabel = roomClearance.label;
+  if (spinRadiusClearanceM < 0.65 && clearanceStatus === 'optimal') {
+    clearanceStatus = 'caution';
+    clearanceLabel = `Tight edge clearance (${spinRadiusClearanceM.toFixed(2)}m)`;
+  }
+
+  const topProj = projectARScenePointToScreen(
+    poleOffsetXM,
+    cal.ceilingHeightM,
+    poleDepthZM,
+    distanceM,
+    markers
+  );
+  const botProj = projectARScenePointToScreen(poleOffsetXM, 0, poleDepthZM, distanceM, markers);
 
   return {
-    distanceM: Number(Math.max(1.2, Math.min(6.0, -((bl.z + br.z) * 0.5))).toFixed(2)),
+    distanceM,
     ceilingHeightCm: cal.ceilingHeightCm,
     ceilingHeightM: cal.ceilingHeightM,
     roomWidthM: cal.roomWidthM,
     roomDepthM: cal.roomDepthM,
     poleOffsetXM,
+    poleDepthZM,
     leftWallXM: bl.x,
     rightWallXM: br.x,
+    spinRadiusClearanceM,
+    accuracyPct: cal.accuracyScore,
+    ceilingScreenU: topProj.u,
+    ceilingScreenV: topProj.v,
+    floorScreenU: botProj.u,
+    floorScreenV: botProj.v,
     recommendedMount,
     recommendedDiameterMm,
     extensionsLabel,
-    clearanceStatus: clearance.status,
-    clearanceLabel: clearance.label,
+    clearanceStatus,
+    clearanceLabel,
     confidenceLabel: 'Calibrated',
     recommendationNote: `4-Pt Floor Calibrated (${cal.accuracyScore}%) · ${BASE_MOUNTS[recommendedMount].shortName} · ${extensionsLabel}`,
     isWithinTensionRange,
@@ -432,4 +477,43 @@ export function getDefaultFloorCalibrationTaps(aspect: number): FloorTapPoint2D[
         { id: 3, u: 0.86, v: 0.84 },
         { id: 4, u: 0.14, v: 0.84 },
       ];
+}
+
+/**
+ * Automatically predicts a perspective-aligned 4-point floor quad from the
+ * detected room floor line (floorY) and left/right room corners (leftCornerX, rightCornerX).
+ * Allows instant 1-tap 4-corner floor calibration that the user can fine-tune by dragging pins.
+ */
+export function predictFloorQuadFromMarkers(markers: ARMarkerState): FloorTapPoint2D[] {
+  const backV = Math.max(0.58, Math.min(0.76, markers.floorY));
+  const leftU = Math.max(0.11, Math.min(0.38, markers.leftCornerX));
+  const rightU = Math.max(0.62, Math.min(0.89, markers.rightCornerX));
+
+  const bl3 = screenToFloorPoint3D(leftU, backV, markers, 1);
+  const br3 = screenToFloorPoint3D(rightU, backV, markers, 2);
+
+  if (!bl3 || !br3) {
+    return getDefaultFloorCalibrationTaps(markers.aspect);
+  }
+
+  const backZ = (bl3.z + br3.z) * 0.5;
+  const spanW = Math.max(1.6, Math.abs(br3.x - bl3.x));
+  const stepForward = Math.max(1.15, Math.min(2.35, spanW * 0.74));
+  const frontZ = Math.min(-0.95, backZ + stepForward);
+
+  const fr2 = worldToScreenPoint2D(br3.x, 0, frontZ, markers);
+  const fl2 = worldToScreenPoint2D(bl3.x, 0, frontZ, markers);
+
+  const frontVDefault = Math.min(0.88, backV + 0.13);
+  const frU = fr2 ? Math.max(rightU + 0.03, Math.min(0.94, fr2.u)) : Math.min(0.93, rightU + 0.07);
+  const flU = fl2 ? Math.max(0.06, Math.min(leftU - 0.03, fl2.u)) : Math.max(0.07, leftU - 0.07);
+  const frV = fr2 ? Math.max(backV + 0.06, Math.min(0.89, fr2.v)) : frontVDefault;
+  const flV = fl2 ? Math.max(backV + 0.06, Math.min(0.89, fl2.v)) : frontVDefault;
+
+  return [
+    { id: 1, u: Number(leftU.toFixed(4)), v: Number(backV.toFixed(4)) },
+    { id: 2, u: Number(rightU.toFixed(4)), v: Number(backV.toFixed(4)) },
+    { id: 3, u: Number(frU.toFixed(4)), v: Number(frV.toFixed(4)) },
+    { id: 4, u: Number(flU.toFixed(4)), v: Number(flV.toFixed(4)) },
+  ];
 }

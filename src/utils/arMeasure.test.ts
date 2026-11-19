@@ -101,3 +101,41 @@ test('calculateARMeasurement scales roomWidthM monotonically from detected left/
   );
 });
 
+test('calculateARMeasurement projects 3D pole top & base back to screen sightlines and evaluates lateral spin clearance', () => {
+  const centered = calculateARMeasurement(
+    {
+      ...DEFAULT_AR_MARKERS,
+      floorY: 0.76,
+      ceilingY: 0.17,
+      poleX: 0.5,
+      leftCornerX: 0.14,
+      rightCornerX: 0.86,
+      cameraHeightM: 1.42,
+      cameraPitchDeg: -2,
+    },
+    'brass'
+  );
+
+  assert.ok(Math.abs(centered.ceilingScreenV - 0.17) <= 0.015, `Expected top dome screen V near 0.17, got ${centered.ceilingScreenV}`);
+  assert.ok(Math.abs(centered.floorScreenV - 0.76) <= 0.015, `Expected base hub screen V near 0.76, got ${centered.floorScreenV}`);
+  assert.ok(centered.accuracyPct >= 85, `Expected high optical accuracy >= 85%, got ${centered.accuracyPct}%`);
+
+  const shiftedNearLeftWall = calculateARMeasurement(
+    {
+      ...DEFAULT_AR_MARKERS,
+      floorY: 0.76,
+      ceilingY: 0.17,
+      poleX: 0.22,
+      leftCornerX: 0.14,
+      rightCornerX: 0.86,
+    },
+    'brass'
+  );
+
+  assert.ok(
+    shiftedNearLeftWall.spinRadiusClearanceM < centered.spinRadiusClearanceM,
+    `Shifting pole near left wall should reduce spinRadiusClearanceM (${shiftedNearLeftWall.spinRadiusClearanceM}m vs ${centered.spinRadiusClearanceM}m)`
+  );
+});
+
+

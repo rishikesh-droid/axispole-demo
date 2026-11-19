@@ -173,4 +173,61 @@ test('accumulateRoomScan rejects corrupted outlier frames via trimmed median and
     Math.abs(acc.consensusCorners.leftCornerX - 0.16) <= 0.006,
     `Expected consensus leftCornerX ~0.16, got ${acc.consensusCorners.leftCornerX}`
   );
+  assert.ok(acc.confidencePct >= 90, `Expected locked confidencePct >= 90%, got ${acc.confidencePct}%`);
 });
+
+test('analyzeFrameForPointCloud detects subtle low-light and chromatic ceiling/floor boundaries with perspective tilt', () => {
+  const W = 160;
+  const H = 216;
+  const rgba = new Uint8ClampedArray(W * H * 4);
+  const ceilCenterY = H * 0.2;
+  const floorCenterY = H * 0.75;
+  const leftX = Math.round(W * 0.16);
+  const rightX = Math.round(W * 0.84);
+
+  // Low-light room (dark luma 28..62) with a slight camera roll slope and chromatic wood floor
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const slopeOffset = ((x - W * 0.5) / W) * 4.0;
+      const localCeilY = ceilCenterY + slopeOffset;
+      const localFloorY = floorCenterY + slopeOffset;
+
+      let r = 44;
+      let g = 45;
+      let b = 48; // dim neutral back wall
+      if (y < localCeilY) {
+        // Subtle dim ceiling (only +13 luma brighter than back wall)
+        r = 57;
+        g = 58;
+        b = 62;
+      } else if (y >= localFloorY) {
+        // Similar luminance to wall (~44), but warm wood chromaticity!
+        r = 58;
+        g = 41;
+        b = 26;
+      } else if (x < leftX || x > rightX) {
+        r = 34;
+        g = 35;
+        b = 38;
+      }
+
+      const idx = (y * W + x) * 4;
+      rgba[idx] = r;
+      rgba[idx + 1] = g;
+      rgba[idx + 2] = b;
+      rgba[idx + 3] = 255;
+    }
+  }
+
+  const res = analyzeFrameForPointCloud(rgba, W, H, DEFAULT_AR_MARKERS);
+  assert.equal(res.detected, true, 'Should detect subtle low-light/chromatic ceiling & floor planes');
+  assert.ok(
+    Math.abs(res.corners.ceilingY - 0.2) <= 0.025,
+    `Expected low-light sloped ceilingY near 0.20, got ${res.corners.ceilingY}`
+  );
+  assert.ok(
+    Math.abs(res.corners.floorY - 0.75) <= 0.025,
+    `Expected chromatic wood floorY near 0.75, got ${res.corners.floorY}`
+  );
+});
+

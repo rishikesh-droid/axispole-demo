@@ -4,6 +4,7 @@ import { DEFAULT_AR_MARKERS } from './arMeasure.ts';
 import {
   buildMeasurementFromSurfaceCalibration,
   getDefaultFloorCalibrationTaps,
+  predictFloorQuadFromMarkers,
   screenToFloorPoint3D,
   solveFloorSurfaceCalibration,
   worldToScreenPoint2D,
@@ -97,3 +98,24 @@ test('solveFloorSurfaceCalibration responds monotonically to wider and deeper fl
   assert.ok(spacious.rawDepthM > compact.rawDepthM + 0.4);
   assert.ok(spacious.floorAreaSqM > compact.floorAreaSqM * 1.8);
 });
+
+test('predictFloorQuadFromMarkers auto-generates a valid 4-corner calibrated floor polygon from detected markers', () => {
+  const markers = {
+    ...DEFAULT_AR_MARKERS,
+    floorY: 0.72,
+    ceilingY: 0.18,
+    leftCornerX: 0.18,
+    rightCornerX: 0.82,
+    cameraHeightM: 1.42,
+    cameraPitchDeg: -4,
+    vfovDeg: 64,
+    aspect: 0.52,
+  };
+
+  const predictedTaps = predictFloorQuadFromMarkers(markers);
+  assert.equal(predictedTaps.length, 4);
+  const cal = solveFloorSurfaceCalibration(predictedTaps, markers);
+  assert.ok(cal && cal.valid, 'Predicted 4-corner floor taps must solve to a valid floor surface calibration');
+  assert.ok(cal.accuracyScore >= 88, `Expected high accuracyScore >= 88%, got ${cal.accuracyScore}%`);
+});
+
