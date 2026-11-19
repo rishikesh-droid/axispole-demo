@@ -18,11 +18,19 @@ import type {
   PoleRigConfig,
 } from '../types/pole';
 import {
+  ASSEMBLY_STEPS,
   clampPolePosition,
   computeAssemblyOffsets,
   MAX_POLES_IN_STUDIO,
 } from '../utils/poleConfig';
 import type { ARMarkerState, ARMeasurementResult } from '../utils/arMeasure';
+import type { ARPoint3D } from '../utils/arPointCloud';
+import type { FloorPoint3D, SurfaceCalibrationResult } from '../utils/arSurfaceCalibration';
+import {
+  createARPointCloudRig,
+  type ARPointCloudRigHandle,
+  type ARScanPhase,
+} from '../three/arPointCloudMesh';
 import { createProceduralTextures } from '../three/proceduralTextures';
 import { createPoleAssembly, type PoleAssemblyHandle } from '../three/poleBuilder';
 import {
@@ -65,6 +73,11 @@ interface PoleViewport3DProps {
   arCameraActive: boolean;
   arMarkers: ARMarkerState;
   arMeasurement: ARMeasurementResult;
+  arScanPhase: ARScanPhase;
+  arPointCloud: ARPoint3D[];
+  arShowPointCloud: boolean;
+  arSurfaceCalibration: SurfaceCalibrationResult | null;
+  arPartialFloorPoints: FloorPoint3D[];
 }
 
 const _camGoalPos = new THREE.Vector3();
@@ -111,6 +124,11 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       arCameraActive,
       arMarkers,
       arMeasurement,
+      arScanPhase,
+      arPointCloud,
+      arShowPointCloud,
+      arSurfaceCalibration,
+      arPartialFloorPoints,
     },
     ref
   ) {
@@ -136,6 +154,11 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       arCameraActive,
       arMarkers,
       arMeasurement,
+      arScanPhase,
+      arPointCloud,
+      arShowPointCloud,
+      arSurfaceCalibration,
+      arPartialFloorPoints,
       onSelectPart,
       onPlaybackProgress,
     });
@@ -158,6 +181,11 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       arCameraActive,
       arMarkers,
       arMeasurement,
+      arScanPhase,
+      arPointCloud,
+      arShowPointCloud,
+      arSurfaceCalibration,
+      arPartialFloorPoints,
       onSelectPart,
       onPlaybackProgress,
     };
@@ -166,6 +194,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       polePool: PoleAssemblyHandle[];
       poleGeoKeys: string[];
       env: EnvironmentRigHandle | null;
+      arCloudRig: ARPointCloudRigHandle | null;
       camera: THREE.PerspectiveCamera | null;
       controls: OrbitControls | null;
       renderer: THREE.WebGLRenderer | null;
@@ -176,6 +205,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       polePool: [],
       poleGeoKeys: [],
       env: null,
+      arCloudRig: null,
       camera: null,
       controls: null,
       renderer: null,
@@ -343,6 +373,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
 
       const textures = createProceduralTextures(renderer.capabilities.getMaxAnisotropy());
       const env = createEnvironmentRig(scene, textures, isSoftwareGl);
+      const arCloudRig = createARPointCloudRig(scene);
 
       // Create reusable pool of up to MAX_POLES_IN_STUDIO pole assemblies (zero runtime leaks)
       const polePool: PoleAssemblyHandle[] = [];
@@ -372,8 +403,15 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       }[] {
         const s = stateRef.current;
         if (s.arCameraActive) {
+          // Room-first workflow: hide pole during Stage 1 (4-pt Floor) and Stage 2 (Cloud Scan)
+          if (s.arScanPhase === 'scanning' || s.arScanPhase === 'surface-calibrate') {
+            return [];
+          }
           const active = s.poles.find((p) => p.id === s.activePoleId) ?? s.poles[0];
           const arHeightCm = Math.max(225, Math.min(350, s.arMeasurement.ceilingHeightCm));
+          const calibratedZ = s.arSurfaceCalibration?.valid
+            ? Number((s.arMeasurement.distanceM + s.arSurfaceCalibration.centroidZ).toFixed(3))
+            : 0;
           return [
             {
               id: active.id,
@@ -387,7 +425,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
                 spinRpm: active.spinRpm,
               },
               x: s.arMeasurement.poleOffsetXM,
-              z: 0,
+              z: calibratedZ,
               isSelected: true,
             },
           ];
@@ -468,6 +506,15 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
           hitWall: dragHitWall,
           activeMount,
         });
+        arCloudRig.update(
+          s.arCameraActive,
+          s.arScanPhase,
+          s.arPointCloud,
+          s.arMeasurement,
+          s.arShowPointCloud,
+          s.arSurfaceCalibration,
+          s.arPartialFloorPoints
+        );
       }
 
       syncPolesAndEnv();
@@ -484,6 +531,8 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       let lastPlaybackEmit = 0;
 
       let camTransitionActive = false;
+      let userOverrodePlaybackCam = false;
+      let prevPlaybackMode: 'idle' | 'assemble' | 'dismantle' = stateRef.current.playbackMode;
       const startCameraTransition = (pos: THREE.Vector3, target: THREE.Vector3) => {
         _camGoalPos.copy(pos);
         _camGoalTarget.copy(target);
@@ -493,6 +542,9 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
 
       controls.addEventListener('start', () => {
         camTransitionActive = false;
+        if (stateRef.current.playbackMode !== 'idle') {
+          userOverrodePlaybackCam = true;
+        }
         if (stateRef.current.cameraMotion !== 'manual') {
           stateRef.current.onCancelCameraMotion();
         }
@@ -550,6 +602,16 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
 
         const s = stateRef.current;
         const rendered = getRenderedPoleConfigs();
+
+        // Snap animation progress & re-enable auto-tracking camera when a new install/dismantle run starts
+        if (s.playbackMode !== prevPlaybackMode) {
+          if (s.playbackMode !== 'idle') {
+            smoothedProgress = s.assemblyProgress;
+            userOverrodePlaybackCam = false;
+            camTransitionActive = false;
+          }
+          prevPlaybackMode = s.playbackMode;
+        }
 
         if (s.playbackMode !== 'idle') {
           const dir = s.playbackMode === 'assemble' ? 1 : -1;
@@ -611,6 +673,15 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
           );
         }
 
+        // Keep WebGL viewport size & aspect synced whenever container padding changes (e.g., entering/exiting AR mode)
+        const cw = container?.clientWidth || window.innerWidth;
+        const ch = container?.clientHeight || window.innerHeight;
+        if (Math.abs(camera.aspect - cw / ch) > 0.002) {
+          camera.aspect = cw / ch;
+          camera.updateProjectionMatrix();
+          renderer.setSize(cw, ch);
+        }
+
         // Camera Sync: Pixel-Accurate Optical AR Projection vs Studio Camera Modes
         if (s.arCameraActive) {
           controls.enabled = false;
@@ -622,7 +693,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
           const dist = s.arMeasurement.distanceM;
           const pitchRad = (s.arMarkers.cameraPitchDeg * Math.PI) / 180;
           camera.position.set(0, camH, dist);
-          controls.target.set(0, camH + Math.tan(pitchRad) * dist, 0);
+          camera.lookAt(0, camH + Math.tan(pitchRad) * dist, 0);
         } else {
           if (!controls.enabled && draggingPoleIdx === null) {
             controls.enabled = true;
@@ -631,7 +702,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
             camera.fov = 44;
             camera.updateProjectionMatrix();
           }
-          // Dynamic Perspective Camera Animations (Orbit / Hero Crane)
+          // Dynamic Perspective Camera Animations (Orbit / Hero Crane / Auto-Tracking Install-Dismantle)
           if (s.cameraMotion !== 'manual') {
             const H = s.config.ceilingHeightCm / 100;
             const cx = s.compareMode ? 0 : activePoleItem?.x ?? 0;
@@ -663,6 +734,29 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
               camera.position.z = THREE.MathUtils.lerp(camera.position.z, targetPosZ, k);
               controls.target.lerp(_camGoalTarget.set(cx, lookY, cz), k);
             }
+          } else if (s.playbackMode !== 'idle' && !userOverrodePlaybackCam && activePoleItem) {
+            // Prominent Auto-Tracking Camera during Install & Dismantle: smoothly frames the active fastener/joint
+            const stepSpec = ASSEMBLY_STEPS[offsets.activeStepIndex] ?? ASSEMBLY_STEPS[0];
+            const activeHandle = polePool[activeRenderedIdx];
+            const focusPt = activeHandle
+              ? activeHandle.getPartFocusPoint(stepSpec.partId)
+              : new THREE.Vector3(0, (s.config.ceilingHeightCm / 100) * 0.5, 0);
+            const cx = activePoleItem.x;
+            const cz = activePoleItem.z;
+            const isTubeStep = stepSpec.partId === 'lower-tube' || stepSpec.partId === 'upper-tube';
+            const radius = isTubeStep ? 1.85 : 1.18;
+            const sweepAngle = 0.52 + Math.sin(elapsedSec * 0.45) * 0.24;
+            const yOffset = stepSpec.partId === 'top-mount' || stepSpec.partId === 'adjuster-rod' ? -0.08 : 0.22;
+
+            const desiredPosX = cx + Math.sin(sweepAngle) * radius;
+            const desiredPosZ = cz + Math.cos(sweepAngle) * radius;
+            const desiredPosY = Math.max(0.28, focusPt.y + yOffset);
+            const k = 1 - Math.exp(-3.4 * dt);
+
+            camera.position.x = THREE.MathUtils.lerp(camera.position.x, desiredPosX, k);
+            camera.position.y = THREE.MathUtils.lerp(camera.position.y, desiredPosY, k);
+            camera.position.z = THREE.MathUtils.lerp(camera.position.z, desiredPosZ, k);
+            controls.target.lerp(_camGoalTarget.set(cx, focusPt.y, cz), k);
           } else if (camTransitionActive) {
             camera.position.lerp(_camGoalPos, 1 - Math.exp(-6.5 * dt));
             controls.target.lerp(_camGoalTarget, 1 - Math.exp(-6.5 * dt));
@@ -675,9 +769,9 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
               camTransitionActive = false;
             }
           }
+          controls.update();
         }
 
-        controls.update();
         renderer.setClearAlpha(s.arCameraActive ? 0 : 1);
         renderer.render(scene, camera);
       }
@@ -869,6 +963,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
         polePool,
         poleGeoKeys,
         env,
+        arCloudRig,
         camera,
         controls,
         renderer,
@@ -891,6 +986,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
         renderer.domElement.removeEventListener('webglcontextrestored', onContextRestored);
         controls.dispose();
         polePool.forEach((p) => p.dispose());
+        arCloudRig.dispose();
         env.dispose();
         textures.dispose();
         envRT.dispose();
@@ -906,7 +1002,22 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       if (!api.env || !api.renderer) return;
       api.syncPolesAndEnv();
       api.requestRender();
-    }, [config, poles, activePoleId, moveMode, compareMode, compareFinish, arCameraActive, arMarkers, arMeasurement]);
+    }, [
+      config,
+      poles,
+      activePoleId,
+      moveMode,
+      compareMode,
+      compareFinish,
+      arCameraActive,
+      arMarkers,
+      arMeasurement,
+      arScanPhase,
+      arPointCloud,
+      arShowPointCloud,
+      arSurfaceCalibration,
+      arPartialFloorPoints,
+    ]);
 
     useEffect(() => {
       sceneApiRef.current.requestRender();

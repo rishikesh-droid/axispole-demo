@@ -29,6 +29,15 @@ import {
   type ARMarkerState,
   type ARMeasurementResult,
 } from './utils/arMeasure';
+import type { ARPoint3D } from './utils/arPointCloud';
+import {
+  buildMeasurementFromSurfaceCalibration,
+  screenToFloorPoint3D,
+  solveFloorSurfaceCalibration,
+  type FloorPoint3D,
+  type FloorTapPoint2D,
+} from './utils/arSurfaceCalibration';
+import type { ARScanPhase } from './three/arPointCloudMesh';
 import { TopBar } from './components/TopBar';
 import { PoleViewport3D, type PoleViewportHandle } from './components/PoleViewport3D';
 import { InspectorCallout } from './components/InspectorCallout';
@@ -61,10 +70,14 @@ export default function App() {
   const [playbackMode, setPlaybackMode] = useState<'idle' | 'assemble' | 'dismantle'>('idle');
   const [soundEnabled, setSoundEnabled] = useState(false);
 
-  // Live Camera AR Room Measurement state
+  // Live Camera AR Surface Calibration & Real-Time Point Cloud state
   const [arCameraActive, setArCameraActive] = useState(false);
   const [arCameraError, setArCameraError] = useState<string | null>(null);
   const [arMarkers, setArMarkers] = useState<ARMarkerState>(DEFAULT_AR_MARKERS);
+  const [arScanPhase, setArScanPhase] = useState<ARScanPhase>('surface-calibrate');
+  const [arFloorTaps, setArFloorTaps] = useState<FloorTapPoint2D[]>([]);
+  const [arPointCloud, setArPointCloud] = useState<ARPoint3D[]>([]);
+  const [arShowPointCloud, setArShowPointCloud] = useState(true);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const viewportRef = useRef<PoleViewportHandle | null>(null);
@@ -74,10 +87,30 @@ export default function App() {
     [poles, activePoleId]
   );
 
-  const arMeasurement = useMemo(
-    () => calculateARMeasurement(arMarkers, activePole.finish),
-    [arMarkers, activePole.finish]
+  const arPartialFloorPoints = useMemo<FloorPoint3D[]>(() => {
+    const out: FloorPoint3D[] = [];
+    for (const tap of arFloorTaps) {
+      const p3 = screenToFloorPoint3D(tap.u, tap.v, arMarkers, tap.id);
+      if (p3) out.push(p3);
+    }
+    return out;
+  }, [arFloorTaps, arMarkers]);
+
+  const arSurfaceCalibration = useMemo(
+    () => solveFloorSurfaceCalibration(arFloorTaps, arMarkers),
+    [arFloorTaps, arMarkers]
   );
+
+  const arMeasurement = useMemo(() => {
+    if (arSurfaceCalibration?.valid) {
+      return buildMeasurementFromSurfaceCalibration(
+        arSurfaceCalibration,
+        arMarkers,
+        activePole.finish
+      );
+    }
+    return calculateARMeasurement(arMarkers, activePole.finish);
+  }, [arSurfaceCalibration, arMarkers, activePole.finish]);
 
   // Synced rig config representing the currently active pole for modals & CAD export
   const activeRigConfig = useMemo<PoleRigConfig>(
@@ -282,12 +315,14 @@ export default function App() {
     }
     setArCameraActive(false);
     setArCameraError(null);
+    setArPointCloud([]);
+    setArFloorTaps([]);
     window.setTimeout(() => viewportRef.current?.focusCamera('full-rig'), 60);
   }, []);
 
-  const handleApplyARRecommendation = useCallback(
-    (result: ARMeasurementResult) => {
-      soundFx.playMetalSeat();
+  const handleAutoSyncARRoom = useCallback(
+    (result: ARMeasurementResult, silent = false) => {
+      if (!silent) soundFx.playMetalSeat();
       const clampedHeightCm = Math.max(225, Math.min(350, result.ceilingHeightCm));
       handleChangeConfig({
         ceilingHeightCm: clampedHeightCm,
@@ -312,6 +347,10 @@ export default function App() {
     setAssemblyProgress(1.0);
     setExplodedFactor(0.0);
     setCameraMotion('manual');
+    setArScanPhase('surface-calibrate');
+    setArFloorTaps([]);
+    setArPointCloud([]);
+    setArShowPointCloud(true);
     setArCameraActive(true);
     setArCameraError(null);
 
@@ -447,26 +486,41 @@ export default function App() {
           arCameraActive={arCameraActive}
           arMarkers={arMarkers}
           arMeasurement={arMeasurement}
+          arScanPhase={arScanPhase}
+          arPointCloud={arPointCloud}
+          arShowPointCloud={arShowPointCloud}
+          arSurfaceCalibration={arSurfaceCalibration}
+          arPartialFloorPoints={arPartialFloorPoints}
         />
       </main>
 
-      {/* Interactive AR Spatial Room Measurement & Pole Fit HUD */}
+      {/* Interactive AR Surface Calibration, Point Cloud Room Scanner & Pole Fit HUD */}
       {arCameraActive && (
         <ARMeasurementOverlay
           videoRef={videoRef}
           arCameraError={arCameraError}
           markers={arMarkers}
           onChangeMarkers={setArMarkers}
+          scanPhase={arScanPhase}
+          onChangeScanPhase={setArScanPhase}
+          floorTaps={arFloorTaps}
+          onChangeFloorTaps={setArFloorTaps}
+          partialFloorPoints={arPartialFloorPoints}
+          surfaceCalibration={arSurfaceCalibration}
+          measurement={arMeasurement}
+          onUpdatePointCloud={setArPointCloud}
+          showPointCloud={arShowPointCloud}
+          onToggleShowPointCloud={() => setArShowPointCloud((v) => !v)}
           activeFinish={activePole.finish}
           isSpinning={activePole.isSpinning}
           onChangeFinish={(finish) => handleChangeActivePole({ finish })}
           onToggleSpin={() => handleChangeActivePole({ isSpinning: !activePole.isSpinning })}
-          onApplyRecommendation={handleApplyARRecommendation}
+          onAutoSyncRoom={handleAutoSyncARRoom}
           onExit={stopArCamera}
         />
       )}
 
-      {/* Top-Left Minimal Rig Spec, Compare & Move Callout */}
+      {/* Top-Left Minimal Rig Spec, Compare, Move & Prominent Installation/Dismantle Callout */}
       <InspectorCallout
         config={activeRigConfig}
         poles={poles}
@@ -479,6 +533,8 @@ export default function App() {
         lastClamp={lastClamp}
         activeTab={activeTab}
         activeStepIndex={activeStepIndex}
+        assemblyProgress={assemblyProgress}
+        playbackMode={playbackMode}
         selectedPart={selectedPart}
         onClearSelectedPart={() => {
           setSelectedPart(null);

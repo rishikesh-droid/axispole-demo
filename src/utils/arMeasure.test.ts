@@ -73,3 +73,31 @@ test('clampARMarkers prevents inverted floor/ceiling markers and out-of-range an
   assert.ok(clamped.cameraHeightM >= 0.85);
   assert.ok(clamped.cameraPitchDeg <= 25);
 });
+
+test('calculateARMeasurement scales roomWidthM monotonically from detected left/right wall corners', () => {
+  const narrow = calculateARMeasurement(
+    {
+      ...DEFAULT_AR_MARKERS,
+      aspect: 1.5,
+      vfovDeg: 48,
+      leftCornerX: 0.28,
+      rightCornerX: 0.72,
+    },
+    'brass'
+  );
+  const wide = calculateARMeasurement(
+    {
+      ...DEFAULT_AR_MARKERS,
+      aspect: 1.5,
+      vfovDeg: 48,
+      leftCornerX: 0.1,
+      rightCornerX: 0.9,
+    },
+    'brass'
+  );
+  assert.ok(
+    wide.roomWidthM > narrow.roomWidthM + 0.5,
+    `Expected wider wall corners (${wide.roomWidthM}m) > narrow (${narrow.roomWidthM}m)`
+  );
+});
+

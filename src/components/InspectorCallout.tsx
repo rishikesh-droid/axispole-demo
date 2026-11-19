@@ -1,4 +1,4 @@
-import { AlertTriangle, CheckCircle2, Move, Wrench, X } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Move, ShieldCheck, Wrench, X } from 'lucide-react';
 import type {
   BOMSummary,
   ClearanceAnalysis,
@@ -30,6 +30,8 @@ interface InspectorCalloutProps {
   lastClamp: PoleClampResult | null;
   activeTab: DockTabId;
   activeStepIndex: number;
+  assemblyProgress: number;
+  playbackMode: 'idle' | 'assemble' | 'dismantle';
   selectedPart: HardwarePartId | null;
   onClearSelectedPart: () => void;
   arCameraActive: boolean;
@@ -47,6 +49,8 @@ export function InspectorCallout({
   lastClamp,
   activeTab,
   activeStepIndex,
+  assemblyProgress,
+  playbackMode,
   selectedPart,
   onClearSelectedPart,
   arCameraActive,
@@ -61,12 +65,13 @@ export function InspectorCallout({
   const mount = BASE_MOUNTS[activePole.mount];
   const stepSpec = ASSEMBLY_STEPS[activeStepIndex] ?? ASSEMBLY_STEPS[0];
   const partSpec = selectedPart ? HARDWARE_PARTS[selectedPart] : null;
+  const isDismantling = playbackMode === 'dismantle';
 
   const surfaceClass = isNeon
-    ? 'bg-[#11131d]/90 border-violet-400/25 text-zinc-100 shadow-[0_8px_24px_rgba(0,0,0,0.45)]'
+    ? 'bg-[#11131d]/93 border-violet-400/25 text-zinc-100 shadow-[0_8px_24px_rgba(0,0,0,0.45)]'
     : isDark
-      ? 'bg-[#151412]/90 border-amber-500/25 text-stone-100 shadow-[0_8px_24px_rgba(0,0,0,0.45)]'
-      : 'bg-[#faf9f6]/92 border-stone-300/90 text-stone-900 shadow-xs';
+      ? 'bg-[#151412]/93 border-amber-500/25 text-stone-100 shadow-[0_8px_24px_rgba(0,0,0,0.45)]'
+      : 'bg-[#faf9f6]/94 border-stone-300/90 text-stone-900 shadow-xs';
 
   const mutedClass = isDark ? 'text-zinc-400' : 'text-stone-500';
   const accentTextClass = isNeon
@@ -85,7 +90,11 @@ export function InspectorCallout({
   const priceDelta = compareSpec.basePriceUsd - finish.basePriceUsd;
 
   return (
-    <div className="fixed top-14 sm:top-15 left-3 right-3 sm:right-auto sm:left-5 z-20 flex flex-col gap-1.5 sm:gap-2 sm:w-[258px] pointer-events-none">
+    <div
+      className={`fixed top-14 sm:top-15 left-3 right-3 sm:right-auto sm:left-5 z-20 flex flex-col gap-1.5 sm:gap-2 pointer-events-none ${
+        activeTab === 'assembly' && !partSpec ? 'sm:w-[310px]' : 'sm:w-[258px]'
+      }`}
+    >
       {/* Minimal Rig Spec Strip (1-line slim strip on mobile, crisp card on desktop) */}
       <div
         className={`pointer-events-auto rounded-xl sm:rounded-lg border px-3 py-1.5 sm:py-2 ${surfaceClass}`}
@@ -155,7 +164,9 @@ export function InspectorCallout({
 
               <div className={`mt-0.5 flex items-center justify-between gap-2 text-[11px] ${mutedClass}`}>
                 <span className="truncate">
-                  {mount.shortName} · {(config.ceilingHeightCm / 100).toFixed(2)}m ·{' '}
+                  {mount.shortName}
+                  {activePole.mount === 'vaulted-beam' ? ` ${config.vaultAngleDeg}°` : ''} ·{' '}
+                  {(config.ceilingHeightCm / 100).toFixed(2)}m ·{' '}
                   {activePole.isSpinning ? 'Spin' : 'Static'}
                 </span>
                 <span className="inline-flex items-center gap-1 shrink-0 font-medium">
@@ -214,7 +225,7 @@ export function InspectorCallout({
         </div>
       )}
 
-      {/* Whisper-Compact Selected Hardware OR Assembly Step Card */}
+      {/* Selected Hardware Inspector OR Prominent Installation & Dismantle Blueprint Card */}
       {partSpec ? (
         <div
           className={`pointer-events-auto rounded-xl sm:rounded-lg border px-3 py-2 ${surfaceClass}`}
@@ -240,25 +251,129 @@ export function InspectorCallout({
         </div>
       ) : activeTab === 'assembly' ? (
         <div
-          className={`pointer-events-auto rounded-xl sm:rounded-lg border px-3 py-1.5 sm:py-2 ${surfaceClass}`}
+          className={`pointer-events-auto rounded-xl border px-3 py-2 sm:px-3.5 sm:py-3 ${surfaceClass}`}
           data-testid="assembly-step-card"
         >
+          {/* Top Mode & Step Counter Row */}
           <div className="flex items-center justify-between gap-2">
-            <span className={`inline-flex items-center gap-1 text-[11px] font-semibold ${accentTextClass}`}>
+            <span
+              className={`inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-md border ${
+                isDismantling
+                  ? 'border-amber-400/50 bg-amber-500/15 text-amber-300'
+                  : playbackMode === 'assemble'
+                    ? 'border-cyan-400/50 bg-cyan-500/15 text-cyan-200'
+                    : isDark
+                      ? 'border-violet-400/40 bg-violet-500/15 text-violet-200'
+                      : 'border-stone-300 bg-stone-200/70 text-stone-800'
+              }`}
+            >
               <Wrench className="w-3 h-3" aria-hidden="true" />
               <span>
-                Step {stepSpec.step}/{ASSEMBLY_STEPS.length} · {stepSpec.shortTitle}
+                {isDismantling
+                  ? 'Dismantling'
+                  : playbackMode === 'assemble'
+                    ? 'Installing'
+                    : 'Build Blueprint'}
               </span>
             </span>
-            <span className="font-mono text-[11px] font-semibold tabular-nums shrink-0">
-              {stepSpec.torqueNm > 0 ? `${stepSpec.torqueNm.toFixed(1)} N·m` : 'Seat'}
+
+            <span className="font-mono text-[11px] font-bold tabular-nums shrink-0">
+              Step 0{stepSpec.step} / 0{ASSEMBLY_STEPS.length}
             </span>
           </div>
-          <p className={`hidden sm:block mt-0.5 text-[11px] truncate ${mutedClass}`}>
-            {stepSpec.fastener} · {stepSpec.toolRequired}
+
+          {/* 7-Segment Visual Step Progress Rail */}
+          <div className="mt-2 grid grid-cols-7 gap-1" aria-hidden="true">
+            {ASSEMBLY_STEPS.map((st, idx) => {
+              const isCurrent = idx === activeStepIndex;
+              const isDone = assemblyProgress >= (idx + 1) / ASSEMBLY_STEPS.length;
+              return (
+                <div
+                  key={st.id}
+                  className={`h-1.5 rounded-full transition-colors ${
+                    isCurrent
+                      ? isDismantling
+                        ? 'bg-amber-400'
+                        : isNeon
+                          ? 'bg-cyan-400'
+                          : 'bg-amber-500'
+                      : isDone
+                        ? isDark
+                          ? 'bg-white/45'
+                          : 'bg-stone-700'
+                        : isDark
+                          ? 'bg-white/12'
+                          : 'bg-stone-300'
+                  }`}
+                />
+              );
+            })}
+          </div>
+
+          {/* Step Headline & Highlighted Torque Spec */}
+          <div className="mt-2 flex items-start justify-between gap-2">
+            <h2 className="text-xs sm:text-[13px] font-semibold leading-snug">
+              {stepSpec.title}
+            </h2>
+            <span
+              className={`font-mono text-[11px] font-bold tabular-nums px-2 py-0.5 rounded-md border shrink-0 ${
+                stepSpec.torqueNm > 0
+                  ? isNeon
+                    ? 'border-cyan-400/50 bg-cyan-500/15 text-cyan-200'
+                    : isDark
+                      ? 'border-amber-400/50 bg-amber-500/15 text-amber-300'
+                      : 'border-amber-600/35 bg-amber-100 text-amber-900'
+                  : isDark
+                    ? 'border-white/15 bg-white/8 text-zinc-200'
+                    : 'border-stone-300 bg-stone-200/70 text-stone-800'
+              }`}
+              data-testid="assembly-torque-badge"
+            >
+              {stepSpec.torqueNm > 0
+                ? `${stepSpec.torqueNm.toFixed(1)} N·m`
+                : 'Level & Seat'}
+            </span>
+          </div>
+
+          {/* Actionable Install / Dismantle Instruction (visible cleanly on desktop, concise on mobile) */}
+          <p className={`mt-1.5 text-[11px] leading-relaxed ${isDark ? 'text-zinc-300' : 'text-stone-700'}`}>
+            {isDismantling ? stepSpec.dismantleInstruction : stepSpec.installInstruction}
           </p>
+
+          {/* Fastener, Tool & Torque Imperial Spec Grid (desktop) */}
+          <div
+            className={`hidden sm:grid grid-cols-2 gap-2 mt-2.5 pt-2 border-t text-[11px] ${
+              isDark ? 'border-white/10' : 'border-stone-200'
+            }`}
+          >
+            <div className="min-w-0">
+              <span className={`block text-[10px] uppercase tracking-wide ${mutedClass}`}>
+                Fastener
+              </span>
+              <span className="font-medium truncate block">{stepSpec.fastener}</span>
+            </div>
+            <div className="min-w-0">
+              <span className={`block text-[10px] uppercase tracking-wide ${mutedClass}`}>
+                Tool {stepSpec.torqueFtLb > 0 ? `· ${stepSpec.torqueFtLb} ft-lb` : ''}
+              </span>
+              <span className="font-medium truncate block">{stepSpec.toolRequired}</span>
+            </div>
+          </div>
+
+          {/* Safety Verification Cue (desktop) */}
+          <div
+            className={`hidden sm:flex items-center gap-1.5 mt-2 px-2 py-1 rounded-md text-[10px] ${
+              isDark
+                ? 'bg-emerald-500/10 border border-emerald-400/25 text-emerald-200'
+                : 'bg-teal-50 border border-teal-200 text-teal-900'
+            }`}
+          >
+            <ShieldCheck className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+            <span className="leading-tight">{stepSpec.safetyNote}</span>
+          </div>
         </div>
       ) : null}
     </div>
   );
 }
+

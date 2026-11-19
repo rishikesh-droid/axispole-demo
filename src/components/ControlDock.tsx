@@ -591,6 +591,27 @@ export function ControlDock({
                   {activePole.isSpinning ? 'Spin' : 'Static'}
                 </button>
               </div>
+
+              {activePole.mount === 'vaulted-beam' && (
+                <div className="flex items-center gap-1.5 pt-0.5">
+                  <span className={`text-[10px] font-medium whitespace-nowrap ${mutedText}`}>
+                    Roof Pitch
+                  </span>
+                  <input
+                    aria-label="Vaulted roof pitch angle"
+                    type="range"
+                    min={6}
+                    max={28}
+                    step={1}
+                    value={config.vaultAngleDeg}
+                    onChange={(e) => onChangeConfig({ vaultAngleDeg: Number(e.target.value) })}
+                    className="axis-slider flex-1"
+                  />
+                  <span className="font-mono text-[11px] font-semibold tabular-nums w-8 text-right shrink-0">
+                    {config.vaultAngleDeg}°
+                  </span>
+                </div>
+              )}
             </div>
           )}
 
@@ -610,7 +631,7 @@ export function ControlDock({
                     className={`px-2.5 py-1.5 text-[11px] font-semibold rounded-lg inline-flex items-center gap-1 ${primaryActionBtn}`}
                   >
                     {playbackMode === 'assemble' ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
-                    <span>{playbackMode === 'assemble' ? 'Pause' : 'Build'}</span>
+                    <span>{playbackMode === 'assemble' ? 'Pause' : 'Install'}</span>
                   </button>
                   <button
                     type="button"
@@ -626,7 +647,7 @@ export function ControlDock({
                     }`}
                   >
                     <RotateCcw className="w-3 h-3" />
-                    <span>Break</span>
+                    <span>{playbackMode === 'dismantle' ? 'Stop' : 'Dismantle'}</span>
                   </button>
                 </div>
 
@@ -1150,7 +1171,13 @@ export function ControlDock({
                   })}
                 </div>
 
-                <div className="flex items-center gap-1.5 min-w-[140px] max-w-[205px] flex-1">
+                <div
+                  className={`flex items-center gap-1.5 flex-1 ${
+                    activePole.mount === 'vaulted-beam'
+                      ? 'min-w-[115px] max-w-[155px]'
+                      : 'min-w-[130px] max-w-[190px]'
+                  }`}
+                >
                   <label
                     htmlFor="ceiling-height-slider"
                     className={`text-[11px] font-medium whitespace-nowrap ${mutedText}`}
@@ -1165,12 +1192,36 @@ export function ControlDock({
                     step={1}
                     value={config.ceilingHeightCm}
                     onChange={(e) => onChangeConfig({ ceilingHeightCm: Number(e.target.value) })}
-                    className="axis-slider flex-1"
+                    className="axis-slider flex-1 min-w-[44px]"
                   />
                   <span className="font-mono text-[11px] font-semibold tabular-nums w-10 text-right shrink-0">
                     {(config.ceilingHeightCm / 100).toFixed(2)}m
                   </span>
                 </div>
+
+                {activePole.mount === 'vaulted-beam' && (
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <label
+                      htmlFor="vault-angle-slider"
+                      className={`text-[11px] font-medium whitespace-nowrap ${mutedText}`}
+                    >
+                      Pitch
+                    </label>
+                    <input
+                      id="vault-angle-slider"
+                      type="range"
+                      min={6}
+                      max={28}
+                      step={1}
+                      value={config.vaultAngleDeg}
+                      onChange={(e) => onChangeConfig({ vaultAngleDeg: Number(e.target.value) })}
+                      className="axis-slider w-16 shrink-0"
+                    />
+                    <span className="font-mono text-[11px] font-semibold tabular-nums w-7 text-right shrink-0">
+                      {config.vaultAngleDeg}°
+                    </span>
+                  </div>
+                )}
 
                 <div className="flex items-center gap-1.5">
                   <div className={`flex items-center gap-0.5 p-0.5 rounded-md ${segBg}`}>
@@ -1205,70 +1256,131 @@ export function ControlDock({
           )}
 
           {activeTab === 'assembly' && (
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (playbackMode === 'assemble') {
-                      onStartPlayback('idle');
-                    } else {
-                      if (assemblyProgress >= 0.98) onChangeAssemblyProgress(0);
-                      onStartPlayback('assemble');
-                    }
-                  }}
-                  className={`px-2.5 py-1 text-[11px] font-semibold rounded-md inline-flex items-center gap-1 whitespace-nowrap shrink-0 transition-colors ${primaryActionBtn}`}
-                >
-                  {playbackMode === 'assemble' ? (
-                    <>
-                      <Pause className="w-3 h-3" aria-hidden="true" />
-                      <span>Pause</span>
-                    </>
-                  ) : (
-                    <>
-                      <Play className="w-3 h-3" aria-hidden="true" />
-                      <span>Assemble</span>
-                    </>
-                  )}
-                </button>
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    data-testid="install-playback-button"
+                    onClick={() => {
+                      if (playbackMode === 'assemble') {
+                        onStartPlayback('idle');
+                      } else {
+                        if (assemblyProgress >= 0.98) onChangeAssemblyProgress(0);
+                        onStartPlayback('assemble');
+                      }
+                    }}
+                    className={`px-3 py-1.5 text-[11px] font-bold rounded-md inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${primaryActionBtn}`}
+                  >
+                    {playbackMode === 'assemble' ? (
+                      <>
+                        <Pause className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>Pause Install</span>
+                      </>
+                    ) : (
+                      <>
+                        <Play className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>Install Pole</span>
+                      </>
+                    )}
+                  </button>
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (playbackMode === 'dismantle') {
-                      onStartPlayback('idle');
-                    } else {
-                      if (assemblyProgress <= 0.05) onChangeAssemblyProgress(1);
-                      onStartPlayback('dismantle');
-                    }
-                  }}
-                  className={`px-2.5 py-1 text-[11px] font-semibold rounded-md border inline-flex items-center gap-1 whitespace-nowrap shrink-0 transition-colors ${
-                    playbackMode === 'dismantle' ? accentToggleActive : cardBtnIdle
-                  }`}
-                >
-                  <RotateCcw className="w-3 h-3" aria-hidden="true" />
-                  <span>{playbackMode === 'dismantle' ? 'Stop' : 'Dismantle'}</span>
-                </button>
+                  <button
+                    type="button"
+                    data-testid="dismantle-playback-button"
+                    onClick={() => {
+                      if (playbackMode === 'dismantle') {
+                        onStartPlayback('idle');
+                      } else {
+                        if (assemblyProgress <= 0.05) onChangeAssemblyProgress(1);
+                        onStartPlayback('dismantle');
+                      }
+                    }}
+                    className={`px-3 py-1.5 text-[11px] font-bold rounded-md border inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${
+                      playbackMode === 'dismantle' ? accentToggleActive : cardBtnIdle
+                    }`}
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>{playbackMode === 'dismantle' ? 'Stop Dismantle' : 'Dismantle'}</span>
+                  </button>
 
-                <button
-                  type="button"
-                  onClick={() => jumpToStep(activeStepIdx - 1)}
-                  aria-label="Previous assembly step"
-                  className={`p-1 rounded-md border ${cardBtnIdle}`}
-                >
-                  <StepBack className="w-3.5 h-3.5" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => jumpToStep(activeStepIdx + 1)}
-                  aria-label="Next assembly step"
-                  className={`p-1 rounded-md border ${cardBtnIdle}`}
-                >
-                  <StepForward className="w-3.5 h-3.5" />
-                </button>
+                  <div className="flex items-center gap-0.5 ml-1">
+                    <button
+                      type="button"
+                      onClick={() => jumpToStep(activeStepIdx - 1)}
+                      aria-label="Previous assembly step"
+                      className={`p-1.5 rounded-md border ${cardBtnIdle}`}
+                    >
+                      <StepBack className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => jumpToStep(activeStepIdx + 1)}
+                      aria-label="Next assembly step"
+                      className={`p-1.5 rounded-md border ${cardBtnIdle}`}
+                    >
+                      <StepForward className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Quick Hardware Joint Camera Focus + Explode + Torque Guide */}
+                <div className="flex items-center gap-2 shrink-0">
+                  <div className={`hidden lg:flex items-center gap-0.5 p-0.5 rounded-md ${segBg}`}>
+                    {(
+                      [
+                        ['base-hub', 'Base'],
+                        ['x-joint', 'X-Joint'],
+                        ['top-mount', 'Top'],
+                      ] as const
+                    ).map(([presetId, label]) => (
+                      <button
+                        key={presetId}
+                        type="button"
+                        onClick={() => {
+                          onChangeCameraMotion('manual');
+                          onFocusCamera(presetId);
+                        }}
+                        className={`px-2 py-1 text-[10px] font-semibold rounded-xs transition-colors whitespace-nowrap ${segIdle}`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <label htmlFor="exploded-slider" className={`text-[11px] font-medium whitespace-nowrap ${mutedText}`}>
+                      Explode
+                    </label>
+                    <input
+                      id="exploded-slider"
+                      type="range"
+                      min={0}
+                      max={100}
+                      value={Math.round(explodedFactor * 100)}
+                      onChange={(e) => onChangeExplodedFactor(Number(e.target.value) / 100)}
+                      className="axis-slider w-20 shrink-0"
+                    />
+                    <span className="font-mono text-[10px] font-semibold tabular-nums w-7 text-right shrink-0">
+                      {Math.round(explodedFactor * 100)}%
+                    </span>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={onToggleHighlightFasteners}
+                    aria-pressed={highlightFasteners}
+                    className={`px-2.5 py-1 text-[11px] font-semibold rounded-md border whitespace-nowrap shrink-0 transition-colors ${
+                      highlightFasteners ? accentToggleActive : cardBtnIdle
+                    }`}
+                  >
+                    Torque
+                  </button>
+                </div>
               </div>
 
-              <div className="flex items-center gap-1" role="group" aria-label="Assembly steps">
+              {/* 7-Step Named Hardware Installation & Dismantle Rail */}
+              <div className="grid grid-cols-7 gap-1" role="group" aria-label="Assembly steps">
                 {ASSEMBLY_STEPS.map((st, idx) => {
                   const isCurrent = idx === activeStepIdx;
                   const isDone = assemblyProgress >= (idx + 1) / ASSEMBLY_STEPS.length;
@@ -1277,54 +1389,31 @@ export function ControlDock({
                       key={st.id}
                       type="button"
                       onClick={() => jumpToStep(idx)}
-                      title={`0${st.step} ${st.shortTitle} (${st.torqueNm > 0 ? `${st.torqueNm} N·m` : 'Seat'})`}
+                      title={`0${st.step} ${st.title} (${st.torqueNm > 0 ? `${st.torqueNm} N·m` : 'Seat'})`}
                       aria-label={`Step ${st.step}: ${st.shortTitle}`}
                       aria-pressed={isCurrent}
-                      className={`w-7 h-7 rounded-md border font-mono text-[11px] font-semibold tabular-nums transition-colors ${
+                      className={`px-1.5 py-1 rounded-md border text-left transition-colors min-w-0 ${
                         isCurrent
                           ? cardBtnActive
                           : isDone
                             ? isDark
-                              ? 'border-white/20 bg-white/10 text-zinc-200'
+                              ? 'border-white/20 bg-white/8 text-zinc-200'
                               : 'border-stone-400 bg-stone-200/80 text-stone-900'
                             : cardBtnIdle
                       }`}
                     >
-                      0{st.step}
+                      <div className="flex items-center justify-between gap-1 font-mono text-[10px] font-bold tabular-nums">
+                        <span>0{st.step}</span>
+                        <span className={`text-[9px] font-medium ${mutedText}`}>
+                          {st.torqueNm > 0 ? `${st.torqueNm}Nm` : 'Seat'}
+                        </span>
+                      </div>
+                      <span className="block text-[10px] font-semibold truncate leading-tight">
+                        {st.shortTitle}
+                      </span>
                     </button>
                   );
                 })}
-              </div>
-
-              <div className="flex items-center gap-2.5 shrink-0">
-                <div className="flex items-center gap-1.5 shrink-0">
-                  <label htmlFor="exploded-slider" className={`text-[11px] font-medium whitespace-nowrap ${mutedText}`}>
-                    Explode
-                  </label>
-                  <input
-                    id="exploded-slider"
-                    type="range"
-                    min={0}
-                    max={100}
-                    value={Math.round(explodedFactor * 100)}
-                    onChange={(e) => onChangeExplodedFactor(Number(e.target.value) / 100)}
-                    className="axis-slider w-24 shrink-0"
-                  />
-                  <span className="font-mono text-[10px] font-semibold tabular-nums w-8 text-right shrink-0">
-                    {Math.round(explodedFactor * 100)}%
-                  </span>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={onToggleHighlightFasteners}
-                  aria-pressed={highlightFasteners}
-                  className={`px-2.5 py-1 text-[11px] font-semibold rounded-md border whitespace-nowrap shrink-0 transition-colors ${
-                    highlightFasteners ? accentToggleActive : cardBtnIdle
-                  }`}
-                >
-                  Torque
-                </button>
               </div>
             </div>
           )}

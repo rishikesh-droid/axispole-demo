@@ -14,7 +14,11 @@ export interface ARMarkerState {
   ceilingY: number;
   /** Normalized horizontal screen coordinate for pole placement (0=left, 1=right) */
   poleX: number;
-  /** Normalized horizontal span between left/right room obstacles (0.35..0.95) */
+  /** Normalized horizontal screen coordinate for detected left wall corner (0.04..0.44) */
+  leftCornerX: number;
+  /** Normalized horizontal screen coordinate for detected right wall corner (0.56..0.96) */
+  rightCornerX: number;
+  /** Normalized horizontal span between left/right room corners (rightCornerX - leftCornerX) */
   wallSpanNorm: number;
   /** Camera lens height above floor in meters (typically 1.1m - 1.75m) */
   cameraHeightM: number;
@@ -33,6 +37,8 @@ export interface ARMeasurementResult {
   roomWidthM: number;
   roomDepthM: number;
   poleOffsetXM: number;
+  leftWallXM: number;
+  rightWallXM: number;
   recommendedMount: BaseMountId;
   recommendedDiameterMm: 40 | 45 | 50;
   extensionsLabel: string;
@@ -47,7 +53,9 @@ export const DEFAULT_AR_MARKERS: ARMarkerState = {
   floorY: 0.74,
   ceilingY: 0.16,
   poleX: 0.5,
-  wallSpanNorm: 0.78,
+  leftCornerX: 0.14,
+  rightCornerX: 0.86,
+  wallSpanNorm: 0.72,
   cameraHeightM: 1.42,
   cameraPitchDeg: -3,
   vfovDeg: 68,
@@ -56,9 +64,12 @@ export const DEFAULT_AR_MARKERS: ARMarkerState = {
 
 /**
  * Clamps normalized screen markers so the floor point always stays cleanly below
- * the horizon and the ceiling point stays above the floor anchor.
+ * the horizon, the ceiling point stays above the floor anchor, and left/right wall
+ * corners maintain valid architectural geometry.
  */
-export function clampARMarkers(state: ARMarkerState): ARMarkerState {
+export function clampARMarkers(
+  state: Partial<ARMarkerState> & Pick<ARMarkerState, 'floorY' | 'ceilingY' | 'poleX' | 'cameraHeightM' | 'cameraPitchDeg' | 'vfovDeg' | 'aspect'>
+): ARMarkerState {
   const cameraHeightM = Math.max(0.85, Math.min(1.95, state.cameraHeightM));
   const cameraPitchDeg = Math.max(-25, Math.min(25, state.cameraPitchDeg));
   const vfovDeg = Math.max(38, Math.min(78, state.vfovDeg));
@@ -69,18 +80,30 @@ export function clampARMarkers(state: ARMarkerState): ARMarkerState {
   // Horizon normalized Y in screen space: 0.5 + tan(pitch) / (2 * halfTan)
   const horizonY = 0.5 + Math.tan(pitchRad) / (2 * halfTan);
 
-  const maxFloorY = aspect < 0.85 ? 0.77 : 0.82;
+  const maxFloorY = aspect < 0.85 ? 0.77 : 0.84;
   const minFloorY = Math.min(maxFloorY - 0.05, Math.max(0.54, horizonY + 0.08));
   const floorY = Math.max(minFloorY, Math.min(maxFloorY, state.floorY));
   const maxCeilingY = Math.max(0.11, Math.min(floorY - 0.18, horizonY - 0.04));
-  const ceilingY = Math.max(0.1, Math.min(maxCeilingY, state.ceilingY));
-  const poleX = Math.max(0.18, Math.min(0.82, state.poleX));
-  const wallSpanNorm = Math.max(0.4, Math.min(0.96, state.wallSpanNorm));
+  const ceilingY = Math.max(0.08, Math.min(maxCeilingY, state.ceilingY));
+
+  // Derive left/right wall corners from explicit corner values or fallback wallSpanNorm
+  const fallbackSpan = Math.max(0.32, Math.min(0.92, state.wallSpanNorm ?? 0.72));
+  const rawLeft = state.leftCornerX ?? 0.5 - fallbackSpan / 2;
+  const rawRight = state.rightCornerX ?? 0.5 + fallbackSpan / 2;
+  const leftCornerX = Math.max(0.05, Math.min(0.44, rawLeft));
+  const rightCornerX = Math.max(Math.max(0.56, leftCornerX + 0.24), Math.min(0.95, rawRight));
+  const wallSpanNorm = Math.max(0.24, Math.min(0.92, rightCornerX - leftCornerX));
+
+  const minPoleX = Math.max(0.18, leftCornerX + 0.08);
+  const maxPoleX = Math.min(0.82, rightCornerX - 0.08);
+  const poleX = Math.max(minPoleX, Math.min(maxPoleX, state.poleX));
 
   return {
     floorY: Number(floorY.toFixed(4)),
     ceilingY: Number(ceilingY.toFixed(4)),
     poleX: Number(poleX.toFixed(4)),
+    leftCornerX: Number(leftCornerX.toFixed(4)),
+    rightCornerX: Number(rightCornerX.toFixed(4)),
     wallSpanNorm: Number(wallSpanNorm.toFixed(4)),
     cameraHeightM: Number(cameraHeightM.toFixed(2)),
     cameraPitchDeg: Number(cameraPitchDeg.toFixed(1)),
@@ -92,11 +115,16 @@ export function clampARMarkers(state: ARMarkerState): ARMarkerState {
 /**
  * Pure pinhole-camera trigonometric room & ceiling measurement solver.
  * Computes ground distance from camera height + floor depression angle,
- * predicts ceiling height directly above the floor anchor, estimates room
- * width/depth, and recommends the optimal AxisPole mount & extension stack.
+ * predicts ceiling height directly above the floor anchor, back-projects
+ * left & right wall corners into physical room width/depth, and recommends
+ * the optimal AxisPole mount & extension stack.
  */
 export function calculateARMeasurement(
-  rawState: ARMarkerState,
+  rawState: Partial<ARMarkerState> &
+    Pick<
+      ARMarkerState,
+      'floorY' | 'ceilingY' | 'poleX' | 'cameraHeightM' | 'cameraPitchDeg' | 'vfovDeg' | 'aspect'
+    >,
   finishId: PoleFinishId = 'brass'
 ): ARMeasurementResult {
   const s = clampARMarkers(rawState);
@@ -111,10 +139,10 @@ export function calculateARMeasurement(
   const floorElevRad = pitchRad + floorAlpha;
   const ceilingElevRad = pitchRad + ceilingAlpha;
 
-  // Floor depression angle below horizontal
+  // Floor depression angle below horizontal -> camera distance to target wall/floor plane
   const depressionRad = Math.max(0.08, -floorElevRad);
   const rawDistanceM = s.cameraHeightM / Math.tan(depressionRad);
-  const distanceM = Math.max(1.2, Math.min(5.5, rawDistanceM));
+  const distanceM = Math.max(1.2, Math.min(5.8, rawDistanceM));
 
   // Ceiling height directly above the marked floor point
   const ceilingDeltaM = distanceM * Math.tan(Math.max(0.04, ceilingElevRad));
@@ -122,17 +150,24 @@ export function calculateARMeasurement(
   const ceilingHeightM = Math.max(2.15, Math.min(3.6, rawCeilingM));
   const ceilingHeightCm = Math.round(ceilingHeightM * 100);
 
-  // Horizontal field-of-view at plane distanceM -> room width & depth estimate
+  // Horizontal projection at back wall plane (distanceM)
   const halfTanH = halfTanV * s.aspect;
   const visibleWidthAtPlaneM = 2 * distanceM * halfTanH;
-  // Rooms typically extend beyond mobile portrait edges, so scale smoothly by aspect
-  const aspectExpansion = s.aspect < 0.85 ? 1.55 : 1.05;
-  const rawRoomWidthM = visibleWidthAtPlaneM * s.wallSpanNorm * aspectExpansion;
+
+  // Back-projected world X coordinates of the detected left & right wall corners
+  const leftWallXM = Number(((s.leftCornerX - 0.5) * visibleWidthAtPlaneM).toFixed(2));
+  const rightWallXM = Number(((s.rightCornerX - 0.5) * visibleWidthAtPlaneM).toFixed(2));
+  const detectedSpanM = Math.abs(rightWallXM - leftWallXM);
+
+  // Portrait phones have narrower horizontal FOV, so apply gentle perspective compensation when corners are near edges
+  const edgeBoost = s.aspect < 0.85 ? 1.38 : 1.04;
+  const rawRoomWidthM = detectedSpanM * edgeBoost;
   const roomWidthM = Number(
     Math.max(MIN_ROOM_SIZE_M, Math.min(MAX_ROOM_SIZE_M, rawRoomWidthM)).toFixed(1)
   );
+  // Estimate room depth from camera-to-back-wall distance plus standing clearance behind camera (~0.9m)
   const roomDepthM = Number(
-    Math.max(MIN_ROOM_SIZE_M, Math.min(MAX_ROOM_SIZE_M, distanceM * 1.75)).toFixed(1)
+    Math.max(MIN_ROOM_SIZE_M, Math.min(MAX_ROOM_SIZE_M, distanceM + 1.15)).toFixed(1)
   );
 
   // Lateral offset of pole from camera optical center in world meters
@@ -175,7 +210,7 @@ export function calculateARMeasurement(
   }
 
   const confidenceLabel: ARMeasurementResult['confidenceLabel'] =
-    distanceM >= 1.6 && distanceM <= 4.4 && Math.abs(s.cameraPitchDeg) <= 16
+    distanceM >= 1.5 && distanceM <= 4.6 && Math.abs(s.cameraPitchDeg) <= 16
       ? 'High'
       : Math.abs(s.cameraPitchDeg) > 18
         ? 'Adjust Angle'
@@ -188,6 +223,8 @@ export function calculateARMeasurement(
     roomWidthM,
     roomDepthM,
     poleOffsetXM,
+    leftWallXM,
+    rightWallXM,
     recommendedMount,
     recommendedDiameterMm,
     extensionsLabel,
@@ -197,74 +234,4 @@ export function calculateARMeasurement(
     recommendationNote,
     isWithinTensionRange,
   };
-}
-
-/**
- * Lightweight real-time horizontal edge detector on a live HTMLVideoElement frame.
- * Looks for the strongest ceiling cornice boundary in the upper band (8%–36%)
- * and baseboard/floor boundary in the lower band (66%–92%).
- * Falls back cleanly if video is not playing or has uniform brightness.
- */
-export function scanVideoForRoomBounds(
-  video: HTMLVideoElement | null
-): { ceilingY: number; floorY: number; detected: boolean } {
-  if (!video || video.readyState < 2 || video.videoWidth < 32 || video.videoHeight < 32) {
-    return { ceilingY: 0.17, floorY: 0.74, detected: false };
-  }
-
-  try {
-    const sampleW = 96;
-    const sampleH = 128;
-    const canvas = document.createElement('canvas');
-    canvas.width = sampleW;
-    canvas.height = sampleH;
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    if (!ctx) return { ceilingY: 0.17, floorY: 0.74, detected: false };
-
-    ctx.drawImage(video, 0, 0, sampleW, sampleH);
-    const data = ctx.getImageData(0, 0, sampleW, sampleH).data;
-
-    // Average luminance per row across the central 60% width (avoiding side furniture)
-    const xStart = Math.floor(sampleW * 0.2);
-    const xEnd = Math.floor(sampleW * 0.8);
-    const rowLuma = new Float32Array(sampleH);
-    for (let y = 0; y < sampleH; y++) {
-      let sum = 0;
-      for (let x = xStart; x < xEnd; x++) {
-        const idx = (y * sampleW + x) * 4;
-        sum += 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
-      }
-      rowLuma[y] = sum / (xEnd - xStart);
-    }
-
-    // Compute vertical gradient magnitude (horizontal architectural edges)
-    let bestCeilRow = Math.round(sampleH * 0.17);
-    let bestCeilScore = 0;
-    for (let y = Math.floor(sampleH * 0.1); y <= Math.floor(sampleH * 0.34); y++) {
-      const grad = Math.abs(rowLuma[y + 1] - rowLuma[y - 1]);
-      if (grad > bestCeilScore) {
-        bestCeilScore = grad;
-        bestCeilRow = y;
-      }
-    }
-
-    let bestFloorRow = Math.round(sampleH * 0.74);
-    let bestFloorScore = 0;
-    for (let y = Math.floor(sampleH * 0.62); y <= Math.floor(sampleH * 0.77); y++) {
-      const grad = Math.abs(rowLuma[y + 1] - rowLuma[y - 1]);
-      if (grad > bestFloorScore) {
-        bestFloorScore = grad;
-        bestFloorRow = y;
-      }
-    }
-
-    const detected = bestCeilScore > 6 && bestFloorScore > 6;
-    return {
-      ceilingY: detected ? Number((bestCeilRow / sampleH).toFixed(3)) : 0.17,
-      floorY: detected ? Number((bestFloorRow / sampleH).toFixed(3)) : 0.74,
-      detected,
-    };
-  } catch {
-    return { ceilingY: 0.17, floorY: 0.74, detected: false };
-  }
 }

@@ -263,8 +263,12 @@ export function createEnvironmentRig(
   boundaryLine.visible = false;
   group.add(boundaryLine);
 
-  // --- ARCHITECTURAL ENCLOSURE (Back Wall + Left Wall + Right Corner Wing + Ceiling Soffit) ---
-  const backWall = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 0.12), wallMat);
+  // --- ARCHITECTURAL ENCLOSURE (Back Gable Wall + Left Wall + Sloped/Flat Ceiling Soffit) ---
+  const backWallGeo = new THREE.BoxGeometry(1, 1, 0.12);
+  const backWallOrigPos = new Float32Array(
+    (backWallGeo.attributes.position as THREE.BufferAttribute).array
+  );
+  const backWall = new THREE.Mesh(backWallGeo, wallMat);
   backWall.receiveShadow = true;
   const leftWall = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1, 1), wallMat);
   leftWall.receiveShadow = true;
@@ -272,9 +276,9 @@ export function createEnvironmentRig(
   const leftBaseboard = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.085, 1), baseboardMat);
   group.add(backWall, leftWall, backBaseboard, leftBaseboard);
 
-  // Recessed Architectural Ceiling Soffit + Structural Joist Header (cleanly integrated, never sticking out!)
+  // Recessed Architectural Ceiling Soffit + Structural Joist Header (cleanly integrated, pitches cleanly for vaulted mounts!)
   const ceilingSlab = new THREE.Mesh(new THREE.BoxGeometry(1, 0.08, 1), ceilingSoffitMat);
-  const ceilingBeam = new THREE.Mesh(new THREE.BoxGeometry(1, 0.06, 0.14), woodSlatMat);
+  const ceilingBeam = new THREE.Mesh(new THREE.BoxGeometry(1, 0.055, 0.14), woodSlatMat);
   group.add(ceilingSlab, ceilingBeam);
 
   // Overhead Perimeter LED Cove Strips (back wall & left wall ceiling junction)
@@ -631,12 +635,39 @@ export function createEnvironmentRig(
     textures.woodBump.repeat.set(Math.max(2, W * 0.95), Math.max(2, D * 0.95));
     floorMat.needsUpdate = true;
 
-    // Back wall (z = -D/2) & Left wall (x = -W/2) cleanly joined at corner
-    backWall.scale.set(W + 0.12, H + 0.08, 1);
-    backWall.position.set(-0.06, (H + 0.08) / 2, -D / 2 - 0.06);
+    // Compute safe vaulted ceiling slope (when Vaulted mount is active, entire roof pitches cleanly!)
+    const isVaulted = config.mount === 'vaulted-beam';
+    // Cap effective visual slope so the lower eave wall stays architecturally realistic (>= 1.65m)
+    const maxVisualRad = Math.atan(Math.max(0.25, H - 1.68) / Math.max(1.2, W * 0.5));
+    const vaultRad = isVaulted
+      ? Math.min(maxVisualRad, THREE.MathUtils.degToRad(Math.max(4, config.vaultAngleDeg)))
+      : 0;
+    const cosV = Math.cos(vaultRad);
+    const sinV = Math.sin(vaultRad);
+    const tanV = Math.tan(vaultRad);
+    const leftEaveH = H - (W / 2) * tanV;
 
-    leftWall.scale.set(1, H + 0.08, D);
-    leftWall.position.set(-W / 2 - 0.06, (H + 0.08) / 2, 0);
+    // Back wall (z = -D/2): morphs smoothly into a watertight sloped gable wall when vaulted
+    const backPos = backWallGeo.attributes.position as THREE.BufferAttribute;
+    const xLeftWallOuter = -W / 2 - 0.12;
+    const xRightWallEdge = W / 2;
+    const roofTopOffset = isVaulted ? 0.135 / cosV : 0.08;
+    for (let i = 0; i < backPos.count; i++) {
+      const ox = backWallOrigPos[i * 3];
+      const oy = backWallOrigPos[i * 3 + 1];
+      const oz = backWallOrigPos[i * 3 + 2];
+      const wx = ox < 0 ? xLeftWallOuter : xRightWallEdge;
+      const wy = oy < 0 ? 0 : Math.max(1.5, H + wx * tanV + roofTopOffset);
+      backPos.setXYZ(i, wx, wy, oz);
+    }
+    backPos.needsUpdate = true;
+    backWallGeo.computeVertexNormals();
+    backWall.position.set(0, 0, -D / 2 - 0.06);
+
+    // Left wall terminates cleanly at exact left eave height under sloped ceiling
+    const leftWallH = Math.max(1.5, leftEaveH + (isVaulted ? 0.13 / cosV : 0.08));
+    leftWall.scale.set(1, leftWallH, D);
+    leftWall.position.set(-W / 2 - 0.06, leftWallH / 2, 0);
 
     backBaseboard.scale.set(W, 1, 1);
     backBaseboard.position.set(0, 0.042, -D / 2 + 0.012);
@@ -644,32 +675,52 @@ export function createEnvironmentRig(
     leftBaseboard.scale.set(1, 1, D);
     leftBaseboard.position.set(-W / 2 + 0.012, 0.042, 0);
 
-    // Architectural Ceiling Soffit (matches exact room footprint; no protruding beam!)
-    ceilingSlab.scale.set(W + 0.12, 1, D + 0.12);
-    ceilingSlab.position.set(-0.06, H + 0.04, -0.06);
+    // Architectural Ceiling Soffit + Integrated Structural Timber Beam (zero protrusion!)
+    const slopedSpanW = (W + 0.14) / cosV;
+    const beamSpanW = (W - 0.04) / cosV;
+    const slabNormalOffset = isVaulted ? 0.095 : 0.04;
+    const beamNormalOffset = isVaulted ? 0.0275 : 0.008;
+
+    ceilingSlab.scale.set(slopedSpanW, 1, D + 0.12);
+    ceilingSlab.rotation.set(0, 0, vaultRad);
+    ceilingSlab.position.set(
+      -0.06 * cosV - slabNormalOffset * sinV,
+      H + slabNormalOffset * cosV - 0.06 * sinV,
+      -0.06
+    );
     ceilingSlab.visible = config.mount !== 'stage-podium';
 
-    ceilingBeam.scale.set(W - 0.04, 1, 1);
-    ceilingBeam.position.set(0, H - 0.025, 0);
-    ceilingBeam.rotation.z =
-      config.mount === 'vaulted-beam' ? THREE.MathUtils.degToRad(config.vaultAngleDeg) : 0;
+    ceilingBeam.scale.set(beamSpanW, 1, 1);
+    ceilingBeam.rotation.set(0, 0, vaultRad);
+    ceilingBeam.position.set(-beamNormalOffset * sinV, H + beamNormalOffset * cosV, 0);
     ceilingBeam.visible = config.mount !== 'stage-podium';
 
-    // Recessed perimeter ceiling LED cove strips
-    coveBarBack.scale.set(W - 0.16, 1, 1);
-    coveBarBack.position.set(0, H - 0.018, -D / 2 + 0.025);
-    coveBarLeft.scale.set(1, 1, D - 0.16);
-    coveBarLeft.position.set(-W / 2 + 0.025, H - 0.018, 0);
+    // Recessed perimeter ceiling LED cove strips follow exact flat or vaulted ceiling angle
+    const coveNormalOffset = isVaulted ? 0.042 : -0.018;
+    coveBarBack.scale.set((W - 0.14) / cosV, 1, 1);
+    coveBarBack.rotation.set(0, 0, vaultRad);
+    coveBarBack.position.set(
+      -coveNormalOffset * sinV,
+      H + coveNormalOffset * cosV,
+      -D / 2 + 0.025
+    );
+    coveBarBack.visible = config.mount !== 'stage-podium';
 
-    // Overhead black aluminum studio spotlight track
-    trackRigGroup.position.set(0, H - 0.02, 0.95);
+    coveBarLeft.scale.set(1, 1, D - 0.16);
+    coveBarLeft.position.set(-W / 2 + 0.025, leftEaveH + (isVaulted ? 0.035 : -0.018), 0);
+    coveBarLeft.visible = config.mount !== 'stage-podium';
+
+    // Overhead black aluminum studio spotlight track tilts cleanly along sloped ceiling
+    const trackNormalOffset = isVaulted ? 0.035 : -0.02;
+    trackRigGroup.rotation.set(0, 0, vaultRad);
+    trackRigGroup.position.set(-trackNormalOffset * sinV, H + trackNormalOffset * cosV, 0.95);
     trackRigGroup.visible = config.mount !== 'stage-podium';
 
     // Studio feature wall (fluted acoustic wood slats on left wall + mirror + neon tubes)
     studioFeatureGroup.visible = config.environment === 'studio';
     if (config.environment === 'studio') {
       const slatSpanZ = Math.min(2.4, D - 0.7);
-      const slatHeight = Math.max(1.8, H - 0.24);
+      const slatHeight = Math.max(1.35, Math.min(H, leftEaveH) - 0.24);
       for (let i = 0; i < slatCount; i++) {
         const frac = i / (slatCount - 1) - 0.5;
         _dummy.position.set(-W / 2 + 0.022, slatHeight / 2 + 0.1, frac * slatSpanZ);
@@ -680,7 +731,8 @@ export function createEnvironmentRig(
       }
       slatInstanced.instanceMatrix.needsUpdate = true;
 
-      const mirrorScaleY = Math.min(1.0, (H - 0.35) / 2.24);
+      const mirrorMaxH = Math.min(H, H - 1.24 * tanV) - 0.32;
+      const mirrorScaleY = Math.max(0.55, Math.min(1.0, mirrorMaxH / 2.24));
       mirrorGroup.scale.set(1, mirrorScaleY, 1);
       mirrorGroup.position.set(0, (2.24 * mirrorScaleY) / 2 + 0.14, -D / 2 + 0.016);
 
