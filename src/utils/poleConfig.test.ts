@@ -8,7 +8,6 @@ import {
   createInitialPoles,
   createNextPoleInstance,
   DEFAULT_CONFIG,
-  evaluatePerformanceTimeline,
   exportBOMToCSV,
   formatHeightMetricAndImperial,
   generateBOM,
@@ -17,7 +16,6 @@ import {
   getWallClearanceMarginM,
   isDarkLighting,
   LIGHTING_PRESETS,
-  PERFORMANCE_DURATION_SEC,
 } from './poleConfig.ts';
 import type { BaseMountId, PoleFinishId } from '../types/pole.ts';
 
@@ -102,17 +100,6 @@ test('multi-pole creation and BOM aggregation sum multiple different poles clean
   const dualBom = generateMultiPoleBOM([...p1, p2], DEFAULT_CONFIG);
   assert.ok(dualBom.totalPriceUsd > singleBom.totalPriceUsd + 400);
   assert.ok(dualBom.totalWeightKg > singleBom.totalWeightKg + 6);
-});
-
-test('evaluatePerformanceTimeline transitions smoothly across walk-in, spin, aerial, and finale pose', () => {
-  assert.equal(evaluatePerformanceTimeline(0.5).phase, 'walk-in');
-  assert.equal(evaluatePerformanceTimeline(2.5).phase, 'grip');
-  assert.equal(evaluatePerformanceTimeline(4.2).phase, 'spin');
-  assert.equal(evaluatePerformanceTimeline(6.8).phase, 'aerial-hold');
-  assert.equal(evaluatePerformanceTimeline(8.8).phase, 'dismount');
-  const end = evaluatePerformanceTimeline(PERFORMANCE_DURATION_SEC);
-  assert.equal(end.phase, 'finale-pose');
-  assert.equal(end.finished, true);
 });
 
 test('computeAssemblyOffsets seats all parts to zero when assembled and expands when exploded', () => {

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CameraOff, Compass } from 'lucide-react';
 import type {
   CameraFocusId,
   CameraMotionMode,
@@ -24,11 +23,18 @@ import {
   MIN_ROOM_SIZE_M,
 } from './utils/poleConfig';
 import { soundFx } from './utils/soundFx';
+import {
+  calculateARMeasurement,
+  DEFAULT_AR_MARKERS,
+  type ARMarkerState,
+  type ARMeasurementResult,
+} from './utils/arMeasure';
 import { TopBar } from './components/TopBar';
 import { PoleViewport3D, type PoleViewportHandle } from './components/PoleViewport3D';
 import { InspectorCallout } from './components/InspectorCallout';
 import { ControlDock } from './components/ControlDock';
 import { Modals } from './components/Modals';
+import { ARMeasurementOverlay } from './components/ARMeasurementOverlay';
 import type { CadFormat } from './three/cadExporter';
 
 export default function App() {
@@ -43,12 +49,6 @@ export default function App() {
   const [lastClamp, setLastClamp] = useState<PoleClampResult | null>(null);
   const [cameraMotion, setCameraMotion] = useState<CameraMotionMode>('manual');
 
-  // Realistic 10.5s Athlete Performance State
-  const [performanceStatus, setPerformanceStatus] = useState<'idle' | 'playing' | 'finished'>('idle');
-  const [performanceRunId, setPerformanceRunId] = useState(0);
-  const [performanceTimeSec, setPerformanceTimeSec] = useState(0);
-  const [performancePhaseLabel, setPerformancePhaseLabel] = useState('Studio Approach');
-
   const [activeTab, setActiveTab] = useState<DockTabId>('configure');
   const [dockCollapsed, setDockCollapsed] = useState(false);
   const [activeModal, setActiveModal] = useState<ModalId>('none');
@@ -61,9 +61,10 @@ export default function App() {
   const [playbackMode, setPlaybackMode] = useState<'idle' | 'assemble' | 'dismantle'>('idle');
   const [soundEnabled, setSoundEnabled] = useState(false);
 
-  // Live Camera AR Pass-Through state
+  // Live Camera AR Room Measurement state
   const [arCameraActive, setArCameraActive] = useState(false);
   const [arCameraError, setArCameraError] = useState<string | null>(null);
+  const [arMarkers, setArMarkers] = useState<ARMarkerState>(DEFAULT_AR_MARKERS);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const viewportRef = useRef<PoleViewportHandle | null>(null);
@@ -71,6 +72,11 @@ export default function App() {
   const activePole = useMemo(
     () => poles.find((p) => p.id === activePoleId) ?? poles[0],
     [poles, activePoleId]
+  );
+
+  const arMeasurement = useMemo(
+    () => calculateARMeasurement(arMarkers, activePole.finish),
+    [arMarkers, activePole.finish]
   );
 
   // Synced rig config representing the currently active pole for modals & CAD export
@@ -161,7 +167,6 @@ export default function App() {
     if (poles.length >= MAX_POLES_IN_STUDIO) return;
     soundFx.playMetalSeat();
     setCompareMode(false);
-    setPerformanceStatus('idle');
     // Ensure room has comfortable width when adding multiple poles
     const targetW = Math.max(config.roomWidthM, poles.length === 1 ? 5.6 : 6.2);
     if (targetW !== config.roomWidthM) {
@@ -215,7 +220,6 @@ export default function App() {
     setCompareMode((prev) => {
       const next = !prev;
       if (next) {
-        setPerformanceStatus('idle');
         setMoveMode(false);
         setSelectedPart(null);
         setActiveTab('configure');
@@ -231,40 +235,6 @@ export default function App() {
       return next;
     });
   }, [compareFinish, activePole.finish]);
-
-  const handleStartPerform = useCallback(() => {
-    soundFx.playTorqueClick();
-    setCompareMode(false);
-    setMoveMode(false);
-    setSelectedPart(null);
-    setHighlightFasteners(false);
-    setPlaybackMode('idle');
-    setAssemblyProgress(1.0);
-    setExplodedFactor(0.0);
-    setCameraMotion('manual');
-    setPerformanceTimeSec(0);
-    setPerformancePhaseLabel('Studio Approach');
-    setPerformanceRunId((n) => n + 1);
-    setPerformanceStatus('playing');
-  }, []);
-
-  const handleStopPerform = useCallback(() => {
-    soundFx.playDetent();
-    setPerformanceStatus('idle');
-    setPerformanceTimeSec(0);
-    viewportRef.current?.focusCamera('full-rig');
-  }, []);
-
-  const handlePerformanceTick = useCallback(
-    (timeSec: number, phaseLabel: string, finished: boolean) => {
-      setPerformanceTimeSec(timeSec);
-      setPerformancePhaseLabel(phaseLabel);
-      if (finished) {
-        setPerformanceStatus('finished');
-      }
-    },
-    []
-  );
 
   const handleToggleSound = useCallback(() => {
     setSoundEnabled((prev) => {
@@ -291,7 +261,6 @@ export default function App() {
 
   const handleLaunchAssemblyDemo = useCallback((mode: 'assemble' | 'dismantle') => {
     setCompareMode(false);
-    setPerformanceStatus('idle');
     setMoveMode(false);
     setActiveTab('assembly');
     setDockCollapsed(false);
@@ -313,19 +282,50 @@ export default function App() {
     }
     setArCameraActive(false);
     setArCameraError(null);
+    window.setTimeout(() => viewportRef.current?.focusCamera('full-rig'), 60);
   }, []);
 
+  const handleApplyARRecommendation = useCallback(
+    (result: ARMeasurementResult) => {
+      soundFx.playMetalSeat();
+      const clampedHeightCm = Math.max(225, Math.min(350, result.ceilingHeightCm));
+      handleChangeConfig({
+        ceilingHeightCm: clampedHeightCm,
+        roomWidthM: result.roomWidthM,
+        roomDepthM: result.roomDepthM,
+      });
+      handleChangeActivePole({
+        mount: result.recommendedMount,
+        diameterMm: result.recommendedDiameterMm,
+      });
+    },
+    [handleChangeConfig, handleChangeActivePole]
+  );
+
   const startArCamera = useCallback(async () => {
+    soundFx.playTorqueClick();
+    setCompareMode(false);
+    setMoveMode(false);
+    setSelectedPart(null);
+    setHighlightFasteners(false);
+    setPlaybackMode('idle');
+    setAssemblyProgress(1.0);
+    setExplodedFactor(0.0);
+    setCameraMotion('manual');
     setArCameraActive(true);
     setArCameraError(null);
-    setDockCollapsed(false);
+
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
-      setArCameraError('Camera API unavailable. Showing calibrated AR floor grid.');
+      setArCameraError('Camera unavailable. Showing calibrated AR room grid.');
       return;
     }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: 'environment' } },
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
         audio: false,
       });
       streamRef.current = stream;
@@ -334,7 +334,7 @@ export default function App() {
         await videoRef.current.play().catch(() => {});
       }
     } catch {
-      setArCameraError('Camera unavailable. Showing calibrated AR floor grid.');
+      setArCameraError('Camera unavailable. Showing calibrated AR room grid.');
     }
   }, []);
 
@@ -354,7 +354,6 @@ export default function App() {
       if (e.key === 'Escape') {
         if (activeModal !== 'none') setActiveModal('none');
         else if (selectedPart) setSelectedPart(null);
-        else if (performanceStatus !== 'idle') setPerformanceStatus('idle');
         else if (arCameraActive) stopArCamera();
       } else if (e.key === 'h' || e.key === 'H') {
         setDockCollapsed((c) => !c);
@@ -362,7 +361,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [activeModal, selectedPart, performanceStatus, arCameraActive, stopArCamera]);
+  }, [activeModal, selectedPart, arCameraActive, stopArCamera]);
 
   const handleExportCAD = useCallback(async (format: CadFormat) => {
     if (!viewportRef.current) throw new Error('3D viewport unavailable');
@@ -381,13 +380,7 @@ export default function App() {
       className={`relative w-screen h-screen overflow-hidden transition-colors duration-200 ${
         isDark ? 'bg-[#0d0f16]' : 'bg-[#e5e2db]'
       }`}
-      data-state={
-        performanceStatus !== 'idle'
-          ? `performing-${performanceStatus}`
-          : playbackMode !== 'idle'
-            ? `animating-${playbackMode}`
-            : 'ready'
-      }
+      data-state={playbackMode !== 'idle' ? `animating-${playbackMode}` : 'ready'}
       data-finish={activePole.finish}
       data-mount={activePole.mount}
       data-lighting={config.lighting}
@@ -399,40 +392,33 @@ export default function App() {
         lighting={config.lighting}
         activeModal={activeModal}
         totalPriceUsd={bom.totalPriceUsd}
+        arCameraActive={arCameraActive}
         onOpenModal={(m) => {
           soundFx.playDetent();
           setActiveModal(m);
         }}
+        onStartArCamera={startArCamera}
       />
 
       {/* Live AR Camera Pass-Through Layer behind transparent 3D WebGL Canvas */}
       {arCameraActive && (
-        <div className="fixed inset-0 z-0 bg-zinc-950">
+        <div className="fixed inset-0 z-0 bg-[#0b0d14]">
           <video ref={videoRef} playsInline muted className="w-full h-full object-cover" />
           {arCameraError && (
             <div
-              className="absolute inset-0 flex flex-col items-center justify-center text-zinc-300 px-6 text-center pointer-events-none"
+              className="absolute inset-0 pointer-events-none"
               style={{
                 backgroundImage:
-                  'linear-gradient(rgba(255,255,255,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.06) 1px, transparent 1px)',
-                backgroundSize: '44px 44px',
+                  'radial-gradient(circle at 50% 45%, rgba(56, 189, 248, 0.12), transparent 60%), linear-gradient(rgba(255,255,255,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.06) 1px, transparent 1px)',
+                backgroundSize: '100% 100%, 40px 40px, 40px 40px',
               }}
-            >
-              <div className="mt-auto mb-36 px-3.5 py-2 rounded-lg bg-zinc-950/90 border border-white/15 text-xs flex items-center gap-2">
-                {arCameraError.includes('permission') ? (
-                  <CameraOff className="w-4 h-4 text-violet-400 shrink-0" aria-hidden="true" />
-                ) : (
-                  <Compass className="w-4 h-4 text-violet-400 shrink-0" aria-hidden="true" />
-                )}
-                <span>{arCameraError}</span>
-              </div>
-            </div>
+            />
           )}
         </div>
       )}
 
       {/* Full-Bleed Unobstructed 3D Interactive Studio Viewport */}
-      <main className="relative z-10 w-full h-full pt-12">
+      <main className={`relative z-10 w-full h-full ${arCameraActive ? 'pt-0' : 'pt-12'}`}>
         <PoleViewport3D
           ref={viewportRef}
           config={activeRigConfig}
@@ -448,9 +434,6 @@ export default function App() {
           compareFinish={compareFinish}
           cameraMotion={cameraMotion}
           onCancelCameraMotion={() => setCameraMotion('manual')}
-          performanceStatus={performanceStatus}
-          performanceRunId={performanceRunId}
-          onPerformanceTick={handlePerformanceTick}
           assemblyProgress={assemblyProgress}
           explodedFactor={explodedFactor}
           highlightFasteners={highlightFasteners}
@@ -462,10 +445,28 @@ export default function App() {
           playbackMode={playbackMode}
           onPlaybackProgress={handlePlaybackProgress}
           arCameraActive={arCameraActive}
+          arMarkers={arMarkers}
+          arMeasurement={arMeasurement}
         />
       </main>
 
-      {/* Top-Left Minimal Rig Spec, Compare, Performance & Move Callout */}
+      {/* Interactive AR Spatial Room Measurement & Pole Fit HUD */}
+      {arCameraActive && (
+        <ARMeasurementOverlay
+          videoRef={videoRef}
+          arCameraError={arCameraError}
+          markers={arMarkers}
+          onChangeMarkers={setArMarkers}
+          activeFinish={activePole.finish}
+          isSpinning={activePole.isSpinning}
+          onChangeFinish={(finish) => handleChangeActivePole({ finish })}
+          onToggleSpin={() => handleChangeActivePole({ isSpinning: !activePole.isSpinning })}
+          onApplyRecommendation={handleApplyARRecommendation}
+          onExit={stopArCamera}
+        />
+      )}
+
+      {/* Top-Left Minimal Rig Spec, Compare & Move Callout */}
       <InspectorCallout
         config={activeRigConfig}
         poles={poles}
@@ -476,9 +477,6 @@ export default function App() {
         compareFinish={compareFinish}
         moveMode={moveMode}
         lastClamp={lastClamp}
-        performanceStatus={performanceStatus}
-        performanceTimeSec={performanceTimeSec}
-        performancePhaseLabel={performancePhaseLabel}
         activeTab={activeTab}
         activeStepIndex={activeStepIndex}
         selectedPart={selectedPart}
@@ -488,7 +486,6 @@ export default function App() {
           viewportRef.current?.focusCamera('full-rig');
         }}
         arCameraActive={arCameraActive}
-        onExitArCamera={stopArCamera}
       />
 
       {/* Sleek Low-Profile Bottom Control Dock */}
@@ -516,7 +513,6 @@ export default function App() {
         moveMode={moveMode}
         onToggleMoveMode={() => {
           soundFx.playDetent();
-          setPerformanceStatus('idle');
           setMoveMode((m) => !m);
           setLastClamp(null);
         }}
@@ -525,16 +521,12 @@ export default function App() {
           soundFx.playDetent();
           setCameraMotion(mode);
         }}
-        performanceStatus={performanceStatus}
-        onStartPerform={handleStartPerform}
-        onStopPerform={handleStopPerform}
         activeTab={activeTab}
         onChangeTab={(tab) => {
           soundFx.playDetent();
           setActiveTab(tab);
           if (tab === 'assembly') {
             setCompareMode(false);
-            setPerformanceStatus('idle');
             setHighlightFasteners(true);
           } else if (!selectedPart) {
             setHighlightFasteners(false);
@@ -561,7 +553,6 @@ export default function App() {
         onStartPlayback={(mode) => {
           soundFx.playDetent();
           if (mode !== 'idle') {
-            setPerformanceStatus('idle');
             setCompareMode(false);
             setHighlightFasteners(true);
           }
@@ -570,6 +561,8 @@ export default function App() {
         onFocusCamera={handleFocusCamera}
         soundEnabled={soundEnabled}
         onToggleSound={handleToggleSound}
+        arCameraActive={arCameraActive}
+        onStartArCamera={startArCamera}
       />
 
       {/* Documentation, BOM, CAD Export & AR Preview Modals */}

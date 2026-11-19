@@ -17,15 +17,6 @@ export type CameraFocusId =
 
 export type CameraMotionMode = 'manual' | 'orbit' | 'crane';
 
-export type PerformancePhaseId =
-  | 'idle'
-  | 'walk-in'
-  | 'grip'
-  | 'spin'
-  | 'aerial-hold'
-  | 'dismount'
-  | 'finale-pose';
-
 export type HardwarePartId =
   | 'base-plate'
   | 'bearing-hub'
@@ -58,16 +49,6 @@ export interface PoleClampResult {
   hitWallBoundary: boolean;
   hitPoleBoundary: boolean;
   minWallMarginM: number;
-}
-
-export interface PerformanceTimelineSample {
-  phase: PerformancePhaseId;
-  phaseLabel: string;
-  phaseProgress: number;
-  totalProgress: number;
-  timeSec: number;
-  durationSec: number;
-  finished: boolean;
 }
 
 export interface PoleFinishSpec {

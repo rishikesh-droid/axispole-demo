@@ -20,10 +20,9 @@ import type {
 import {
   clampPolePosition,
   computeAssemblyOffsets,
-  evaluatePerformanceTimeline,
   MAX_POLES_IN_STUDIO,
-  PERFORMANCE_DURATION_SEC,
 } from '../utils/poleConfig';
+import type { ARMarkerState, ARMeasurementResult } from '../utils/arMeasure';
 import { createProceduralTextures } from '../three/proceduralTextures';
 import { createPoleAssembly, type PoleAssemblyHandle } from '../three/poleBuilder';
 import {
@@ -31,10 +30,6 @@ import {
   type EnvironmentRigHandle,
   type FloorPoleMarker,
 } from '../three/environmentBuilder';
-import {
-  createSkinnedAthlete,
-  type SkinnedAthleteHandle,
-} from '../three/athleteSkinnedBuilder';
 import {
   buildQuickLookUSDZUrl,
   exportPoleCAD,
@@ -60,9 +55,6 @@ interface PoleViewport3DProps {
   compareFinish: PoleFinishId;
   cameraMotion: CameraMotionMode;
   onCancelCameraMotion: () => void;
-  performanceStatus: 'idle' | 'playing' | 'finished';
-  performanceRunId: number;
-  onPerformanceTick: (timeSec: number, phaseLabel: string, finished: boolean) => void;
   assemblyProgress: number;
   explodedFactor: number;
   highlightFasteners: boolean;
@@ -71,6 +63,8 @@ interface PoleViewport3DProps {
   playbackMode: 'idle' | 'assemble' | 'dismantle';
   onPlaybackProgress: (progress: number, finished: boolean) => void;
   arCameraActive: boolean;
+  arMarkers: ARMarkerState;
+  arMeasurement: ARMeasurementResult;
 }
 
 const _camGoalPos = new THREE.Vector3();
@@ -107,9 +101,6 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       compareFinish,
       cameraMotion,
       onCancelCameraMotion,
-      performanceStatus,
-      performanceRunId,
-      onPerformanceTick,
       assemblyProgress,
       explodedFactor,
       highlightFasteners,
@@ -118,6 +109,8 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       playbackMode,
       onPlaybackProgress,
       arCameraActive,
+      arMarkers,
+      arMeasurement,
     },
     ref
   ) {
@@ -135,15 +128,14 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       compareFinish,
       cameraMotion,
       onCancelCameraMotion,
-      performanceStatus,
-      performanceRunId,
-      onPerformanceTick,
       assemblyProgress,
       explodedFactor,
       highlightFasteners,
       selectedPart,
       playbackMode,
       arCameraActive,
+      arMarkers,
+      arMeasurement,
       onSelectPart,
       onPlaybackProgress,
     });
@@ -158,15 +150,14 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       compareFinish,
       cameraMotion,
       onCancelCameraMotion,
-      performanceStatus,
-      performanceRunId,
-      onPerformanceTick,
       assemblyProgress,
       explodedFactor,
       highlightFasteners,
       selectedPart,
       playbackMode,
       arCameraActive,
+      arMarkers,
+      arMeasurement,
       onSelectPart,
       onPlaybackProgress,
     };
@@ -175,25 +166,21 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       polePool: PoleAssemblyHandle[];
       poleGeoKeys: string[];
       env: EnvironmentRigHandle | null;
-      athlete: SkinnedAthleteHandle | null;
       camera: THREE.PerspectiveCamera | null;
       controls: OrbitControls | null;
       renderer: THREE.WebGLRenderer | null;
       requestRender: () => void;
       startCameraTransition: (pos: THREE.Vector3, target: THREE.Vector3) => void;
-      resetPerformanceClock: () => void;
       syncPolesAndEnv: () => void;
     }>({
       polePool: [],
       poleGeoKeys: [],
       env: null,
-      athlete: null,
       camera: null,
       controls: null,
       renderer: null,
       requestRender: () => {},
       startCameraTransition: () => {},
-      resetPerformanceClock: () => {},
       syncPolesAndEnv: () => {},
     });
 
@@ -256,6 +243,18 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
         case 'full-rig':
         default: {
           const multiBoost = stateRef.current.poles.length > 1 ? 0.55 : 0;
+          const isPortraitMobile =
+            typeof window !== 'undefined' && window.innerWidth < 640 && window.innerHeight > window.innerWidth;
+          if (isPortraitMobile) {
+            return {
+              pos: new THREE.Vector3(
+                ox * 0.4 + 1.55 + multiBoost * 0.35,
+                H * 0.44,
+                oz * 0.4 + 4.45 + multiBoost
+              ),
+              target: new THREE.Vector3(ox * 0.5, H * 0.38, oz * 0.5),
+            };
+          }
           return {
             pos: new THREE.Vector3(
               ox * 0.4 + 1.85 + multiBoost * 0.35,
@@ -361,10 +360,6 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
         spinVels.push(0);
       }
 
-      // Photorealistic SkinnedMesh Athlete
-      const athlete = createSkinnedAthlete();
-      scene.add(athlete.root);
-
       let draggingPoleIdx: number | null = null;
       let dragHitWall = false;
 
@@ -376,6 +371,27 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
         isSelected: boolean;
       }[] {
         const s = stateRef.current;
+        if (s.arCameraActive) {
+          const active = s.poles.find((p) => p.id === s.activePoleId) ?? s.poles[0];
+          const arHeightCm = Math.max(225, Math.min(350, s.arMeasurement.ceilingHeightCm));
+          return [
+            {
+              id: active.id,
+              rig: {
+                ...s.config,
+                finish: active.finish,
+                diameterMm: active.diameterMm,
+                mount: s.arMeasurement.recommendedMount,
+                ceilingHeightCm: arHeightCm,
+                isSpinning: active.isSpinning,
+                spinRpm: active.spinRpm,
+              },
+              x: s.arMeasurement.poleOffsetXM,
+              z: 0,
+              isSelected: true,
+            },
+          ];
+        }
         if (s.compareMode) {
           const active = s.poles.find((p) => p.id === s.activePoleId) ?? s.poles[0];
           const leftRig: PoleRigConfig = {
@@ -463,9 +479,6 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       let smoothedExploded = stateRef.current.explodedFactor;
       let smoothedProgress = stateRef.current.assemblyProgress;
       let elapsedSec = 0;
-      let performanceTimeSec = 0;
-      let lastPerfEmit = 0;
-      let perfManualOverride = false;
       let lastFrameTime = performance.now();
       let lastStepIdx = 6;
       let lastPlaybackEmit = 0;
@@ -478,20 +491,10 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
         requestRender();
       };
 
-      const resetPerformanceClock = () => {
-        performanceTimeSec = 0;
-        perfManualOverride = false;
-        lastPerfEmit = 0;
-        requestRender();
-      };
-
       controls.addEventListener('start', () => {
         camTransitionActive = false;
         if (stateRef.current.cameraMotion !== 'manual') {
           stateRef.current.onCancelCameraMotion();
-        }
-        if (stateRef.current.performanceStatus !== 'idle') {
-          perfManualOverride = true;
         }
       });
 
@@ -528,7 +531,6 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       function needsContinuousAnimation(): boolean {
         const s = stateRef.current;
         if (s.playbackMode !== 'idle') return true;
-        if (s.performanceStatus !== 'idle') return true;
         if (s.cameraMotion !== 'manual') return true;
         if (s.poles.some((p) => p.isSpinning && p.spinRpm > 0)) return true;
         if (s.highlightFasteners) return true;
@@ -572,52 +574,11 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
 
         smoothedExploded = THREE.MathUtils.damp(smoothedExploded, s.explodedFactor, 7.5, dt);
 
-        // Update Choreographed Realistic Skinned Athlete Performance
-        let athleteSpinBoost = 0;
         const activeRenderedIdx = Math.max(
           0,
           rendered.findIndex((r) => r.isSelected)
         );
         const activePoleItem = rendered[activeRenderedIdx] ?? rendered[0];
-
-        if (s.performanceStatus !== 'idle' && activePoleItem) {
-          if (s.performanceStatus === 'playing') {
-            performanceTimeSec = Math.min(PERFORMANCE_DURATION_SEC, performanceTimeSec + dt);
-          } else {
-            // Subtle breathing loop in finale pose after 10.5s
-            performanceTimeSec = PERFORMANCE_DURATION_SEC + (elapsedSec % 100) * 0.0001;
-          }
-
-          const sample = evaluatePerformanceTimeline(
-            Math.min(PERFORMANCE_DURATION_SEC, performanceTimeSec)
-          );
-          const stageOffsetY = activePoleItem.rig.mount === 'stage-podium' ? 0.14 : 0;
-          const perfRes = athlete.updatePerformance(
-            s.performanceStatus === 'playing'
-              ? performanceTimeSec
-              : PERFORMANCE_DURATION_SEC + Math.sin(elapsedSec) * 0.001,
-            activePoleItem.x,
-            activePoleItem.z,
-            (activePoleItem.rig.diameterMm / 1000) / 2,
-            stageOffsetY,
-            true,
-            dt
-          );
-          athleteSpinBoost = perfRes.spinBoostRadPerSec;
-
-          if (!perfManualOverride && s.cameraMotion === 'manual') {
-            const camDamp = 1 - Math.exp(-3.4 * dt);
-            camera.position.lerp(perfRes.cameraAnchor, camDamp);
-            controls.target.lerp(perfRes.cameraLookAt, camDamp);
-          }
-
-          if (s.performanceStatus === 'playing' && (sample.finished || now - lastPerfEmit > 120)) {
-            lastPerfEmit = now;
-            s.onPerformanceTick(sample.timeSec, sample.phaseLabel, sample.finished);
-          }
-        } else {
-          athlete.updatePerformance(0, 0, 0, 0.0225, 0, false, dt);
-        }
 
         // Apply kinematics to all active poles in the scene
         const offsets = computeAssemblyOffsets(smoothedProgress, smoothedExploded, elapsedSec);
@@ -634,12 +595,10 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
           const item = rendered[i];
           const handle = polePool[i];
           const isPrimary = item.isSelected;
-          const poleBoost = isPrimary ? athleteSpinBoost : 0;
-          const baseSpinVel =
+          const targetVel =
             item.rig.isSpinning && (!isPrimary || (smoothedProgress > 0.92 && smoothedExploded < 0.1))
               ? (item.rig.spinRpm * Math.PI * 2) / 60
               : 0;
-          const targetVel = Math.max(baseSpinVel, poleBoost);
           spinVels[i] = THREE.MathUtils.damp(spinVels[i], targetVel, 3.6, dt);
           spinAngles[i] += spinVels[i] * dt;
 
@@ -652,48 +611,69 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
           );
         }
 
-        // Dynamic Perspective Camera Animations (Orbit / Hero Crane)
-        if (s.cameraMotion !== 'manual') {
-          const H = s.config.ceilingHeightCm / 100;
-          const cx = s.compareMode ? 0 : activePoleItem?.x ?? 0;
-          const cz = s.compareMode ? 0 : activePoleItem?.z ?? 0;
-
-          if (s.cameraMotion === 'orbit') {
-            const radius = s.compareMode ? 3.2 : 3.55;
-            const ang = elapsedSec * 0.42;
-            const targetPosX = cx + Math.sin(ang) * radius;
-            const targetPosZ = cz + Math.cos(ang) * radius;
-            const targetPosY = H * 0.44 + Math.sin(elapsedSec * 0.65) * 0.28;
-            const k = 1 - Math.exp(-3.2 * dt);
-            camera.position.x = THREE.MathUtils.lerp(camera.position.x, targetPosX, k);
-            camera.position.y = THREE.MathUtils.lerp(camera.position.y, targetPosY, k);
-            camera.position.z = THREE.MathUtils.lerp(camera.position.z, targetPosZ, k);
-            controls.target.lerp(_camGoalTarget.set(cx, H * 0.39, cz), k);
-          } else if (s.cameraMotion === 'crane') {
-            // Hero Crane Sweep: smooth low-to-high ascending/descending architectural reveal
-            const wave = (Math.sin(elapsedSec * 0.55 - Math.PI / 2) + 1) * 0.5;
-            const ang = THREE.MathUtils.lerp(-0.48, 0.55, wave);
-            const dist = THREE.MathUtils.lerp(1.9, 3.1, Math.sin(wave * Math.PI));
-            const targetPosX = cx + Math.sin(ang) * dist;
-            const targetPosZ = cz + Math.cos(ang) * dist;
-            const targetPosY = THREE.MathUtils.lerp(0.32, H * 0.84, wave);
-            const lookY = THREE.MathUtils.lerp(0.28, H * 0.72, wave);
-            const k = 1 - Math.exp(-3.8 * dt);
-            camera.position.x = THREE.MathUtils.lerp(camera.position.x, targetPosX, k);
-            camera.position.y = THREE.MathUtils.lerp(camera.position.y, targetPosY, k);
-            camera.position.z = THREE.MathUtils.lerp(camera.position.z, targetPosZ, k);
-            controls.target.lerp(_camGoalTarget.set(cx, lookY, cz), k);
+        // Camera Sync: Pixel-Accurate Optical AR Projection vs Studio Camera Modes
+        if (s.arCameraActive) {
+          controls.enabled = false;
+          if (Math.abs(camera.fov - s.arMarkers.vfovDeg) > 0.25) {
+            camera.fov = s.arMarkers.vfovDeg;
+            camera.updateProjectionMatrix();
           }
-        } else if (camTransitionActive) {
-          camera.position.lerp(_camGoalPos, 1 - Math.exp(-6.5 * dt));
-          controls.target.lerp(_camGoalTarget, 1 - Math.exp(-6.5 * dt));
-          if (
-            camera.position.distanceTo(_camGoalPos) < 0.015 &&
-            controls.target.distanceTo(_camGoalTarget) < 0.015
-          ) {
-            camera.position.copy(_camGoalPos);
-            controls.target.copy(_camGoalTarget);
-            camTransitionActive = false;
+          const camH = s.arMarkers.cameraHeightM;
+          const dist = s.arMeasurement.distanceM;
+          const pitchRad = (s.arMarkers.cameraPitchDeg * Math.PI) / 180;
+          camera.position.set(0, camH, dist);
+          controls.target.set(0, camH + Math.tan(pitchRad) * dist, 0);
+        } else {
+          if (!controls.enabled && draggingPoleIdx === null) {
+            controls.enabled = true;
+          }
+          if (Math.abs(camera.fov - 44) > 0.25) {
+            camera.fov = 44;
+            camera.updateProjectionMatrix();
+          }
+          // Dynamic Perspective Camera Animations (Orbit / Hero Crane)
+          if (s.cameraMotion !== 'manual') {
+            const H = s.config.ceilingHeightCm / 100;
+            const cx = s.compareMode ? 0 : activePoleItem?.x ?? 0;
+            const cz = s.compareMode ? 0 : activePoleItem?.z ?? 0;
+
+            if (s.cameraMotion === 'orbit') {
+              const radius = s.compareMode ? 3.2 : 3.55;
+              const ang = elapsedSec * 0.42;
+              const targetPosX = cx + Math.sin(ang) * radius;
+              const targetPosZ = cz + Math.cos(ang) * radius;
+              const targetPosY = H * 0.44 + Math.sin(elapsedSec * 0.65) * 0.28;
+              const k = 1 - Math.exp(-3.2 * dt);
+              camera.position.x = THREE.MathUtils.lerp(camera.position.x, targetPosX, k);
+              camera.position.y = THREE.MathUtils.lerp(camera.position.y, targetPosY, k);
+              camera.position.z = THREE.MathUtils.lerp(camera.position.z, targetPosZ, k);
+              controls.target.lerp(_camGoalTarget.set(cx, H * 0.39, cz), k);
+            } else if (s.cameraMotion === 'crane') {
+              // Hero Crane Sweep: smooth low-to-high ascending/descending architectural reveal
+              const wave = (Math.sin(elapsedSec * 0.55 - Math.PI / 2) + 1) * 0.5;
+              const ang = THREE.MathUtils.lerp(-0.48, 0.55, wave);
+              const dist = THREE.MathUtils.lerp(1.9, 3.1, Math.sin(wave * Math.PI));
+              const targetPosX = cx + Math.sin(ang) * dist;
+              const targetPosZ = cz + Math.cos(ang) * dist;
+              const targetPosY = THREE.MathUtils.lerp(0.32, H * 0.84, wave);
+              const lookY = THREE.MathUtils.lerp(0.28, H * 0.72, wave);
+              const k = 1 - Math.exp(-3.8 * dt);
+              camera.position.x = THREE.MathUtils.lerp(camera.position.x, targetPosX, k);
+              camera.position.y = THREE.MathUtils.lerp(camera.position.y, targetPosY, k);
+              camera.position.z = THREE.MathUtils.lerp(camera.position.z, targetPosZ, k);
+              controls.target.lerp(_camGoalTarget.set(cx, lookY, cz), k);
+            }
+          } else if (camTransitionActive) {
+            camera.position.lerp(_camGoalPos, 1 - Math.exp(-6.5 * dt));
+            controls.target.lerp(_camGoalTarget, 1 - Math.exp(-6.5 * dt));
+            if (
+              camera.position.distanceTo(_camGoalPos) < 0.015 &&
+              controls.target.distanceTo(_camGoalTarget) < 0.015
+            ) {
+              camera.position.copy(_camGoalPos);
+              controls.target.copy(_camGoalTarget);
+              camTransitionActive = false;
+            }
           }
         }
 
@@ -889,13 +869,11 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
         polePool,
         poleGeoKeys,
         env,
-        athlete,
         camera,
         controls,
         renderer,
         requestRender,
         startCameraTransition,
-        resetPerformanceClock,
         syncPolesAndEnv,
       };
 
@@ -913,7 +891,6 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
         renderer.domElement.removeEventListener('webglcontextrestored', onContextRestored);
         controls.dispose();
         polePool.forEach((p) => p.dispose());
-        athlete.dispose();
         env.dispose();
         textures.dispose();
         envRT.dispose();
@@ -929,14 +906,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       if (!api.env || !api.renderer) return;
       api.syncPolesAndEnv();
       api.requestRender();
-    }, [config, poles, activePoleId, moveMode, compareMode, compareFinish, arCameraActive]);
-
-    useEffect(() => {
-      if (performanceStatus === 'playing') {
-        sceneApiRef.current.resetPerformanceClock();
-      }
-      sceneApiRef.current.requestRender();
-    }, [performanceStatus, performanceRunId]);
+    }, [config, poles, activePoleId, moveMode, compareMode, compareFinish, arCameraActive, arMarkers, arMeasurement]);
 
     useEffect(() => {
       sceneApiRef.current.requestRender();

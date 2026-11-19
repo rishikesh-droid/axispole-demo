@@ -594,8 +594,7 @@ export function Modals({
                   </h3>
                 </div>
                 <p className="text-xs text-stone-600 leading-relaxed">
-                  Preview the {finish.shortName} pole directly inside your physical room using live
-                  camera pass-through or launch native iOS Quick Look AR at true 1:1 scale.
+                  Measure your real ceiling height and room footprint using your camera, get an automatic mount and extension recommendation, and preview the {finish.shortName} pole at 1:1 scale in your room.
                 </p>
 
                 <div className="flex flex-wrap items-center gap-2.5">
@@ -608,7 +607,7 @@ export function Modals({
                     className="px-4 py-2 text-xs font-semibold rounded-lg bg-stone-900 text-white hover:bg-stone-800 inline-flex items-center gap-1.5 whitespace-nowrap"
                   >
                     <Camera className="w-3.5 h-3.5" aria-hidden="true" />
-                    <span>Launch Live Camera AR Overlay</span>
+                    <span>Launch AR Room Measure</span>
                   </button>
 
                   {!quickLookUrl ? (

@@ -1,4 +1,4 @@
-import { AlertTriangle, CheckCircle2, Move, Sparkles, Wrench, X } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Move, Wrench, X } from 'lucide-react';
 import type {
   BOMSummary,
   ClearanceAnalysis,
@@ -15,7 +15,6 @@ import {
   getWallClearanceMarginM,
   HARDWARE_PARTS,
   isDarkLighting,
-  PERFORMANCE_DURATION_SEC,
   POLE_FINISHES,
 } from '../utils/poleConfig';
 
@@ -29,15 +28,11 @@ interface InspectorCalloutProps {
   compareFinish: PoleFinishId;
   moveMode: boolean;
   lastClamp: PoleClampResult | null;
-  performanceStatus: 'idle' | 'playing' | 'finished';
-  performanceTimeSec: number;
-  performancePhaseLabel: string;
   activeTab: DockTabId;
   activeStepIndex: number;
   selectedPart: HardwarePartId | null;
   onClearSelectedPart: () => void;
   arCameraActive: boolean;
-  onExitArCamera: () => void;
 }
 
 export function InspectorCallout({
@@ -50,16 +45,15 @@ export function InspectorCallout({
   compareFinish,
   moveMode,
   lastClamp,
-  performanceStatus,
-  performanceTimeSec,
-  performancePhaseLabel,
   activeTab,
   activeStepIndex,
   selectedPart,
   onClearSelectedPart,
   arCameraActive,
-  onExitArCamera,
 }: InspectorCalloutProps) {
+  // Hide studio callout during Live AR Room Measurement so the AR HUD has full control
+  if (arCameraActive) return null;
+
   const isDark = isDarkLighting(config.lighting);
   const isNeon = config.lighting === 'mood-neon';
   const finish = POLE_FINISHES[activePole.finish];
@@ -91,15 +85,15 @@ export function InspectorCallout({
   const priceDelta = compareSpec.basePriceUsd - finish.basePriceUsd;
 
   return (
-    <div className="fixed top-15 left-3.5 sm:left-5 z-20 flex flex-col gap-2 w-[238px] sm:w-[258px] pointer-events-none">
-      {/* Minimal Rig Spec Card (Adapts cleanly to Compare Mode & Multi-Pole) */}
+    <div className="fixed top-14 sm:top-15 left-3 right-3 sm:right-auto sm:left-5 z-20 flex flex-col gap-1.5 sm:gap-2 sm:w-[258px] pointer-events-none">
+      {/* Minimal Rig Spec Strip (1-line slim strip on mobile, crisp card on desktop) */}
       <div
-        className={`pointer-events-auto rounded-lg border px-3 py-2 ${surfaceClass}`}
+        className={`pointer-events-auto rounded-xl sm:rounded-lg border px-3 py-1.5 sm:py-2 ${surfaceClass}`}
         data-testid="rig-summary-hud"
       >
         {compareMode ? (
-          <>
-            <div className="flex items-baseline justify-between gap-2">
+          <div className="flex sm:block items-center justify-between gap-2">
+            <div className="flex items-baseline justify-between gap-2 min-w-0">
               <h1 className="text-xs font-semibold tracking-tight truncate">
                 {finish.shortName} vs {compareSpec.shortName}
               </h1>
@@ -107,43 +101,77 @@ export function InspectorCallout({
                 {priceDelta === 0 ? 'Same' : priceDelta > 0 ? `+$${priceDelta}` : `-$${Math.abs(priceDelta)}`}
               </span>
             </div>
-            <div className={`mt-0.5 flex items-center justify-between gap-2 text-[11px] ${mutedClass}`}>
+            <div className={`hidden sm:flex mt-0.5 items-center justify-between gap-2 text-[11px] ${mutedClass}`}>
               <span className="truncate">
                 {activePole.diameterMm}mm · {(config.ceilingHeightCm / 100).toFixed(2)}m
               </span>
               <span className="shrink-0">Side-by-Side</span>
             </div>
-          </>
+          </div>
         ) : (
           <>
-            <div className="flex items-baseline justify-between gap-2">
-              <h1 className="text-xs font-semibold tracking-tight truncate">
-                {poles.length > 1 ? `${activePole.label} · ` : ''}
-                {finish.shortName} · {activePole.diameterMm}mm
-              </h1>
+            {/* Mobile ultra-clean single-line bar */}
+            <div className="flex sm:hidden items-center justify-between gap-2 text-xs">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <h1 className="font-semibold tracking-tight truncate">
+                  {poles.length > 1 ? `P${poles.findIndex((p) => p.id === activePole.id) + 1} · ` : ''}
+                  {finish.shortName}
+                </h1>
+                <span className={mutedClass} aria-hidden="true">·</span>
+                <span className={`font-mono text-[11px] tabular-nums shrink-0 ${mutedClass}`}>
+                  {(config.ceilingHeightCm / 100).toFixed(2)}m
+                </span>
+                <span className={mutedClass} aria-hidden="true">·</span>
+                <span className="inline-flex items-center gap-0.5 shrink-0 text-[11px]">
+                  {clearance.status === 'optimal' ? (
+                    <CheckCircle2
+                      className={`w-3 h-3 shrink-0 ${isNeon ? 'text-cyan-400' : 'text-teal-500'}`}
+                      aria-hidden="true"
+                    />
+                  ) : (
+                    <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0" aria-hidden="true" />
+                  )}
+                  <span className={mutedClass}>
+                    {poles.length > 1 ? `${poles.length}×` : clearanceShort}
+                  </span>
+                </span>
+              </div>
               <span className="font-mono text-xs font-semibold tabular-nums shrink-0">
                 ${bom.totalPriceUsd}
               </span>
             </div>
 
-            <div className={`mt-0.5 flex items-center justify-between gap-2 text-[11px] ${mutedClass}`}>
-              <span className="truncate">
-                {mount.shortName} · {(config.ceilingHeightCm / 100).toFixed(2)}m ·{' '}
-                {activePole.isSpinning ? 'Spin' : 'Static'}
-              </span>
-              <span className="inline-flex items-center gap-1 shrink-0 font-medium">
-                {clearance.status === 'optimal' ? (
-                  <CheckCircle2
-                    className={`w-3 h-3 shrink-0 ${isNeon ? 'text-cyan-400' : 'text-teal-500'}`}
-                    aria-hidden="true"
-                  />
-                ) : (
-                  <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0" aria-hidden="true" />
-                )}
-                <span className={isDark ? 'text-zinc-300' : 'text-stone-700'}>
-                  {poles.length > 1 ? `${poles.length} Poles` : clearanceShort}
+            {/* Desktop crisp 2-line card */}
+            <div className="hidden sm:block">
+              <div className="flex items-baseline justify-between gap-2">
+                <h1 className="text-xs font-semibold tracking-tight truncate">
+                  {poles.length > 1 ? `${activePole.label} · ` : ''}
+                  {finish.shortName} · {activePole.diameterMm}mm
+                </h1>
+                <span className="font-mono text-xs font-semibold tabular-nums shrink-0">
+                  ${bom.totalPriceUsd}
                 </span>
-              </span>
+              </div>
+
+              <div className={`mt-0.5 flex items-center justify-between gap-2 text-[11px] ${mutedClass}`}>
+                <span className="truncate">
+                  {mount.shortName} · {(config.ceilingHeightCm / 100).toFixed(2)}m ·{' '}
+                  {activePole.isSpinning ? 'Spin' : 'Static'}
+                </span>
+                <span className="inline-flex items-center gap-1 shrink-0 font-medium">
+                  {clearance.status === 'optimal' ? (
+                    <CheckCircle2
+                      className={`w-3 h-3 shrink-0 ${isNeon ? 'text-cyan-400' : 'text-teal-500'}`}
+                      aria-hidden="true"
+                    />
+                  ) : (
+                    <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0" aria-hidden="true" />
+                  )}
+                  <span className={isDark ? 'text-zinc-300' : 'text-stone-700'}>
+                    {poles.length > 1 ? `${poles.length} Poles` : clearanceShort}
+                  </span>
+                </span>
+              </div>
             </div>
           </>
         )}
@@ -155,38 +183,10 @@ export function InspectorCallout({
         )}
       </div>
 
-      {/* Live Performance Status Readout */}
-      {performanceStatus !== 'idle' && (
-        <div
-          className={`pointer-events-auto rounded-lg border px-3 py-2 ${surfaceClass}`}
-          data-testid="performance-hud"
-        >
-          <div className="flex items-center justify-between gap-2 text-[11px]">
-            <span className={`inline-flex items-center gap-1 font-semibold ${accentTextClass}`}>
-              <Sparkles className="w-3 h-3 shrink-0" aria-hidden="true" />
-              <span>{performancePhaseLabel}</span>
-            </span>
-            <span className="font-mono tabular-nums font-medium">
-              {Math.min(PERFORMANCE_DURATION_SEC, performanceTimeSec).toFixed(1)}s / {PERFORMANCE_DURATION_SEC.toFixed(1)}s
-            </span>
-          </div>
-          <div className={`mt-1.5 h-1 w-full rounded-full overflow-hidden ${isDark ? 'bg-white/10' : 'bg-stone-200'}`}>
-            <div
-              className={`h-full transition-all duration-100 ${
-                isNeon ? 'bg-cyan-400' : 'bg-amber-500'
-              }`}
-              style={{
-                width: `${Math.min(100, (performanceTimeSec / PERFORMANCE_DURATION_SEC) * 100)}%`,
-              }}
-            />
-          </div>
-        </div>
-      )}
-
       {/* Move / Placement Clearance Readout */}
       {moveMode && !compareMode && (
         <div
-          className={`pointer-events-auto rounded-lg border px-3 py-1.5 ${surfaceClass}`}
+          className={`pointer-events-auto rounded-xl sm:rounded-lg border px-3 py-1.5 ${surfaceClass}`}
           data-testid="move-mode-hud"
         >
           <div className="flex items-center justify-between gap-2 text-[11px]">
@@ -217,7 +217,7 @@ export function InspectorCallout({
       {/* Whisper-Compact Selected Hardware OR Assembly Step Card */}
       {partSpec ? (
         <div
-          className={`pointer-events-auto rounded-lg border px-3 py-2 ${surfaceClass}`}
+          className={`pointer-events-auto rounded-xl sm:rounded-lg border px-3 py-2 ${surfaceClass}`}
           data-testid="hardware-inspector-card"
         >
           <div className="flex items-start justify-between gap-2">
@@ -240,40 +240,25 @@ export function InspectorCallout({
         </div>
       ) : activeTab === 'assembly' ? (
         <div
-          className={`pointer-events-auto rounded-lg border px-3 py-2 ${surfaceClass}`}
+          className={`pointer-events-auto rounded-xl sm:rounded-lg border px-3 py-1.5 sm:py-2 ${surfaceClass}`}
           data-testid="assembly-step-card"
         >
           <div className="flex items-center justify-between gap-2">
             <span className={`inline-flex items-center gap-1 text-[11px] font-semibold ${accentTextClass}`}>
               <Wrench className="w-3 h-3" aria-hidden="true" />
               <span>
-                Step {stepSpec.step}/{ASSEMBLY_STEPS.length}
+                Step {stepSpec.step}/{ASSEMBLY_STEPS.length} · {stepSpec.shortTitle}
               </span>
             </span>
-            <span className="font-mono text-[11px] font-semibold tabular-nums">
+            <span className="font-mono text-[11px] font-semibold tabular-nums shrink-0">
               {stepSpec.torqueNm > 0 ? `${stepSpec.torqueNm.toFixed(1)} N·m` : 'Seat'}
             </span>
           </div>
-          <h2 className="text-xs font-semibold mt-0.5 leading-tight truncate">
-            {stepSpec.shortTitle} · <span className={`font-normal ${mutedClass}`}>{stepSpec.toolRequired}</span>
-          </h2>
-          <p className={`mt-0.5 text-[11px] truncate ${mutedClass}`}>{stepSpec.fastener}</p>
+          <p className={`hidden sm:block mt-0.5 text-[11px] truncate ${mutedClass}`}>
+            {stepSpec.fastener} · {stepSpec.toolRequired}
+          </p>
         </div>
       ) : null}
-
-      {/* Live AR Pass-Through Exit Banner */}
-      {arCameraActive && (
-        <div className="pointer-events-auto rounded-lg border border-violet-400/50 bg-[#0e1018]/92 text-zinc-100 px-3 py-2 flex items-center justify-between gap-2">
-          <span className="text-[11px] font-medium">AR Overlay</span>
-          <button
-            type="button"
-            onClick={onExitArCamera}
-            className="px-2 py-0.5 text-[11px] font-semibold bg-violet-500 text-white rounded-xs hover:bg-violet-400 whitespace-nowrap shrink-0"
-          >
-            Exit AR
-          </button>
-        </div>
-      )}
     </div>
   );
 }

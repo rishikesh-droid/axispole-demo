@@ -11,7 +11,6 @@ import type {
   HardwarePartSpec,
   HeightSolution,
   LightingPreset,
-  PerformanceTimelineSample,
   PoleClampResult,
   PoleDiameterMm,
   PoleFinishId,
@@ -23,7 +22,6 @@ import type {
 export const MIN_ROOM_SIZE_M = 3.0;
 export const MAX_ROOM_SIZE_M = 7.0;
 export const MAX_POLES_IN_STUDIO = 4;
-export const PERFORMANCE_DURATION_SEC = 10.5;
 
 export const LIGHTING_PRESETS: {
   id: LightingPreset;
@@ -633,79 +631,6 @@ export function createNextPoleInstance(
     spinRpm: 16,
     x: chosen.x,
     z: chosen.z,
-  };
-}
-
-/**
- * Pure deterministic choreographer timeline for the 10.5s athlete performance.
- */
-export function evaluatePerformanceTimeline(timeSec: number): PerformanceTimelineSample {
-  const t = Math.max(0, Math.min(PERFORMANCE_DURATION_SEC, timeSec));
-  const totalProgress = t / PERFORMANCE_DURATION_SEC;
-
-  if (t < 2.2) {
-    return {
-      phase: 'walk-in',
-      phaseLabel: 'Studio Approach',
-      phaseProgress: t / 2.2,
-      totalProgress,
-      timeSec: t,
-      durationSec: PERFORMANCE_DURATION_SEC,
-      finished: false,
-    };
-  }
-  if (t < 3.1) {
-    return {
-      phase: 'grip',
-      phaseLabel: 'Grip & Launch',
-      phaseProgress: (t - 2.2) / 0.9,
-      totalProgress,
-      timeSec: t,
-      durationSec: PERFORMANCE_DURATION_SEC,
-      finished: false,
-    };
-  }
-  if (t < 5.5) {
-    return {
-      phase: 'spin',
-      phaseLabel: 'Attitude Spin',
-      phaseProgress: (t - 3.1) / 2.4,
-      totalProgress,
-      timeSec: t,
-      durationSec: PERFORMANCE_DURATION_SEC,
-      finished: false,
-    };
-  }
-  if (t < 8.1) {
-    return {
-      phase: 'aerial-hold',
-      phaseLabel: 'Aerial Extension',
-      phaseProgress: (t - 5.5) / 2.6,
-      totalProgress,
-      timeSec: t,
-      durationSec: PERFORMANCE_DURATION_SEC,
-      finished: false,
-    };
-  }
-  if (t < 9.5) {
-    return {
-      phase: 'dismount',
-      phaseLabel: 'Spiral Descent',
-      phaseProgress: (t - 8.1) / 1.4,
-      totalProgress,
-      timeSec: t,
-      durationSec: PERFORMANCE_DURATION_SEC,
-      finished: false,
-    };
-  }
-  return {
-    phase: 'finale-pose',
-    phaseLabel: 'Finale Pose',
-    phaseProgress: Math.min(1, (t - 9.5) / 1.0),
-    totalProgress,
-    timeSec: t,
-    durationSec: PERFORMANCE_DURATION_SEC,
-    finished: t >= PERFORMANCE_DURATION_SEC - 1e-4,
   };
 }
 
