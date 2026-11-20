@@ -8,14 +8,18 @@ import {
   createInitialPoles,
   createNextPoleInstance,
   DEFAULT_CONFIG,
+  ENVIRONMENT_PRESETS,
   exportBOMToCSV,
   formatHeightMetricAndImperial,
   generateBOM,
   generateMultiPoleBOM,
+  getEffectiveVaultAngleRad,
   getMinPoleSeparationM,
   getWallClearanceMarginM,
   isDarkLighting,
   LIGHTING_PRESETS,
+  MAX_POLE_LENGTH_CM,
+  MIN_POLE_FREE_RADIUS_M,
 } from './poleConfig.ts';
 import type { BaseMountId, PoleFinishId } from '../types/pole.ts';
 
@@ -124,4 +128,17 @@ test('formatHeightMetricAndImperial and exportBOMToCSV output expected structure
   const csv = exportBOMToCSV(bom, DEFAULT_CONFIG);
   assert.ok(csv.includes('SKU,Component,Material,Qty'));
   assert.ok(csv.includes('AXP-BRA-45'));
+});
+
+test('ENVIRONMENT_PRESETS exposes all 5 room styles and vault/max-length helpers return valid bounds', () => {
+  const ids = ENVIRONMENT_PRESETS.map((p) => p.id);
+  assert.deepEqual(ids, ['studio', 'home', 'penthouse', 'industrial', 'velvet-club']);
+  assert.equal(MAX_POLE_LENGTH_CM, 250);
+  assert.equal(MIN_POLE_FREE_RADIUS_M, 1.25);
+
+  assert.equal(getEffectiveVaultAngleRad(274, 5.4, 'tension', 22), 0);
+  assert.equal(getEffectiveVaultAngleRad(274, 5.4, 'stage-podium', 22), 0);
+  assert.equal(getEffectiveVaultAngleRad(274, 5.4, 'permanent-ceiling', 22), 0);
+  const vaultRad = getEffectiveVaultAngleRad(274, 5.4, 'vaulted-beam', 22);
+  assert.ok(vaultRad > 0.15 && vaultRad <= (22 * Math.PI) / 180 + 1e-6);
 });

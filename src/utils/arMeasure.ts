@@ -3,7 +3,9 @@ import {
   analyzeFloorClearance,
   BASE_MOUNTS,
   calculateHeightSolution,
+  MAX_POLE_LENGTH_CM,
   MAX_ROOM_SIZE_M,
+  MIN_POLE_FREE_RADIUS_M,
   MIN_ROOM_SIZE_M,
 } from './poleConfig.ts';
 
@@ -43,6 +45,23 @@ export interface ARMeasurementResult {
   rightWallXM: number;
   /** Radial spin clearance in meters from the pole's current lateral/depth anchor to nearest room boundary */
   spinRadiusClearanceM: number;
+  /** Depth clearance from camera/wall plane to pole center in meters */
+  depthClearanceM: number;
+  /** Distance from pole center to left and right boundaries in meters */
+  leftClearanceM: number;
+  rightClearanceM: number;
+  /** Required free space radius around pole (1.25m) */
+  requiredFreeRadiusM: number;
+  /** True only when depth and lateral free space around pole are >= 1.25m */
+  canPlacePole: boolean;
+  /** Reason pole placement is blocked when canPlacePole === false */
+  placementBlockReason: string | null;
+  /** Maximum physical pole length in cm (250cm = 2.50m) */
+  maxPoleLengthCm: number;
+  /** True when detected ceiling exceeds 2.50m max pole length */
+  exceedsMaxPoleLength: boolean;
+  /** Extra height above 2.50m in cm requiring cushion above/below or open-ceiling base */
+  overHeightGapCm: number;
   /** Estimated optical & geometric measurement accuracy percentage (0..99) */
   accuracyPct: number;
   /** Exact projected screen coordinates (0..1) of the 3D pole top dome & floor base hub */
@@ -228,14 +247,35 @@ export function calculateARMeasurement(
   const poleOffsetXM = Number(((s.poleX - 0.5) * visibleWidthAtPlaneM).toFixed(2));
   const poleDepthZM = 0;
 
-  // Compute actual radial spin clearance at the pole's current lateral position
-  const halfRoomW = roomWidthM * 0.5;
-  const halfRoomD = roomDepthM * 0.5;
-  const leftClearanceM = Math.max(0.25, Math.min(halfRoomW + poleOffsetXM, Math.abs(poleOffsetXM - leftWallXM) * edgeBoost));
-  const rightClearanceM = Math.max(0.25, Math.min(halfRoomW - poleOffsetXM, Math.abs(rightWallXM - poleOffsetXM) * edgeBoost));
-  const spinRadiusClearanceM = Number(
-    Math.max(0.25, Math.min(leftClearanceM, rightClearanceM, halfRoomD)).toFixed(2)
+  // Compute depth & lateral free-space clearance around the pole (requires >= 1.25m free radius)
+  const effectiveSpanW = s.aspect >= 0.85 ? Math.max(1.2, rawRoomWidthM) : roomWidthM;
+  const wallFrac = Math.max(
+    0.02,
+    Math.min(0.98, (s.poleX - s.leftCornerX) / Math.max(0.12, s.rightCornerX - s.leftCornerX))
   );
+  const leftClearanceM = Number((wallFrac * effectiveSpanW).toFixed(2));
+  const rightClearanceM = Number(((1 - wallFrac) * effectiveSpanW).toFixed(2));
+  const depthClearanceM = Number(Math.min(distanceM * 0.68, roomDepthM * 0.5).toFixed(2));
+  const spinRadiusClearanceM = Number(
+    Math.max(0.25, Math.min(leftClearanceM, rightClearanceM, depthClearanceM)).toFixed(2)
+  );
+
+  const canPlacePole =
+    depthClearanceM >= MIN_POLE_FREE_RADIUS_M &&
+    leftClearanceM >= MIN_POLE_FREE_RADIUS_M &&
+    rightClearanceM >= MIN_POLE_FREE_RADIUS_M;
+
+  let placementBlockReason: string | null = null;
+  if (depthClearanceM < MIN_POLE_FREE_RADIUS_M) {
+    placementBlockReason = `Too close to wall (${depthClearanceM.toFixed(2)}m depth) — step back for ${MIN_POLE_FREE_RADIUS_M.toFixed(2)}m free space`;
+  } else if (leftClearanceM < MIN_POLE_FREE_RADIUS_M) {
+    placementBlockReason = `Too close to left wall (${leftClearanceM.toFixed(2)}m) — slide pole right for ${MIN_POLE_FREE_RADIUS_M.toFixed(2)}m clearance`;
+  } else if (rightClearanceM < MIN_POLE_FREE_RADIUS_M) {
+    placementBlockReason = `Too close to right wall (${rightClearanceM.toFixed(2)}m) — slide pole left for ${MIN_POLE_FREE_RADIUS_M.toFixed(2)}m clearance`;
+  }
+
+  const exceedsMaxPoleLength = ceilingHeightCm > MAX_POLE_LENGTH_CM;
+  const overHeightGapCm = Math.max(0, ceilingHeightCm - MAX_POLE_LENGTH_CM);
 
   // Determine optimal mount recommendation based on predicted height
   let recommendedMount: BaseMountId = 'tension';
@@ -255,12 +295,15 @@ export function calculateARMeasurement(
   );
   const roomClearance = analyzeFloorClearance(roomWidthM, roomDepthM, recommendedMount);
 
-  // Incorporate lateral pole position into dynamic clearance status
+  // Incorporate depth & lateral free-space clearance into dynamic status
   let clearanceStatus = roomClearance.status;
   let clearanceLabel = roomClearance.label;
-  if (spinRadiusClearanceM < 0.65 && clearanceStatus === 'optimal') {
+  if (!canPlacePole) {
+    clearanceStatus = 'restricted';
+    clearanceLabel = `Under 1.25m free space (${spinRadiusClearanceM.toFixed(2)}m)`;
+  } else if (spinRadiusClearanceM < 1.4 && clearanceStatus === 'optimal') {
     clearanceStatus = 'caution';
-    clearanceLabel = `Tight wall offset (${spinRadiusClearanceM.toFixed(2)}m radial)`;
+    clearanceLabel = `Tight spin clearance (${spinRadiusClearanceM.toFixed(2)}m radial)`;
   }
 
   const extensionsLabel =
@@ -318,6 +361,15 @@ export function calculateARMeasurement(
     leftWallXM,
     rightWallXM,
     spinRadiusClearanceM,
+    depthClearanceM,
+    leftClearanceM,
+    rightClearanceM,
+    requiredFreeRadiusM: MIN_POLE_FREE_RADIUS_M,
+    canPlacePole,
+    placementBlockReason,
+    maxPoleLengthCm: MAX_POLE_LENGTH_CM,
+    exceedsMaxPoleLength,
+    overHeightGapCm,
     accuracyPct,
     ceilingScreenU: topProj.u,
     ceilingScreenV: topProj.v,

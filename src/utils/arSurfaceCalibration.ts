@@ -3,7 +3,9 @@ import {
   analyzeFloorClearance,
   BASE_MOUNTS,
   calculateHeightSolution,
+  MAX_POLE_LENGTH_CM,
   MAX_ROOM_SIZE_M,
+  MIN_POLE_FREE_RADIUS_M,
   MIN_ROOM_SIZE_M,
 } from './poleConfig.ts';
 import {
@@ -403,21 +405,42 @@ export function buildMeasurementFromSurfaceCalibration(
   );
 
   // Dynamic clearance from the pole's current (poleOffsetXM, centroidZ) to all 4 calibrated floor edges
-  const spinRadiusClearanceM = Number(
-    Math.max(
-      0.25,
-      Math.min(
-        distPointToSegment2D(poleOffsetXM, cal.centroidZ, bl.x, bl.z, br.x, br.z),
-        distPointToSegment2D(poleOffsetXM, cal.centroidZ, br.x, br.z, fr.x, fr.z),
-        distPointToSegment2D(poleOffsetXM, cal.centroidZ, fr.x, fr.z, fl.x, fl.z),
-        distPointToSegment2D(poleOffsetXM, cal.centroidZ, fl.x, fl.z, bl.x, bl.z)
-      )
-    ).toFixed(2)
+  const backDist = distPointToSegment2D(poleOffsetXM, cal.centroidZ, bl.x, bl.z, br.x, br.z);
+  const frontDist = distPointToSegment2D(poleOffsetXM, cal.centroidZ, fr.x, fr.z, fl.x, fl.z);
+  const leftClearanceM = Number(
+    distPointToSegment2D(poleOffsetXM, cal.centroidZ, fl.x, fl.z, bl.x, bl.z).toFixed(2)
   );
+  const rightClearanceM = Number(
+    distPointToSegment2D(poleOffsetXM, cal.centroidZ, br.x, br.z, fr.x, fr.z).toFixed(2)
+  );
+  const depthClearanceM = Number(
+    Math.min(backDist, frontDist, Math.max(0.3, -cal.centroidZ)).toFixed(2)
+  );
+  const spinRadiusClearanceM = Number(
+    Math.max(0.25, Math.min(depthClearanceM, leftClearanceM, rightClearanceM)).toFixed(2)
+  );
+
+  const canPlacePole = spinRadiusClearanceM >= MIN_POLE_FREE_RADIUS_M && distanceM >= 1.65;
+  let placementBlockReason: string | null = null;
+  if (!canPlacePole) {
+    if (depthClearanceM < MIN_POLE_FREE_RADIUS_M) {
+      placementBlockReason = `Calibrated zone too shallow (${depthClearanceM.toFixed(2)}m depth) — expand floor points or step back for ${MIN_POLE_FREE_RADIUS_M.toFixed(2)}m clearance`;
+    } else if (leftClearanceM < MIN_POLE_FREE_RADIUS_M) {
+      placementBlockReason = `Too close to left edge (${leftClearanceM.toFixed(2)}m) — need ${MIN_POLE_FREE_RADIUS_M.toFixed(2)}m free space`;
+    } else {
+      placementBlockReason = `Too close to right edge (${rightClearanceM.toFixed(2)}m) — need ${MIN_POLE_FREE_RADIUS_M.toFixed(2)}m free space`;
+    }
+  }
+
+  const exceedsMaxPoleLength = cal.ceilingHeightCm > MAX_POLE_LENGTH_CM;
+  const overHeightGapCm = Math.max(0, cal.ceilingHeightCm - MAX_POLE_LENGTH_CM);
 
   let clearanceStatus = roomClearance.status;
   let clearanceLabel = roomClearance.label;
-  if (spinRadiusClearanceM < 0.65 && clearanceStatus === 'optimal') {
+  if (!canPlacePole) {
+    clearanceStatus = 'restricted';
+    clearanceLabel = `Under 1.25m free space (${spinRadiusClearanceM.toFixed(2)}m)`;
+  } else if (spinRadiusClearanceM < 1.4 && clearanceStatus === 'optimal') {
     clearanceStatus = 'caution';
     clearanceLabel = `Tight edge clearance (${spinRadiusClearanceM.toFixed(2)}m)`;
   }
@@ -442,6 +465,15 @@ export function buildMeasurementFromSurfaceCalibration(
     leftWallXM: bl.x,
     rightWallXM: br.x,
     spinRadiusClearanceM,
+    depthClearanceM,
+    leftClearanceM,
+    rightClearanceM,
+    requiredFreeRadiusM: MIN_POLE_FREE_RADIUS_M,
+    canPlacePole,
+    placementBlockReason,
+    maxPoleLengthCm: MAX_POLE_LENGTH_CM,
+    exceedsMaxPoleLength,
+    overHeightGapCm,
     accuracyPct: cal.accuracyScore,
     ceilingScreenU: topProj.u,
     ceilingScreenV: topProj.v,

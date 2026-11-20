@@ -15,6 +15,7 @@ import {
   getWallClearanceMarginM,
   HARDWARE_PARTS,
   isDarkLighting,
+  MAX_POLE_LENGTH_CM,
   POLE_FINISHES,
 } from '../utils/poleConfig';
 
@@ -186,6 +187,18 @@ export function InspectorCallout({
             </div>
           </>
         )}
+
+        {config.ceilingHeightCm > MAX_POLE_LENGTH_CM &&
+          activePole.mount !== 'stage-podium' && (
+            <p className={`mt-1 text-[10px] leading-tight ${accentTextClass}`}>
+              2.50m Max Pole ·{' '}
+              {config.cushionPosition === 'below'
+                ? `+${config.ceilingHeightCm - MAX_POLE_LENGTH_CM}cm Floor Cushion`
+                : config.cushionPosition === 'above'
+                  ? `+${config.ceilingHeightCm - MAX_POLE_LENGTH_CM}cm Ceiling Cushion`
+                  : `Add +${config.ceilingHeightCm - MAX_POLE_LENGTH_CM}cm Cushion or Open-Ceiling Base`}
+            </p>
+          )}
 
         {!bom.heightSolution.isValid && bom.heightSolution.warning && (
           <p className="mt-1 text-[11px] text-rose-400 leading-tight">

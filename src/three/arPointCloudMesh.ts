@@ -136,7 +136,7 @@ export function createARPointCloudRig(scene: THREE.Scene): ARPointCloudRigHandle
     floorPins.push(disc);
   }
 
-  // 5. Floor Pole Spin-Clearance Ring (0.85m radius visual footprint on real floor)
+  // 5. Floor Pole Free-Space Clearance Ring (1.25m required free-space radius around pole)
   const ringSegs = 48;
   const ringPts: THREE.Vector3[] = [];
   const baseHubPts: THREE.Vector3[] = [];
@@ -145,7 +145,7 @@ export function createARPointCloudRig(scene: THREE.Scene): ARPointCloudRigHandle
     const a = (i / ringSegs) * Math.PI * 2;
     const ca = Math.cos(a);
     const sa = Math.sin(a);
-    ringPts.push(new THREE.Vector3(ca * 0.85, 0.018, sa * 0.85));
+    ringPts.push(new THREE.Vector3(ca * 1.25, 0.018, sa * 1.25));
     baseHubPts.push(new THREE.Vector3(ca * 0.21, 0.019, sa * 0.21));
     ceilHaloPts.push(new THREE.Vector3(ca * 0.23, 0, sa * 0.23));
   }
@@ -314,18 +314,21 @@ export function createARPointCloudRig(scene: THREE.Scene): ARPointCloudRigHandle
         wireColAttr.needsUpdate = true;
       }
 
-      // 3. Dual floor laser footprint rings + Ceiling top-dome contact laser ring
-      const isCaution = measurement.clearanceStatus !== 'optimal';
-      ringMat.color.setHex(isCaution ? 0xfbbf24 : 0x22d3ee);
+      // 3. Dual floor laser footprint rings (1.25m free-space ring + base ring) & Ceiling contact halo
+      const isBlocked = !measurement.canPlacePole;
+      const isCaution = measurement.clearanceStatus === 'caution';
+      ringMat.color.setHex(isBlocked ? 0xef4444 : isCaution ? 0xfbbf24 : 0x22d3ee);
       floorRing.visible = true;
-      ringMat.opacity = phase === 'pole-ready' ? 0.5 : 0.28;
+      ringMat.opacity = isBlocked ? 0.82 : phase === 'pole-ready' ? 0.5 : 0.28;
       floorRing.position.set(measurement.poleOffsetXM, 0, calibratedZ);
 
+      baseHubMat.color.setHex(isBlocked ? 0xef4444 : 0x34d399);
       baseHubRing.visible = true;
-      baseHubMat.opacity = phase === 'pole-ready' ? 0.68 : 0.35;
+      baseHubMat.opacity = isBlocked ? 0.78 : phase === 'pole-ready' ? 0.68 : 0.35;
       baseHubRing.position.set(measurement.poleOffsetXM, 0, calibratedZ);
 
-      ceilingHaloRing.visible = true;
+      ceilingHaloRing.visible =
+        !isBlocked && measurement.recommendedMount !== 'stage-podium';
       ceilHaloMat.opacity = phase === 'pole-ready' ? 0.62 : 0.38;
       ceilingHaloRing.position.set(
         measurement.poleOffsetXM,

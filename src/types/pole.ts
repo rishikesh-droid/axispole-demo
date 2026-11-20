@@ -4,7 +4,14 @@ export type BaseMountId = 'tension' | 'permanent-ceiling' | 'vaulted-beam' | 'st
 
 export type PoleDiameterMm = 40 | 45 | 50;
 
-export type EnvironmentPreset = 'studio' | 'home';
+export type EnvironmentPreset =
+  | 'studio'
+  | 'home'
+  | 'penthouse'
+  | 'industrial'
+  | 'velvet-club';
+
+export type CushionPosition = 'none' | 'above' | 'below';
 
 export type LightingPreset = 'studio-daylight' | 'mood-neon' | 'pro-spotlight';
 
@@ -183,6 +190,7 @@ export interface PoleRigConfig {
   roomDepthM: number;
   showClearanceRing: boolean;
   vaultAngleDeg: number;
+  cushionPosition?: CushionPosition;
 }
 
 export interface AssemblyPartOffsets {

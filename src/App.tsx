@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   CameraFocusId,
   CameraMotionMode,
+  CushionPosition,
   DockTabId,
   HardwarePartId,
   ModalId,
@@ -19,6 +20,7 @@ import {
   DEFAULT_CONFIG,
   generateMultiPoleBOM,
   isDarkLighting,
+  MAX_POLE_LENGTH_CM,
   MAX_POLES_IN_STUDIO,
   MIN_ROOM_SIZE_M,
 } from './utils/poleConfig';
@@ -79,6 +81,7 @@ export default function App() {
   const [arFloorTaps, setArFloorTaps] = useState<FloorTapPoint2D[]>([]);
   const [arPointCloud, setArPointCloud] = useState<ARPoint3D[]>([]);
   const [arShowPointCloud, setArShowPointCloud] = useState(false);
+  const [arOpenCeilingMode, setArOpenCeilingMode] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const viewportRef = useRef<PoleViewportHandle | null>(null);
@@ -324,12 +327,24 @@ export default function App() {
 
   const handleAutoSyncARRoom = useCallback(
     (result: ARMeasurementResult, silent = false) => {
+      if (!result.canPlacePole && !silent) return;
       if (!silent) soundFx.playMetalSeat();
       const clampedHeightCm = Math.max(225, Math.min(350, result.ceilingHeightCm));
-      handleChangeConfig({
-        ceilingHeightCm: clampedHeightCm,
-        roomWidthM: result.roomWidthM,
-        roomDepthM: result.roomDepthM,
+      const targetMount = arOpenCeilingMode ? 'stage-podium' : result.recommendedMount;
+      setConfig((prev) => {
+        const nextCushion: CushionPosition =
+          targetMount === 'stage-podium'
+            ? 'none'
+            : clampedHeightCm > MAX_POLE_LENGTH_CM && (prev.cushionPosition ?? 'none') === 'none'
+              ? 'above'
+              : (prev.cushionPosition ?? 'none');
+        return {
+          ...prev,
+          ceilingHeightCm: clampedHeightCm,
+          roomWidthM: result.roomWidthM,
+          roomDepthM: result.roomDepthM,
+          cushionPosition: nextCushion,
+        };
       });
       setPoles((prev) =>
         prev.map((p) => {
@@ -340,12 +355,12 @@ export default function App() {
             0,
             result.roomWidthM,
             result.roomDepthM,
-            result.recommendedMount,
+            targetMount,
             others
           );
           return {
             ...p,
-            mount: result.recommendedMount,
+            mount: targetMount,
             diameterMm: result.recommendedDiameterMm,
             x: clampedPos.x,
             z: clampedPos.z,
@@ -353,7 +368,7 @@ export default function App() {
         })
       );
     },
-    [handleChangeConfig, activePole.id]
+    [activePole.id, arOpenCeilingMode]
   );
 
   const startArCamera = useCallback(async () => {
@@ -371,6 +386,7 @@ export default function App() {
     setArFloorTaps([]);
     setArPointCloud([]);
     setArShowPointCloud(false);
+    setArOpenCeilingMode(false);
     setArCameraActive(true);
     setArCameraError(null);
 
@@ -487,11 +503,7 @@ export default function App() {
             className="w-full h-full object-cover"
           />
           {arCameraError && (
-            <div className="absolute inset-0 bg-gradient-to-b from-[#131620] via-[#0d1018] to-[#090b11] pointer-events-none flex items-start justify-center pt-16 px-4">
-              <div className="px-3 py-1.5 rounded-lg bg-black/75 border border-white/15 text-zinc-300 text-[11px] text-center">
-                {arCameraError}
-              </div>
-            </div>
+            <div className="absolute inset-0 bg-gradient-to-b from-[#131620] via-[#0d1018] to-[#090b11] pointer-events-none" />
           )}
         </div>
       )}
@@ -531,6 +543,7 @@ export default function App() {
           arShowPointCloud={arShowPointCloud}
           arSurfaceCalibration={arSurfaceCalibration}
           arPartialFloorPoints={arPartialFloorPoints}
+          arOpenCeilingMode={arOpenCeilingMode}
         />
       </main>
 
@@ -553,8 +566,20 @@ export default function App() {
           onToggleShowPointCloud={() => setArShowPointCloud((v) => !v)}
           activeFinish={activePole.finish}
           isSpinning={activePole.isSpinning}
+          cushionPosition={config.cushionPosition ?? 'none'}
+          arOpenCeilingMode={arOpenCeilingMode}
           onChangeFinish={(finish) => handleChangeActivePole({ finish })}
           onToggleSpin={() => handleChangeActivePole({ isSpinning: !activePole.isSpinning })}
+          onChangeCushionPosition={(pos) => {
+            setArOpenCeilingMode(false);
+            handleChangeConfig({ cushionPosition: pos });
+          }}
+          onSwitchToOpenCeiling={() => {
+            setArOpenCeilingMode(true);
+            handleChangeConfig({ cushionPosition: 'none' });
+            handleChangeActivePole({ mount: 'stage-podium' });
+          }}
+          onRetryCamera={startArCamera}
           onAutoSyncRoom={handleAutoSyncARRoom}
           onExit={stopArCamera}
         />

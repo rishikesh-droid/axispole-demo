@@ -7,12 +7,18 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import {
+  AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  CameraOff,
   Check,
+  CircleDot,
   Compass,
   Crosshair,
   Minus,
   MoveHorizontal,
   Plus,
+  RefreshCw,
   RotateCw,
   ScanLine,
   SlidersHorizontal,
@@ -20,7 +26,7 @@ import {
   Undo2,
   X,
 } from 'lucide-react';
-import type { PoleFinishId } from '../types/pole';
+import type { CushionPosition, PoleFinishId } from '../types/pole';
 import {
   calculateARMeasurement,
   clampARMarkers,
@@ -49,6 +55,8 @@ import type { ARScanPhase } from '../three/arPointCloudMesh';
 import {
   BASE_MOUNTS,
   formatHeightMetricAndImperial,
+  MAX_POLE_LENGTH_M,
+  MIN_POLE_FREE_RADIUS_M,
   POLE_FINISHES,
 } from '../utils/poleConfig';
 import { getPoleMaterialAvatars } from '../utils/materialThumbnails';
@@ -70,8 +78,13 @@ interface ARMeasurementOverlayProps {
   onToggleShowPointCloud: () => void;
   activeFinish: PoleFinishId;
   isSpinning: boolean;
+  cushionPosition: CushionPosition;
+  arOpenCeilingMode: boolean;
   onChangeFinish: (finish: PoleFinishId) => void;
   onToggleSpin: () => void;
+  onChangeCushionPosition: (pos: CushionPosition) => void;
+  onSwitchToOpenCeiling: () => void;
+  onRetryCamera: () => void;
   onAutoSyncRoom: (result: ARMeasurementResult, silent?: boolean) => void;
   onExit: () => void;
 }
@@ -95,8 +108,13 @@ export function ARMeasurementOverlay({
   onUpdatePointCloud,
   activeFinish,
   isSpinning,
+  cushionPosition,
+  arOpenCeilingMode,
   onChangeFinish,
   onToggleSpin,
+  onChangeCushionPosition,
+  onSwitchToOpenCeiling,
+  onRetryCamera,
   onAutoSyncRoom,
   onExit,
 }: ARMeasurementOverlayProps) {
@@ -106,6 +124,13 @@ export function ARMeasurementOverlay({
   const [showCalibPanel, setShowCalibPanel] = useState(false);
   const [tapWarning, setTapWarning] = useState<string | null>(null);
   const [lockToast, setLockToast] = useState<string | null>(null);
+  const [dismissedUnsupportedPrompt, setDismissedUnsupportedPrompt] = useState(false);
+
+  useEffect(() => {
+    if (arCameraError) {
+      setDismissedUnsupportedPrompt(false);
+    }
+  }, [arCameraError]);
 
   const [scanAcc, setScanAcc] = useState<RoomScanAccumulator>(() =>
     createRoomScanAccumulator(markers)
@@ -549,7 +574,11 @@ export function ARMeasurementOverlay({
         <>
           {/* Vertical Laser Plumb Line connecting Ceiling Dome to Floor Base */}
           <div
-            className="absolute w-px -translate-x-1/2 pointer-events-none bg-gradient-to-b from-violet-300/65 via-cyan-300/40 to-emerald-300/65"
+            className={`absolute w-px -translate-x-1/2 pointer-events-none ${
+              measurement.canPlacePole
+                ? 'bg-gradient-to-b from-violet-300/65 via-cyan-300/40 to-emerald-300/65'
+                : 'bg-gradient-to-b from-rose-400/65 via-rose-400/25 to-rose-400/65'
+            }`}
             style={{
               left: poleXPct,
               top: ceilPct,
@@ -558,9 +587,21 @@ export function ARMeasurementOverlay({
             aria-hidden="true"
           >
             {/* Top Dome Laser Reticle Dot */}
-            <div className="absolute -top-1.5 left-1/2 -translate-x-1/2 w-3 h-3 rounded-full border border-violet-300 bg-violet-400/35" />
+            <div
+              className={`absolute -top-1.5 left-1/2 -translate-x-1/2 w-3 h-3 rounded-full border ${
+                measurement.canPlacePole
+                  ? 'border-violet-300 bg-violet-400/35'
+                  : 'border-rose-400 bg-rose-500/35'
+              }`}
+            />
             {/* Bottom Base Laser Reticle Dot */}
-            <div className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 w-3 h-3 rounded-full border border-cyan-300 bg-cyan-400/35" />
+            <div
+              className={`absolute -bottom-1.5 left-1/2 -translate-x-1/2 w-3 h-3 rounded-full border ${
+                measurement.canPlacePole
+                  ? 'border-cyan-300 bg-cyan-400/35'
+                  : 'border-rose-400 bg-rose-500/35'
+              }`}
+            />
           </div>
 
           {/* Slim Ceiling Alignment Handle */}
@@ -657,7 +698,9 @@ export function ARMeasurementOverlay({
             style={{ left: poleXPct, top: midYPct }}
             aria-label="Slide pole left or right on camera"
             title="Drag left or right to position pole"
-            className="absolute -translate-x-1/2 -translate-y-1/2 pointer-events-auto touch-none w-9 h-9 rounded-full bg-black/70 border border-white/40 text-white flex items-center justify-center shadow-lg active:scale-95"
+            className={`absolute -translate-x-1/2 -translate-y-1/2 pointer-events-auto touch-none w-9 h-9 rounded-full bg-black/70 border text-white flex items-center justify-center shadow-lg active:scale-95 ${
+              measurement.canPlacePole ? 'border-white/40' : 'border-rose-400 text-rose-200'
+            }`}
           >
             <MoveHorizontal className="w-4 h-4" aria-hidden="true" />
           </button>
@@ -778,6 +821,26 @@ export function ARMeasurementOverlay({
           </div>
         )}
 
+        {/* 1.25m Free-Space Depth & Wall Proximity Gate Banner */}
+        {!measurement.canPlacePole && (
+          <div
+            data-testid="ar-wall-proximity-warning"
+            role="alert"
+            className="max-w-md mx-auto mt-2 px-3 py-2 rounded-xl bg-rose-950/90 border border-rose-400/65 text-rose-100 shadow-xl flex items-start gap-2"
+          >
+            <AlertTriangle className="w-4 h-4 text-rose-300 shrink-0 mt-0.5" aria-hidden="true" />
+            <div className="min-w-0">
+              <p className="text-[11px] font-bold leading-tight">
+                Pole Not Placed · Need {MIN_POLE_FREE_RADIUS_M.toFixed(2)}m Free Space
+              </p>
+              <p className="text-[10.5px] text-rose-200/90 leading-snug mt-0.5">
+                {measurement.placementBlockReason ??
+                  `Depth ${measurement.depthClearanceM.toFixed(2)}m · Min ${MIN_POLE_FREE_RADIUS_M.toFixed(2)}m clearance around pole required.`}
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Optional Lens Height & Pitch Calibration Drawer */}
         {showCalibPanel && (
           <div className="max-w-3xl mx-auto mt-2 p-2.5 rounded-xl bg-black/85 border border-white/15 text-zinc-100 flex flex-wrap items-center justify-between gap-2.5">
@@ -830,9 +893,122 @@ export function ARMeasurementOverlay({
         )}
       </div>
 
+      {/* Unsupported AR Device / Camera Unavailable Prompt */}
+      {arCameraError && !dismissedUnsupportedPrompt && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 pointer-events-auto"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="ar-unsupported-heading"
+          data-testid="ar-unsupported-prompt"
+        >
+          <div className="w-full max-w-sm rounded-2xl border border-white/20 bg-[#12141d] text-zinc-100 p-4 shadow-2xl space-y-3">
+            <div className="flex items-start gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-amber-500/20 border border-amber-400/40 text-amber-300 flex items-center justify-center shrink-0">
+                <CameraOff className="w-4 h-4" aria-hidden="true" />
+              </div>
+              <div className="min-w-0">
+                <h2 id="ar-unsupported-heading" className="text-sm font-bold leading-tight">
+                  AR Camera Not Supported / Blocked
+                </h2>
+                <p className="text-[11px] text-zinc-400 mt-1 leading-relaxed">
+                  {arCameraError} Live AR Room requires HTTPS and camera access on mobile Safari or
+                  Chrome.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-1.5 pt-1">
+              <button
+                type="button"
+                onClick={onRetryCamera}
+                className="w-full min-h-[36px] px-3 rounded-xl bg-cyan-400 hover:bg-cyan-300 text-zinc-950 text-xs font-bold inline-flex items-center justify-center gap-1.5 transition-colors"
+              >
+                <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Retry Camera Permission</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setDismissedUnsupportedPrompt(true)}
+                className="w-full min-h-[36px] px-3 rounded-xl border border-white/20 bg-white/10 hover:bg-white/15 text-zinc-100 text-xs font-semibold transition-colors"
+              >
+                Continue in Simulated AR Mode
+              </button>
+              <button
+                type="button"
+                onClick={onExit}
+                className="w-full min-h-[34px] px-3 rounded-xl text-zinc-400 hover:text-white text-xs font-medium transition-colors"
+              >
+                Back to 3D Studio
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Slim Bottom Live AR Camera Bar */}
       <div className="fixed bottom-0 left-0 right-0 z-50 px-2.5 sm:px-3 pb-2.5 sm:pb-3 pt-1 pointer-events-auto">
-        <div className="max-w-xl mx-auto rounded-2xl border border-white/15 bg-black/85 text-zinc-100 shadow-2xl overflow-hidden">
+        <div className="max-w-xl mx-auto space-y-1.5">
+          {/* Max Pole Length (2.50m) Cushion / Open-Ceiling Choice Prompt */}
+          {!isSurfaceMode && measurement.exceedsMaxPoleLength && (
+            <div
+              data-testid="ar-max-length-prompt"
+              className="rounded-xl border border-amber-400/45 bg-black/88 px-2.5 py-2 text-zinc-100 shadow-xl"
+            >
+              <div className="flex items-center justify-between gap-2 text-[11px]">
+                <span className="font-semibold text-amber-200 truncate">
+                  Ceiling {measurement.ceilingHeightM.toFixed(2)}m &gt;{' '}
+                  {MAX_POLE_LENGTH_M.toFixed(2)}m max pole (+{measurement.overHeightGapCm}cm)
+                </span>
+                <span className="text-[10px] text-zinc-400 shrink-0 hidden sm:inline">
+                  Select fit option
+                </span>
+              </div>
+              <div className="mt-1.5 grid grid-cols-3 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => onChangeCushionPosition('above')}
+                  aria-pressed={!arOpenCeilingMode && cushionPosition === 'above'}
+                  className={`min-h-[30px] px-2 py-1 rounded-lg border text-[10.5px] font-semibold inline-flex items-center justify-center gap-1 transition-colors ${
+                    !arOpenCeilingMode && cushionPosition === 'above'
+                      ? 'border-cyan-400 bg-cyan-500/25 text-cyan-100'
+                      : 'border-white/20 bg-white/10 text-zinc-200 hover:bg-white/15'
+                  }`}
+                >
+                  <ArrowUp className="w-3 h-3 shrink-0" aria-hidden="true" />
+                  <span className="truncate">Cushion Above</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onChangeCushionPosition('below')}
+                  aria-pressed={!arOpenCeilingMode && cushionPosition === 'below'}
+                  className={`min-h-[30px] px-2 py-1 rounded-lg border text-[10.5px] font-semibold inline-flex items-center justify-center gap-1 transition-colors ${
+                    !arOpenCeilingMode && cushionPosition === 'below'
+                      ? 'border-cyan-400 bg-cyan-500/25 text-cyan-100'
+                      : 'border-white/20 bg-white/10 text-zinc-200 hover:bg-white/15'
+                  }`}
+                >
+                  <ArrowDown className="w-3 h-3 shrink-0" aria-hidden="true" />
+                  <span className="truncate">Cushion Below</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={onSwitchToOpenCeiling}
+                  aria-pressed={arOpenCeilingMode}
+                  className={`min-h-[30px] px-2 py-1 rounded-lg border text-[10.5px] font-semibold inline-flex items-center justify-center gap-1 transition-colors ${
+                    arOpenCeilingMode
+                      ? 'border-emerald-400 bg-emerald-500/25 text-emerald-100'
+                      : 'border-white/20 bg-white/10 text-zinc-200 hover:bg-white/15'
+                  }`}
+                >
+                  <CircleDot className="w-3 h-3 shrink-0" aria-hidden="true" />
+                  <span className="truncate">Open-Ceiling</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className="rounded-2xl border border-white/15 bg-black/85 text-zinc-100 shadow-2xl overflow-hidden">
           {isSurfaceMode ? (
             <div className="px-3 py-2.5 flex items-center justify-between gap-2">
               <div className="min-w-0">
@@ -932,14 +1108,27 @@ export function ARMeasurementOverlay({
 
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between gap-1">
-                      <span className="text-[10px] text-emerald-300 leading-none">Fitted Pole</span>
+                      <span
+                        className={`text-[10px] leading-none ${
+                          measurement.canPlacePole ? 'text-emerald-300' : 'text-rose-300'
+                        }`}
+                      >
+                        {measurement.canPlacePole
+                          ? arOpenCeilingMode
+                            ? 'Open-Ceiling (2.5m)'
+                            : measurement.exceedsMaxPoleLength && cushionPosition !== 'none'
+                              ? `2.5m + Cushion ${cushionPosition === 'above' ? 'Top' : 'Base'}`
+                              : 'Fitted Pole'
+                          : `Need ≥${MIN_POLE_FREE_RADIUS_M.toFixed(2)}m Space`}
+                      </span>
                       <span className="font-mono text-[10px] font-bold text-emerald-300 tabular-nums shrink-0">
                         {liveAccuracyPct}%
                       </span>
                     </div>
                     <span className="font-semibold text-zinc-100 truncate block text-[11px]">
-                      {BASE_MOUNTS[measurement.recommendedMount].shortName} ·{' '}
-                      {measurement.recommendedDiameterMm}mm · {measurement.extensionsLabel}
+                      {arOpenCeilingMode
+                        ? 'Circular Stage · 2.50m Freestanding'
+                        : `${BASE_MOUNTS[measurement.recommendedMount].shortName} · ${measurement.recommendedDiameterMm}mm · Depth ${measurement.depthClearanceM.toFixed(1)}m`}
                     </span>
                   </div>
                 </div>
@@ -992,19 +1181,25 @@ export function ARMeasurementOverlay({
 
                 <button
                   type="button"
+                  disabled={!measurement.canPlacePole}
                   onClick={() => {
                     onAutoSyncRoom(measurement, false);
                     onExit();
                   }}
                   data-testid="ar-done-button"
-                  className="min-h-[34px] px-3.5 rounded-xl bg-zinc-100 hover:bg-white text-zinc-950 text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+                  className={`min-h-[34px] px-3.5 rounded-xl text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
+                    measurement.canPlacePole
+                      ? 'bg-zinc-100 hover:bg-white text-zinc-950'
+                      : 'bg-zinc-700/60 text-zinc-400 cursor-not-allowed'
+                  }`}
                 >
                   <Check className="w-3.5 h-3.5" aria-hidden="true" />
-                  <span>Use This Fit</span>
+                  <span>{measurement.canPlacePole ? 'Use This Fit' : 'Too Close'}</span>
                 </button>
               </div>
             </>
           )}
+          </div>
         </div>
       </div>
     </div>

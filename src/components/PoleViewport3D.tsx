@@ -21,6 +21,7 @@ import {
   ASSEMBLY_STEPS,
   clampPolePosition,
   computeAssemblyOffsets,
+  getEffectiveVaultAngleRad,
   MAX_POLES_IN_STUDIO,
 } from '../utils/poleConfig';
 import type { ARMarkerState, ARMeasurementResult } from '../utils/arMeasure';
@@ -78,6 +79,7 @@ interface PoleViewport3DProps {
   arShowPointCloud: boolean;
   arSurfaceCalibration: SurfaceCalibrationResult | null;
   arPartialFloorPoints: FloorPoint3D[];
+  arOpenCeilingMode?: boolean;
 }
 
 const _camGoalPos = new THREE.Vector3();
@@ -129,6 +131,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       arShowPointCloud,
       arSurfaceCalibration,
       arPartialFloorPoints,
+      arOpenCeilingMode = false,
     },
     ref
   ) {
@@ -159,6 +162,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       arShowPointCloud,
       arSurfaceCalibration,
       arPartialFloorPoints,
+      arOpenCeilingMode,
       onSelectPart,
       onPlaybackProgress,
     });
@@ -186,6 +190,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       arShowPointCloud,
       arSurfaceCalibration,
       arPartialFloorPoints,
+      arOpenCeilingMode,
       onSelectPart,
       onPlaybackProgress,
     };
@@ -403,9 +408,12 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       }[] {
         const s = stateRef.current;
         if (s.arCameraActive) {
-          // Always keep the 3D pole visible live on the camera feed!
+          // Enforce 1.25m depth & lateral free-space gate: do not place pole if too close to wall!
+          if (!s.arMeasurement.canPlacePole) {
+            return [];
+          }
           const active = s.poles.find((p) => p.id === s.activePoleId) ?? s.poles[0];
-          const arHeightCm = Math.max(225, Math.min(350, s.arMeasurement.ceilingHeightCm));
+          const arHeightCm = Math.max(215, Math.min(360, s.arMeasurement.ceilingHeightCm));
           return [
             {
               id: active.id,
@@ -413,7 +421,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
                 ...s.config,
                 finish: active.finish,
                 diameterMm: active.diameterMm,
-                mount: s.arMeasurement.recommendedMount,
+                mount: s.arOpenCeilingMode ? 'stage-podium' : s.arMeasurement.recommendedMount,
                 ceilingHeightCm: arHeightCm,
                 isSpinning: active.isSpinning,
                 spinRpm: active.spinRpm,
@@ -444,20 +452,39 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
           ];
         }
 
-        return s.poles.slice(0, MAX_POLES_IN_STUDIO).map((p) => ({
-          id: p.id,
-          rig: {
-            ...s.config,
-            finish: p.finish,
-            diameterMm: p.diameterMm,
-            mount: p.mount,
-            isSpinning: p.isSpinning,
-            spinRpm: p.spinRpm,
-          },
-          x: p.x,
-          z: p.z,
-          isSelected: p.id === s.activePoleId,
-        }));
+        return s.poles.slice(0, MAX_POLES_IN_STUDIO).map((p) => {
+          const vaultRad = getEffectiveVaultAngleRad(
+            s.config.ceilingHeightCm,
+            s.config.roomWidthM,
+            p.mount,
+            s.config.vaultAngleDeg
+          );
+          const localHeightCm =
+            p.mount === 'vaulted-beam'
+              ? Math.max(
+                  215,
+                  Math.min(
+                    360,
+                    Math.round((s.config.ceilingHeightCm / 100 + p.x * Math.tan(vaultRad)) * 100)
+                  )
+                )
+              : s.config.ceilingHeightCm;
+          return {
+            id: p.id,
+            rig: {
+              ...s.config,
+              ceilingHeightCm: localHeightCm,
+              finish: p.finish,
+              diameterMm: p.diameterMm,
+              mount: p.mount,
+              isSpinning: p.isSpinning,
+              spinRpm: p.spinRpm,
+            },
+            x: p.x,
+            z: p.z,
+            isSelected: p.id === s.activePoleId,
+          };
+        });
       }
 
       function syncPolesAndEnv(): void {
@@ -475,7 +502,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
           handle.root.visible = true;
           handle.root.position.set(item.x, 0, item.z);
 
-          const gKey = `${item.rig.finish}-${item.rig.diameterMm}-${item.rig.mount}-${item.rig.ceilingHeightCm}-${item.rig.vaultAngleDeg}`;
+          const gKey = `${item.rig.finish}-${item.rig.diameterMm}-${item.rig.mount}-${item.rig.ceilingHeightCm}-${item.rig.vaultAngleDeg}-${item.rig.cushionPosition ?? 'none'}-${item.rig.roomWidthM}`;
           if (poleGeoKeys[i] !== gKey) {
             handle.rebuild(item.rig);
             poleGeoKeys[i] = gKey;
@@ -1011,6 +1038,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       arShowPointCloud,
       arSurfaceCalibration,
       arPartialFloorPoints,
+      arOpenCeilingMode,
     ]);
 
     useEffect(() => {

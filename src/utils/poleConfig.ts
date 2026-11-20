@@ -6,6 +6,7 @@ import type {
   BOMLineItem,
   BOMSummary,
   ClearanceAnalysis,
+  EnvironmentPreset,
   ExtensionPiece,
   HardwarePartId,
   HardwarePartSpec,
@@ -17,11 +18,38 @@ import type {
   PoleFinishSpec,
   PoleInstance,
   PoleRigConfig,
-} from '../types/pole';
+} from '../types/pole.ts';
 
 export const MIN_ROOM_SIZE_M = 3.0;
 export const MAX_ROOM_SIZE_M = 7.0;
 export const MAX_POLES_IN_STUDIO = 4;
+export const MAX_POLE_LENGTH_CM = 250;
+export const MAX_POLE_LENGTH_M = 2.5;
+export const MIN_POLE_FREE_RADIUS_M = 1.25;
+
+export const ENVIRONMENT_PRESETS: {
+  id: EnvironmentPreset;
+  label: string;
+  shortLabel: string;
+}[] = [
+  { id: 'studio', label: 'Pro Dance Studio', shortLabel: 'Studio' },
+  { id: 'home', label: 'Modern Home Loft', shortLabel: 'Home' },
+  { id: 'penthouse', label: 'Glass Penthouse', shortLabel: 'Penthouse' },
+  { id: 'industrial', label: 'Industrial Warehouse', shortLabel: 'Warehouse' },
+  { id: 'velvet-club', label: 'Velvet Cabaret', shortLabel: 'Cabaret' },
+];
+
+export function getEffectiveVaultAngleRad(
+  ceilingHeightCm: number,
+  roomWidthM: number,
+  mount: BaseMountId,
+  vaultAngleDeg: number
+): number {
+  if (mount !== 'vaulted-beam') return 0;
+  const H = ceilingHeightCm / 100;
+  const maxVisualRad = Math.atan(Math.max(0.32, H - 1.55) / Math.max(1.2, roomWidthM * 0.5));
+  return Math.min(maxVisualRad, (Math.max(4, vaultAngleDeg) * Math.PI) / 180);
+}
 
 export const LIGHTING_PRESETS: {
   id: LightingPreset;
@@ -480,6 +508,7 @@ export const DEFAULT_CONFIG: PoleRigConfig = {
   roomDepthM: 5.2,
   showClearanceRing: true,
   vaultAngleDeg: 22,
+  cushionPosition: 'above',
 };
 
 export function createInitialPoles(): PoleInstance[] {

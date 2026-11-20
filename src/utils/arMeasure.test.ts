@@ -138,4 +138,71 @@ test('calculateARMeasurement projects 3D pole top & base back to screen sightlin
   );
 });
 
+test('calculateARMeasurement enforces 1.25m depth and lateral wall free-space gate (canPlacePole)', () => {
+  const safe = calculateARMeasurement(DEFAULT_AR_MARKERS, 'brass');
+  assert.equal(safe.canPlacePole, true, `Expected default markers to allow placement, got blocked: ${safe.placementBlockReason}`);
+  assert.ok(safe.depthClearanceM >= 1.25);
+  assert.ok(safe.leftClearanceM >= 1.25);
+  assert.ok(safe.rightClearanceM >= 1.25);
+  assert.equal(safe.placementBlockReason, null);
+
+  // Camera too close to wall in depth (steep downward pitch + bottom floor anchor)
+  const tooCloseDepth = calculateARMeasurement(
+    {
+      ...DEFAULT_AR_MARKERS,
+      cameraPitchDeg: -22,
+      floorY: 0.85,
+      cameraHeightM: 1.35,
+    },
+    'brass'
+  );
+  assert.ok(tooCloseDepth.depthClearanceM < 1.25, `Expected depth < 1.25m, got ${tooCloseDepth.depthClearanceM}m`);
+  assert.equal(tooCloseDepth.canPlacePole, false);
+  assert.ok(
+    tooCloseDepth.placementBlockReason && /wall|depth/i.test(tooCloseDepth.placementBlockReason),
+    `Expected wall/depth block reason, got: ${tooCloseDepth.placementBlockReason}`
+  );
+
+  // Pole slid close to left wall
+  const tooCloseLeft = calculateARMeasurement(
+    {
+      ...DEFAULT_AR_MARKERS,
+      poleX: 0.22,
+    },
+    'brass'
+  );
+  assert.ok(tooCloseLeft.leftClearanceM < 1.25, `Expected leftClearanceM < 1.25m, got ${tooCloseLeft.leftClearanceM}m`);
+  assert.equal(tooCloseLeft.canPlacePole, false);
+});
+
+test('calculateARMeasurement flags ceilings over 2.50m max pole length with exact overHeightGapCm', () => {
+  const tall = calculateARMeasurement(
+    {
+      ...DEFAULT_AR_MARKERS,
+      ceilingY: 0.14,
+      floorY: 0.74,
+      cameraPitchDeg: -2,
+    },
+    'brass'
+  );
+  assert.ok(tall.ceilingHeightCm > 250, `Expected ceiling > 250cm, got ${tall.ceilingHeightCm}`);
+  assert.equal(tall.exceedsMaxPoleLength, true);
+  assert.equal(tall.overHeightGapCm, tall.ceilingHeightCm - 250);
+
+  const compact = calculateARMeasurement(
+    {
+      ...DEFAULT_AR_MARKERS,
+      ceilingY: 0.31,
+      floorY: 0.76,
+      cameraPitchDeg: -4,
+      cameraHeightM: 1.35,
+    },
+    'brass'
+  );
+  assert.ok(compact.ceilingHeightCm <= 250, `Expected ceiling <= 250cm, got ${compact.ceilingHeightCm}`);
+  assert.equal(compact.exceedsMaxPoleLength, false);
+  assert.equal(compact.overHeightGapCm, 0);
+});
+
+
 

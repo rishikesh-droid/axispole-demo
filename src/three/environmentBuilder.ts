@@ -9,6 +9,7 @@ import type {
 } from '../types/pole';
 import {
   analyzeFloorClearance,
+  getEffectiveVaultAngleRad,
   getWallClearanceMarginM,
   MAX_POLES_IN_STUDIO,
 } from '../utils/poleConfig';
@@ -276,10 +277,21 @@ export function createEnvironmentRig(
   const leftBaseboard = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.085, 1), baseboardMat);
   group.add(backWall, leftWall, backBaseboard, leftBaseboard);
 
-  // Recessed Architectural Ceiling Soffit + Structural Joist Header (cleanly integrated, pitches cleanly for vaulted mounts!)
-  const ceilingSlab = new THREE.Mesh(new THREE.BoxGeometry(1, 0.08, 1), ceilingSoffitMat);
-  const ceilingBeam = new THREE.Mesh(new THREE.BoxGeometry(1, 0.055, 0.14), woodSlatMat);
-  group.add(ceilingSlab, ceilingBeam);
+  // Recessed Architectural Ceiling Soffit + Structural Joist Header + Sloped Roof Rafters
+  const ceilingSlab = new THREE.Mesh(new THREE.BoxGeometry(1, 0.09, 1), ceilingSoffitMat);
+  const ceilingBeam = new THREE.Mesh(new THREE.BoxGeometry(1, 0.06, 0.15), woodSlatMat);
+  const vaultRafterCount = 5;
+  const vaultRafters: THREE.Mesh[] = [];
+  for (let i = 0; i < vaultRafterCount; i++) {
+    const r = new THREE.Mesh(new THREE.BoxGeometry(1, 0.075, 0.09), woodSlatMat);
+    r.castShadow = true;
+    r.visible = false;
+    group.add(r);
+    vaultRafters.push(r);
+  }
+  const vaultFrontFascia = new THREE.Mesh(new THREE.BoxGeometry(1, 0.11, 0.14), baseboardMat);
+  vaultFrontFascia.visible = false;
+  group.add(ceilingSlab, ceilingBeam, vaultFrontFascia);
 
   // Overhead Perimeter LED Cove Strips (back wall & left wall ceiling junction)
   const coveBarBack = new THREE.Mesh(new THREE.BoxGeometry(1, 0.018, 0.022), neonCoveMat);
@@ -407,6 +419,107 @@ export function createEnvironmentRig(
   homeFeatureGroup.add(benchSeat, benchLegL, benchLegR, artFrame, artCanvas, artArc, homeSconce);
   group.add(homeFeatureGroup);
 
+  // --- ROOM STYLE 3: GLASS PENTHOUSE LOUNGE ---
+  const penthouseGlassMat = new THREE.MeshPhysicalMaterial({
+    color: 0x3b4d6b,
+    emissive: 0x172554,
+    emissiveIntensity: 0.45,
+    metalness: 0.25,
+    roughness: 0.12,
+    envMapIntensity: 1.4,
+  });
+  const penthouseFeatureGroup = new THREE.Group();
+  const windowFrameBack = new THREE.Mesh(new THREE.BoxGeometry(3.1, 2.35, 0.03), trackMetalMat);
+  windowFrameBack.position.set(0, 1.25, 0);
+  const windowGlassBack = new THREE.Mesh(new THREE.PlaneGeometry(2.96, 2.2), penthouseGlassMat);
+  windowGlassBack.position.set(0, 1.25, 0.018);
+  penthouseFeatureGroup.add(windowFrameBack, windowGlassBack);
+
+  for (const mx of [-1.48, -0.74, 0, 0.74, 1.48]) {
+    const mullion = new THREE.Mesh(new THREE.BoxGeometry(0.045, 2.35, 0.05), trackMetalMat);
+    mullion.position.set(mx, 1.25, 0.02);
+    penthouseFeatureGroup.add(mullion);
+  }
+  for (const my of [0.85, 1.75]) {
+    const transom = new THREE.Mesh(new THREE.BoxGeometry(3.04, 0.038, 0.045), trackMetalMat);
+    transom.position.set(0, my, 0.02);
+    penthouseFeatureGroup.add(transom);
+  }
+  const credenza = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.36, 0.38), woodSlatMat);
+  credenza.position.set(0, 0.22, 0.22);
+  credenza.castShadow = true;
+  penthouseFeatureGroup.add(credenza);
+  group.add(penthouseFeatureGroup);
+
+  // --- ROOM STYLE 4: INDUSTRIAL WAREHOUSE ---
+  const rustSteelMat = new THREE.MeshStandardMaterial({
+    color: 0x3b3532,
+    metalness: 0.72,
+    roughness: 0.56,
+  });
+  const industrialGlassMat = new THREE.MeshStandardMaterial({
+    color: 0x526071,
+    emissive: 0x1e293b,
+    emissiveIntensity: 0.3,
+    roughness: 0.25,
+    metalness: 0.35,
+  });
+  const industrialFeatureGroup = new THREE.Group();
+  for (const colX of [-1.35, 1.35]) {
+    const flangeF = new THREE.Mesh(new THREE.BoxGeometry(0.16, 2.4, 0.024), rustSteelMat);
+    flangeF.position.set(colX, 1.2, 0.08);
+    const flangeB = flangeF.clone();
+    flangeB.position.z = 0.0;
+    const web = new THREE.Mesh(new THREE.BoxGeometry(0.024, 2.4, 0.09), rustSteelMat);
+    web.position.set(colX, 1.2, 0.04);
+    industrialFeatureGroup.add(flangeF, flangeB, web);
+  }
+  const factoryFrame = new THREE.Mesh(new THREE.BoxGeometry(2.1, 1.65, 0.03), trackMetalMat);
+  factoryFrame.position.set(0, 1.42, 0.01);
+  const factoryGlass = new THREE.Mesh(new THREE.PlaneGeometry(1.98, 1.54), industrialGlassMat);
+  factoryGlass.position.set(0, 1.42, 0.028);
+  industrialFeatureGroup.add(factoryFrame, factoryGlass);
+  for (const gx of [-0.5, 0, 0.5]) {
+    const barV = new THREE.Mesh(new THREE.BoxGeometry(0.025, 1.6, 0.038), trackMetalMat);
+    barV.position.set(gx, 1.42, 0.03);
+    industrialFeatureGroup.add(barV);
+  }
+  for (const gy of [1.05, 1.42, 1.8]) {
+    const barH = new THREE.Mesh(new THREE.BoxGeometry(2.04, 0.025, 0.038), trackMetalMat);
+    barH.position.set(0, gy, 0.03);
+    industrialFeatureGroup.add(barH);
+  }
+  group.add(industrialFeatureGroup);
+
+  // --- ROOM STYLE 5: VELVET STAGE CABARET ---
+  const velvetMat = new THREE.MeshStandardMaterial({
+    color: 0x5b1227,
+    roughness: 0.92,
+    metalness: 0.04,
+  });
+  const brassTrimMat = new THREE.MeshStandardMaterial({
+    color: 0xc99c42,
+    metalness: 0.88,
+    roughness: 0.24,
+  });
+  const velvetClubFeatureGroup = new THREE.Group();
+  for (let i = 0; i < 14; i++) {
+    const px = -1.6 + (i / 13) * 3.2;
+    const pleat = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.115, 0.125, 2.35, 14),
+      velvetMat
+    );
+    pleat.position.set(px, 1.18, 0.06 + (i % 2) * 0.025);
+    pleat.castShadow = true;
+    velvetClubFeatureGroup.add(pleat);
+  }
+  const brassArchHeader = new THREE.Mesh(new THREE.BoxGeometry(3.35, 0.09, 0.16), brassTrimMat);
+  brassArchHeader.position.set(0, 2.38, 0.12);
+  const footlightRail = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.022, 0.04), neonTubeLeftMat);
+  footlightRail.position.set(0, 0.015, 0.18);
+  velvetClubFeatureGroup.add(brassArchHeader, footlightRail);
+  group.add(velvetClubFeatureGroup);
+
   scene.add(group);
 
   // Reusable dummy for instanced acoustic wood slats
@@ -428,14 +541,33 @@ export function createEnvironmentRig(
     neonCoveLight.position.set(-W / 2 + 0.5, H - 0.28, 0.2);
 
     if (preset === 'studio-daylight') {
-      const bg = isHome ? 0xddd6ca : 0xe2dfd8;
+      const bg =
+        env === 'velvet-club'
+          ? 0xded4d6
+          : env === 'industrial'
+            ? 0xd6d7d9
+            : env === 'penthouse'
+              ? 0xd8e0eb
+              : isHome
+                ? 0xddd6ca
+                : 0xe2dfd8;
       scene.background = new THREE.Color(bg);
       scene.fog = new THREE.Fog(bg, 10, 26);
       renderer.toneMappingExposure = 1.02;
 
       apronMat.color.setHex(isHome ? 0xd0c7b9 : 0xd5d2ca);
-      wallMat.color.setHex(isHome ? 0xd9d0c3 : 0xdcd9d1);
-      ceilingSoffitMat.color.setHex(0xe5e2da);
+      wallMat.color.setHex(
+        env === 'velvet-club'
+          ? 0x451725
+          : env === 'industrial'
+            ? 0x71757c
+            : env === 'penthouse'
+              ? 0xcbd5e1
+              : isHome
+                ? 0xd9d0c3
+                : 0xdcd9d1
+      );
+      ceilingSoffitMat.color.setHex(env === 'industrial' ? 0x9ca3af : 0xe5e2da);
       baseboardMat.color.setHex(0xc4bfb6);
 
       hemiLight.color.setHex(0xeaf2fc);
@@ -635,13 +767,14 @@ export function createEnvironmentRig(
     textures.woodBump.repeat.set(Math.max(2, W * 0.95), Math.max(2, D * 0.95));
     floorMat.needsUpdate = true;
 
-    // Compute safe vaulted ceiling slope (when Vaulted mount is active, entire roof pitches cleanly!)
+    // Compute safe vaulted ceiling slope (when Vaulted mount is active, entire roof & rafters pitch cleanly!)
     const isVaulted = config.mount === 'vaulted-beam';
-    // Cap effective visual slope so the lower eave wall stays architecturally realistic (>= 1.65m)
-    const maxVisualRad = Math.atan(Math.max(0.25, H - 1.68) / Math.max(1.2, W * 0.5));
-    const vaultRad = isVaulted
-      ? Math.min(maxVisualRad, THREE.MathUtils.degToRad(Math.max(4, config.vaultAngleDeg)))
-      : 0;
+    const vaultRad = getEffectiveVaultAngleRad(
+      config.ceilingHeightCm,
+      W,
+      config.mount,
+      config.vaultAngleDeg
+    );
     const cosV = Math.cos(vaultRad);
     const sinV = Math.sin(vaultRad);
     const tanV = Math.tan(vaultRad);
@@ -675,25 +808,44 @@ export function createEnvironmentRig(
     leftBaseboard.scale.set(1, 1, D);
     leftBaseboard.position.set(-W / 2 + 0.012, 0.042, 0);
 
-    // Architectural Ceiling Soffit + Integrated Structural Timber Beam (zero protrusion!)
-    const slopedSpanW = (W + 0.14) / cosV;
+    // Architectural Ceiling Soffit + Integrated Structural Timber Beam + Sloped Roof Rafters (always visible, pitches cleanly!)
+    const slopedSpanW = (W + 0.16) / cosV;
     const beamSpanW = (W - 0.04) / cosV;
-    const slabNormalOffset = isVaulted ? 0.095 : 0.04;
-    const beamNormalOffset = isVaulted ? 0.0275 : 0.008;
+    const slabNormalOffset = isVaulted ? 0.095 : 0.045;
+    const beamNormalOffset = isVaulted ? 0.028 : 0.008;
 
-    ceilingSlab.scale.set(slopedSpanW, 1, D + 0.12);
+    ceilingSlab.scale.set(slopedSpanW, 1, D + 0.14);
     ceilingSlab.rotation.set(0, 0, vaultRad);
     ceilingSlab.position.set(
       -0.06 * cosV - slabNormalOffset * sinV,
       H + slabNormalOffset * cosV - 0.06 * sinV,
       -0.06
     );
-    ceilingSlab.visible = config.mount !== 'stage-podium';
+    ceilingSlab.visible = true;
 
     ceilingBeam.scale.set(beamSpanW, 1, 1);
     ceilingBeam.rotation.set(0, 0, vaultRad);
     ceilingBeam.position.set(-beamNormalOffset * sinV, H + beamNormalOffset * cosV, 0);
-    ceilingBeam.visible = config.mount !== 'stage-podium';
+    ceilingBeam.visible = true;
+
+    // 5 full-span architectural roof rafters + front sloped fascia beam make tilted ceiling unmistakable
+    const rafterNormalOffset = 0.036;
+    for (let i = 0; i < vaultRafters.length; i++) {
+      const rf = vaultRafters[i];
+      rf.visible = isVaulted;
+      if (isVaulted) {
+        const zPos = ((i / (vaultRafters.length - 1)) - 0.5) * (D - 0.55);
+        rf.scale.set(beamSpanW, 1, 1);
+        rf.rotation.set(0, 0, vaultRad);
+        rf.position.set(-rafterNormalOffset * sinV, H + rafterNormalOffset * cosV, zPos);
+      }
+    }
+    vaultFrontFascia.visible = isVaulted;
+    if (isVaulted) {
+      vaultFrontFascia.scale.set(slopedSpanW, 1, 1);
+      vaultFrontFascia.rotation.set(0, 0, vaultRad);
+      vaultFrontFascia.position.set(-0.04 * sinV, H + 0.04 * cosV, D / 2 - 0.06);
+    }
 
     // Recessed perimeter ceiling LED cove strips follow exact flat or vaulted ceiling angle
     const coveNormalOffset = isVaulted ? 0.042 : -0.018;
@@ -704,17 +856,17 @@ export function createEnvironmentRig(
       H + coveNormalOffset * cosV,
       -D / 2 + 0.025
     );
-    coveBarBack.visible = config.mount !== 'stage-podium';
+    coveBarBack.visible = true;
 
     coveBarLeft.scale.set(1, 1, D - 0.16);
     coveBarLeft.position.set(-W / 2 + 0.025, leftEaveH + (isVaulted ? 0.035 : -0.018), 0);
-    coveBarLeft.visible = config.mount !== 'stage-podium';
+    coveBarLeft.visible = true;
 
     // Overhead black aluminum studio spotlight track tilts cleanly along sloped ceiling
     const trackNormalOffset = isVaulted ? 0.035 : -0.02;
     trackRigGroup.rotation.set(0, 0, vaultRad);
     trackRigGroup.position.set(-trackNormalOffset * sinV, H + trackNormalOffset * cosV, 0.95);
-    trackRigGroup.visible = config.mount !== 'stage-podium';
+    trackRigGroup.visible = true;
 
     // Studio feature wall (fluted acoustic wood slats on left wall + mirror + neon tubes)
     studioFeatureGroup.visible = config.environment === 'studio';
@@ -742,6 +894,30 @@ export function createEnvironmentRig(
     // Home loft feature wall
     homeFeatureGroup.visible = config.environment === 'home';
     homeFeatureGroup.position.set(0, 0, -D / 2 + 0.22);
+
+    // Penthouse panoramic skyline lounge
+    penthouseFeatureGroup.visible = config.environment === 'penthouse';
+    if (config.environment === 'penthouse') {
+      const maxHScale = Math.max(0.55, Math.min(1.0, (H - 0.25) / 2.45));
+      penthouseFeatureGroup.scale.set(Math.min(1.15, (W - 0.4) / 3.2), maxHScale, 1);
+      penthouseFeatureGroup.position.set(0, 0, -D / 2 + 0.02);
+    }
+
+    // Industrial warehouse steel columns & factory window
+    industrialFeatureGroup.visible = config.environment === 'industrial';
+    if (config.environment === 'industrial') {
+      const maxHScale = Math.max(0.55, Math.min(1.0, (H - 0.2) / 2.45));
+      industrialFeatureGroup.scale.set(Math.min(1.1, (W - 0.4) / 3.1), maxHScale, 1);
+      industrialFeatureGroup.position.set(0, 0, -D / 2 + 0.03);
+    }
+
+    // Velvet cabaret stage curtains & brass arch
+    velvetClubFeatureGroup.visible = config.environment === 'velvet-club';
+    if (config.environment === 'velvet-club') {
+      const maxHScale = Math.max(0.55, Math.min(1.0, (H - 0.2) / 2.45));
+      velvetClubFeatureGroup.scale.set(Math.min(1.15, (W - 0.3) / 3.4), maxHScale, 1);
+      velvetClubFeatureGroup.position.set(0, 0, -D / 2 + 0.05);
+    }
 
     // Contact shadows, clearance safety rings & active-pole base ring
     const markers: FloorPoleMarker[] =
@@ -835,6 +1011,11 @@ export function createEnvironmentRig(
       selectionRingMat.dispose();
       boundaryLineMat.dispose();
       apronMat.dispose();
+      penthouseGlassMat.dispose();
+      rustSteelMat.dispose();
+      industrialGlassMat.dispose();
+      velvetMat.dispose();
+      brassTrimMat.dispose();
       scene.remove(group);
       scene.remove(
         hemiLight,

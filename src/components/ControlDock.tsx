@@ -25,7 +25,6 @@ import type {
   CameraFocusId,
   CameraMotionMode,
   DockTabId,
-  EnvironmentPreset,
   LightingPreset,
   PoleFinishId,
   PoleInstance,
@@ -35,8 +34,10 @@ import {
   ASSEMBLY_STEPS,
   BASE_MOUNTS,
   DIAMETER_OPTIONS,
+  ENVIRONMENT_PRESETS,
   isDarkLighting,
   LIGHTING_PRESETS,
+  MAX_POLE_LENGTH_CM,
   MAX_POLES_IN_STUDIO,
   MAX_ROOM_SIZE_M,
   MIN_ROOM_SIZE_M,
@@ -616,6 +617,44 @@ export function ControlDock({
                   </span>
                 </div>
               )}
+
+              {config.ceilingHeightCm > MAX_POLE_LENGTH_CM && activePole.mount !== 'stage-podium' && (
+                <div className="flex items-center justify-between gap-1.5 pt-0.5">
+                  <span className={`text-[10px] font-medium whitespace-nowrap ${mutedText}`}>
+                    &gt;2.5m (+{config.ceilingHeightCm - MAX_POLE_LENGTH_CM}cm)
+                  </span>
+                  <div className={`flex items-center gap-0.5 p-0.5 rounded-md ${segBg}`}>
+                    <button
+                      type="button"
+                      onClick={() => onChangeConfig({ cushionPosition: 'above' })}
+                      className={`px-2 py-0.5 text-[10px] font-medium rounded-xs whitespace-nowrap ${
+                        config.cushionPosition === 'above' ? segActive : segIdle
+                      }`}
+                    >
+                      Cushion Top
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onChangeConfig({ cushionPosition: 'below' })}
+                      className={`px-2 py-0.5 text-[10px] font-medium rounded-xs whitespace-nowrap ${
+                        config.cushionPosition === 'below' ? segActive : segIdle
+                      }`}
+                    >
+                      Cushion Base
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onChangeConfig({ cushionPosition: 'none' });
+                        onChangeActivePole({ mount: 'stage-podium' });
+                      }}
+                      className={`px-2 py-0.5 text-[10px] font-medium rounded-xs whitespace-nowrap ${segIdle}`}
+                    >
+                      Open Base
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -698,27 +737,40 @@ export function ControlDock({
 
           {activeTab === 'space' && (
             <div className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <div className={`flex items-center gap-0.5 p-0.5 rounded-md ${segBg}`}>
-                  {(
-                    [
-                      ['studio', 'Studio'],
-                      ['home', 'Home'],
-                    ] as [EnvironmentPreset, string][]
-                  ).map(([envId, label]) => (
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+                <div className={`flex items-center gap-0.5 p-0.5 rounded-md shrink-0 ${segBg}`}>
+                  {ENVIRONMENT_PRESETS.map((envSpec) => (
                     <button
-                      key={`me-${envId}`}
+                      key={`me-${envSpec.id}`}
                       type="button"
-                      onClick={() => onChangeConfig({ environment: envId })}
-                      className={`px-2 py-1 text-[11px] font-medium rounded-xs ${
-                        config.environment === envId ? segActive : segIdle
+                      onClick={() => onChangeConfig({ environment: envSpec.id })}
+                      aria-pressed={config.environment === envSpec.id}
+                      className={`px-2 py-1 text-[10.5px] font-medium rounded-xs whitespace-nowrap ${
+                        config.environment === envSpec.id ? segActive : segIdle
                       }`}
                     >
-                      {label}
+                      {envSpec.shortLabel}
                     </button>
                   ))}
                 </div>
 
+                <button
+                  type="button"
+                  onClick={() =>
+                    onChangeActivePole({
+                      mount: activePole.mount === 'vaulted-beam' ? 'tension' : 'vaulted-beam',
+                    })
+                  }
+                  aria-pressed={activePole.mount === 'vaulted-beam'}
+                  className={`px-2 py-1 text-[10.5px] font-semibold rounded-md border shrink-0 whitespace-nowrap ${
+                    activePole.mount === 'vaulted-beam' ? accentToggleActive : cardBtnIdle
+                  }`}
+                >
+                  Tilted Ceiling
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-1">
                   <button
                     type="button"
@@ -748,6 +800,25 @@ export function ControlDock({
                     Center
                   </button>
                 </div>
+
+                {activePole.mount === 'vaulted-beam' && (
+                  <div className="flex items-center gap-1 flex-1 max-w-[140px]">
+                    <span className={`text-[10px] ${mutedText}`}>Tilt</span>
+                    <input
+                      aria-label="Ceiling tilt angle"
+                      type="range"
+                      min={6}
+                      max={28}
+                      step={1}
+                      value={config.vaultAngleDeg}
+                      onChange={(e) => onChangeConfig({ vaultAngleDeg: Number(e.target.value) })}
+                      className="axis-slider flex-1"
+                    />
+                    <span className="font-mono text-[10px] tabular-nums w-6 text-right">
+                      {config.vaultAngleDeg}°
+                    </span>
+                  </div>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -1256,6 +1327,48 @@ export function ControlDock({
                   </button>
                 </div>
               </div>
+
+              {config.ceilingHeightCm > MAX_POLE_LENGTH_CM && activePole.mount !== 'stage-podium' && (
+                <div className={`flex items-center justify-between gap-2 pt-1.5 border-t ${dividerClass}`}>
+                  <span className={`text-[11px] font-medium ${mutedText}`}>
+                    Max 2.50m Pole (+{config.ceilingHeightCm - MAX_POLE_LENGTH_CM}cm ceiling gap):
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <div className={`flex items-center gap-0.5 p-0.5 rounded-md ${segBg}`}>
+                      <button
+                        type="button"
+                        onClick={() => onChangeConfig({ cushionPosition: 'above' })}
+                        aria-pressed={config.cushionPosition === 'above'}
+                        className={`px-2 py-0.5 text-[11px] font-medium rounded-xs whitespace-nowrap ${
+                          config.cushionPosition === 'above' ? segActive : segIdle
+                        }`}
+                      >
+                        Cushion Above
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onChangeConfig({ cushionPosition: 'below' })}
+                        aria-pressed={config.cushionPosition === 'below'}
+                        className={`px-2 py-0.5 text-[11px] font-medium rounded-xs whitespace-nowrap ${
+                          config.cushionPosition === 'below' ? segActive : segIdle
+                        }`}
+                      >
+                        Cushion Below
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onChangeConfig({ cushionPosition: 'none' });
+                        onChangeActivePole({ mount: 'stage-podium' });
+                      }}
+                      className={`px-2 py-0.5 text-[11px] font-semibold rounded-md border whitespace-nowrap ${cardBtnIdle}`}
+                    >
+                      Open-Ceiling Circular Base
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -1423,84 +1536,117 @@ export function ControlDock({
           )}
 
           {activeTab === 'space' && (
-            <div className="flex flex-wrap items-center justify-between gap-2.5">
-              <div className={`flex items-center gap-0.5 p-0.5 rounded-md ${segBg}`}>
-                {(
-                  [
-                    ['studio', 'Studio'],
-                    ['home', 'Home'],
-                  ] as [EnvironmentPreset, string][]
-                ).map(([envId, label]) => (
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className={`flex items-center gap-0.5 p-0.5 rounded-md ${segBg}`} role="group" aria-label="3D Room Styles">
+                  {ENVIRONMENT_PRESETS.map((envSpec) => (
+                    <button
+                      key={envSpec.id}
+                      type="button"
+                      onClick={() => onChangeConfig({ environment: envSpec.id })}
+                      aria-pressed={config.environment === envSpec.id}
+                      className={`px-2.5 py-1 text-[11px] font-medium rounded-xs transition-colors whitespace-nowrap ${
+                        config.environment === envSpec.id ? segActive : segIdle
+                      }`}
+                    >
+                      {envSpec.shortLabel}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex items-center gap-2">
                   <button
-                    key={envId}
                     type="button"
-                    onClick={() => onChangeConfig({ environment: envId })}
-                    aria-pressed={config.environment === envId}
-                    className={`px-2.5 py-1 text-[11px] font-medium rounded-xs transition-colors ${
-                      config.environment === envId ? segActive : segIdle
+                    onClick={() =>
+                      onChangeActivePole({
+                        mount: activePole.mount === 'vaulted-beam' ? 'tension' : 'vaulted-beam',
+                      })
+                    }
+                    aria-pressed={activePole.mount === 'vaulted-beam'}
+                    className={`px-2.5 py-1 text-[11px] font-semibold rounded-md border whitespace-nowrap transition-colors ${
+                      activePole.mount === 'vaulted-beam' ? accentToggleActive : cardBtnIdle
                     }`}
                   >
-                    {label}
+                    Tilted Ceiling
                   </button>
-                ))}
+                  {activePole.mount === 'vaulted-beam' && (
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        aria-label="Tilted ceiling pitch"
+                        type="range"
+                        min={6}
+                        max={28}
+                        step={1}
+                        value={config.vaultAngleDeg}
+                        onChange={(e) => onChangeConfig({ vaultAngleDeg: Number(e.target.value) })}
+                        className="axis-slider w-16"
+                      />
+                      <span className="font-mono text-[11px] font-semibold tabular-nums w-7 text-right">
+                        {config.vaultAngleDeg}°
+                      </span>
+                    </div>
+                  )}
+                </div>
               </div>
 
-              <div className="flex items-center gap-1.5 flex-1 min-w-[135px] max-w-[215px]">
-                <label htmlFor="room-width-slider" className={`text-[11px] font-medium ${mutedText}`}>
-                  Width
-                </label>
-                <input
-                  id="room-width-slider"
-                  type="range"
-                  min={MIN_ROOM_SIZE_M}
-                  max={MAX_ROOM_SIZE_M}
-                  step={0.1}
-                  value={config.roomWidthM}
-                  onChange={(e) => onChangeConfig({ roomWidthM: Number(e.target.value) })}
-                  className="axis-slider flex-1"
-                />
-                <span className="font-mono text-[11px] font-semibold tabular-nums w-9 text-right">
-                  {config.roomWidthM.toFixed(1)}m
-                </span>
-              </div>
+              <div className={`flex flex-wrap items-center justify-between gap-2.5 pt-1.5 border-t ${dividerClass}`}>
+                <div className="flex items-center gap-1.5 flex-1 min-w-[135px] max-w-[215px]">
+                  <label htmlFor="room-width-slider" className={`text-[11px] font-medium ${mutedText}`}>
+                    Width
+                  </label>
+                  <input
+                    id="room-width-slider"
+                    type="range"
+                    min={MIN_ROOM_SIZE_M}
+                    max={MAX_ROOM_SIZE_M}
+                    step={0.1}
+                    value={config.roomWidthM}
+                    onChange={(e) => onChangeConfig({ roomWidthM: Number(e.target.value) })}
+                    className="axis-slider flex-1"
+                  />
+                  <span className="font-mono text-[11px] font-semibold tabular-nums w-9 text-right">
+                    {config.roomWidthM.toFixed(1)}m
+                  </span>
+                </div>
 
-              <div className="flex items-center gap-1.5 flex-1 min-w-[135px] max-w-[215px]">
-                <label htmlFor="room-depth-slider" className={`text-[11px] font-medium ${mutedText}`}>
-                  Depth
-                </label>
-                <input
-                  id="room-depth-slider"
-                  type="range"
-                  min={MIN_ROOM_SIZE_M}
-                  max={MAX_ROOM_SIZE_M}
-                  step={0.1}
-                  value={config.roomDepthM}
-                  onChange={(e) => onChangeConfig({ roomDepthM: Number(e.target.value) })}
-                  className="axis-slider flex-1"
-                />
-                <span className="font-mono text-[11px] font-semibold tabular-nums w-9 text-right">
-                  {config.roomDepthM.toFixed(1)}m
-                </span>
-              </div>
+                <div className="flex items-center gap-1.5 flex-1 min-w-[135px] max-w-[215px]">
+                  <label htmlFor="room-depth-slider" className={`text-[11px] font-medium ${mutedText}`}>
+                    Depth
+                  </label>
+                  <input
+                    id="room-depth-slider"
+                    type="range"
+                    min={MIN_ROOM_SIZE_M}
+                    max={MAX_ROOM_SIZE_M}
+                    step={0.1}
+                    value={config.roomDepthM}
+                    onChange={(e) => onChangeConfig({ roomDepthM: Number(e.target.value) })}
+                    className="axis-slider flex-1"
+                  />
+                  <span className="font-mono text-[11px] font-semibold tabular-nums w-9 text-right">
+                    {config.roomDepthM.toFixed(1)}m
+                  </span>
+                </div>
 
-              <div className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={onCenterActivePole}
-                  className={`px-2 py-1 text-[11px] font-medium rounded-md border whitespace-nowrap transition-colors ${cardBtnIdle}`}
-                >
-                  Center Pole
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onChangeConfig({ showClearanceRing: !config.showClearanceRing })}
-                  aria-pressed={config.showClearanceRing}
-                  className={`px-2.5 py-1 text-[11px] font-semibold rounded-md border whitespace-nowrap transition-colors ${
-                    config.showClearanceRing ? accentToggleActive : cardBtnIdle
-                  }`}
-                >
-                  Floor Ring
-                </button>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={onCenterActivePole}
+                    className={`px-2 py-1 text-[11px] font-medium rounded-md border whitespace-nowrap transition-colors ${cardBtnIdle}`}
+                  >
+                    Center Pole
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onChangeConfig({ showClearanceRing: !config.showClearanceRing })}
+                    aria-pressed={config.showClearanceRing}
+                    className={`px-2.5 py-1 text-[11px] font-semibold rounded-md border whitespace-nowrap transition-colors ${
+                      config.showClearanceRing ? accentToggleActive : cardBtnIdle
+                    }`}
+                  >
+                    Floor Ring
+                  </button>
+                </div>
               </div>
             </div>
           )}
