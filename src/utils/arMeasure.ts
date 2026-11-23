@@ -1,13 +1,11 @@
-import type { BaseMountId, PoleFinishId } from '../types/pole.ts';
+import type { BaseMountId, PoleFinishId } from '../types/pole';
 import {
   analyzeFloorClearance,
   BASE_MOUNTS,
   calculateHeightSolution,
-  MAX_POLE_LENGTH_CM,
   MAX_ROOM_SIZE_M,
-  MIN_POLE_FREE_RADIUS_M,
   MIN_ROOM_SIZE_M,
-} from './poleConfig.ts';
+} from './poleConfig';
 
 export interface ARMarkerState {
   /** Normalized vertical screen coordinate for pole base on floor (0=top, 1=bottom) */
@@ -39,36 +37,8 @@ export interface ARMeasurementResult {
   roomWidthM: number;
   roomDepthM: number;
   poleOffsetXM: number;
-  /** World-space Z coordinate of the pole in the 3D AR viewport (0 = wall plane, or calibrated centroid depth) */
-  poleDepthZM: number;
   leftWallXM: number;
   rightWallXM: number;
-  /** Radial spin clearance in meters from the pole's current lateral/depth anchor to nearest room boundary */
-  spinRadiusClearanceM: number;
-  /** Depth clearance from camera/wall plane to pole center in meters */
-  depthClearanceM: number;
-  /** Distance from pole center to left and right boundaries in meters */
-  leftClearanceM: number;
-  rightClearanceM: number;
-  /** Required free space radius around pole (1.25m) */
-  requiredFreeRadiusM: number;
-  /** True only when depth and lateral free space around pole are >= 1.25m */
-  canPlacePole: boolean;
-  /** Reason pole placement is blocked when canPlacePole === false */
-  placementBlockReason: string | null;
-  /** Maximum physical pole length in cm (250cm = 2.50m) */
-  maxPoleLengthCm: number;
-  /** True when detected ceiling exceeds 2.50m max pole length */
-  exceedsMaxPoleLength: boolean;
-  /** Extra height above 2.50m in cm requiring cushion above/below or open-ceiling base */
-  overHeightGapCm: number;
-  /** Estimated optical & geometric measurement accuracy percentage (0..99) */
-  accuracyPct: number;
-  /** Exact projected screen coordinates (0..1) of the 3D pole top dome & floor base hub */
-  ceilingScreenU: number;
-  ceilingScreenV: number;
-  floorScreenU: number;
-  floorScreenV: number;
   recommendedMount: BaseMountId;
   recommendedDiameterMm: 40 | 45 | 50;
   extensionsLabel: string;
@@ -98,11 +68,7 @@ export const DEFAULT_AR_MARKERS: ARMarkerState = {
  * corners maintain valid architectural geometry.
  */
 export function clampARMarkers(
-  state: Partial<ARMarkerState> &
-    Pick<
-      ARMarkerState,
-      'floorY' | 'ceilingY' | 'poleX' | 'cameraHeightM' | 'cameraPitchDeg' | 'vfovDeg' | 'aspect'
-    >
+  state: Partial<ARMarkerState> & Pick<ARMarkerState, 'floorY' | 'ceilingY' | 'poleX' | 'cameraHeightM' | 'cameraPitchDeg' | 'vfovDeg' | 'aspect'>
 ): ARMarkerState {
   const cameraHeightM = Math.max(0.85, Math.min(1.95, state.cameraHeightM));
   const cameraPitchDeg = Math.max(-25, Math.min(25, state.cameraPitchDeg));
@@ -114,11 +80,11 @@ export function clampARMarkers(
   // Horizon normalized Y in screen space: 0.5 + tan(pitch) / (2 * halfTan)
   const horizonY = 0.5 + Math.tan(pitchRad) / (2 * halfTan);
 
-  const maxFloorY = aspect < 0.85 ? 0.84 : 0.86;
-  const minFloorY = Math.min(maxFloorY - 0.05, Math.max(0.53, horizonY + 0.075));
+  const maxFloorY = aspect < 0.85 ? 0.77 : 0.84;
+  const minFloorY = Math.min(maxFloorY - 0.05, Math.max(0.54, horizonY + 0.08));
   const floorY = Math.max(minFloorY, Math.min(maxFloorY, state.floorY));
   const maxCeilingY = Math.max(0.11, Math.min(floorY - 0.18, horizonY - 0.04));
-  const ceilingY = Math.max(0.06, Math.min(maxCeilingY, state.ceilingY));
+  const ceilingY = Math.max(0.08, Math.min(maxCeilingY, state.ceilingY));
 
   // Derive left/right wall corners from explicit corner values or fallback wallSpanNorm
   const fallbackSpan = Math.max(0.32, Math.min(0.92, state.wallSpanNorm ?? 0.72));
@@ -147,49 +113,11 @@ export function clampARMarkers(
 }
 
 /**
- * Projects a 3D point (worldX, worldY, worldZ) in the PoleViewport3D AR scene
- * (where camera is at (0, cameraHeightM, distanceM) tilted by cameraPitchDeg)
- * into normalized screen coordinates (u, v).
- */
-export function projectARScenePointToScreen(
-  worldX: number,
-  worldY: number,
-  worldZ: number,
-  distanceM: number,
-  markers: Pick<ARMarkerState, 'cameraHeightM' | 'cameraPitchDeg' | 'vfovDeg' | 'aspect'>
-): { u: number; v: number } {
-  const rx = worldX;
-  const ry = worldY - markers.cameraHeightM;
-  const rz = worldZ - distanceM; // negative when in front of camera
-
-  const pitchRad = (markers.cameraPitchDeg * Math.PI) / 180;
-  const cosP = Math.cos(-pitchRad);
-  const sinP = Math.sin(-pitchRad);
-
-  const cx = rx;
-  const cy = ry * cosP - rz * sinP;
-  const cz = ry * sinP + rz * cosP;
-
-  const safeNegCz = Math.max(0.15, -cz);
-  const vfovRad = (markers.vfovDeg * Math.PI) / 180;
-  const halfTanV = Math.tan(vfovRad / 2);
-  const halfTanH = halfTanV * markers.aspect;
-
-  const ndcX = cx / (safeNegCz * halfTanH);
-  const ndcY = cy / (safeNegCz * halfTanV);
-
-  return {
-    u: Number(Math.max(0.02, Math.min(0.98, 0.5 + ndcX * 0.5)).toFixed(4)),
-    v: Number(Math.max(0.02, Math.min(0.98, 0.5 - ndcY * 0.5)).toFixed(4)),
-  };
-}
-
-/**
  * Pure pinhole-camera trigonometric room & ceiling measurement solver.
  * Computes ground distance from camera height + floor depression angle,
  * predicts ceiling height directly above the floor anchor, back-projects
- * left & right wall corners into physical room width/depth, evaluates
- * real-time lateral wall clearance, and recommends the optimal AxisPole rig.
+ * left & right wall corners into physical room width/depth, and recommends
+ * the optimal AxisPole mount & extension stack.
  */
 export function calculateARMeasurement(
   rawState: Partial<ARMarkerState> &
@@ -203,7 +131,6 @@ export function calculateARMeasurement(
   const vfovRad = (s.vfovDeg * Math.PI) / 180;
   const halfTanV = Math.tan(vfovRad / 2);
   const pitchRad = (s.cameraPitchDeg * Math.PI) / 180;
-  const cosP = Math.cos(pitchRad);
 
   // Ray angles relative to optical axis (positive = upward)
   const floorAlpha = Math.atan((0.5 - s.floorY) * 2 * halfTanV);
@@ -223,68 +150,39 @@ export function calculateARMeasurement(
   const ceilingHeightM = Math.max(2.15, Math.min(3.6, rawCeilingM));
   const ceilingHeightCm = Math.round(ceilingHeightM * 100);
 
-  // Horizontal projection at back wall plane (distanceM) with cosine pitch correction
+  // Horizontal projection at back wall plane (distanceM)
   const halfTanH = halfTanV * s.aspect;
-  const visibleWidthAtPlaneM = 2 * distanceM * Math.max(0.88, cosP) * halfTanH;
+  const visibleWidthAtPlaneM = 2 * distanceM * halfTanH;
 
   // Back-projected world X coordinates of the detected left & right wall corners
   const leftWallXM = Number(((s.leftCornerX - 0.5) * visibleWidthAtPlaneM).toFixed(2));
   const rightWallXM = Number(((s.rightCornerX - 0.5) * visibleWidthAtPlaneM).toFixed(2));
   const detectedSpanM = Math.abs(rightWallXM - leftWallXM);
 
-  // Portrait phones have narrower horizontal FOV, so apply perspective compensation when corners approach frame edges
+  // Portrait phones have narrower horizontal FOV, so apply gentle perspective compensation when corners are near edges
   const edgeBoost = s.aspect < 0.85 ? 1.38 : 1.04;
   const rawRoomWidthM = detectedSpanM * edgeBoost;
   const roomWidthM = Number(
     Math.max(MIN_ROOM_SIZE_M, Math.min(MAX_ROOM_SIZE_M, rawRoomWidthM)).toFixed(1)
   );
-  // Estimate room depth from camera-to-back-wall distance plus standing clearance behind camera (~1.15m)
+  // Estimate room depth from camera-to-back-wall distance plus standing clearance behind camera (~0.9m)
   const roomDepthM = Number(
     Math.max(MIN_ROOM_SIZE_M, Math.min(MAX_ROOM_SIZE_M, distanceM + 1.15)).toFixed(1)
   );
 
   // Lateral offset of pole from camera optical center in world meters
-  const poleOffsetXM = Number(((s.poleX - 0.5) * visibleWidthAtPlaneM).toFixed(2));
-  const poleDepthZM = 0;
-
-  // Compute depth & lateral free-space clearance around the pole (requires >= 1.25m free radius)
-  const effectiveSpanW = s.aspect >= 0.85 ? Math.max(1.2, rawRoomWidthM) : roomWidthM;
-  const wallFrac = Math.max(
-    0.02,
-    Math.min(0.98, (s.poleX - s.leftCornerX) / Math.max(0.12, s.rightCornerX - s.leftCornerX))
+  const poleOffsetXM = Number(
+    ((s.poleX - 0.5) * visibleWidthAtPlaneM).toFixed(2)
   );
-  const leftClearanceM = Number((wallFrac * effectiveSpanW).toFixed(2));
-  const rightClearanceM = Number(((1 - wallFrac) * effectiveSpanW).toFixed(2));
-  const depthClearanceM = Number(Math.min(distanceM * 0.68, roomDepthM * 0.5).toFixed(2));
-  const spinRadiusClearanceM = Number(
-    Math.max(0.25, Math.min(leftClearanceM, rightClearanceM, depthClearanceM)).toFixed(2)
-  );
-
-  const canPlacePole =
-    depthClearanceM >= MIN_POLE_FREE_RADIUS_M &&
-    leftClearanceM >= MIN_POLE_FREE_RADIUS_M &&
-    rightClearanceM >= MIN_POLE_FREE_RADIUS_M;
-
-  let placementBlockReason: string | null = null;
-  if (depthClearanceM < MIN_POLE_FREE_RADIUS_M) {
-    placementBlockReason = `Too close to wall (${depthClearanceM.toFixed(2)}m depth) — step back for ${MIN_POLE_FREE_RADIUS_M.toFixed(2)}m free space`;
-  } else if (leftClearanceM < MIN_POLE_FREE_RADIUS_M) {
-    placementBlockReason = `Too close to left wall (${leftClearanceM.toFixed(2)}m) — slide pole right for ${MIN_POLE_FREE_RADIUS_M.toFixed(2)}m clearance`;
-  } else if (rightClearanceM < MIN_POLE_FREE_RADIUS_M) {
-    placementBlockReason = `Too close to right wall (${rightClearanceM.toFixed(2)}m) — slide pole left for ${MIN_POLE_FREE_RADIUS_M.toFixed(2)}m clearance`;
-  }
-
-  const exceedsMaxPoleLength = ceilingHeightCm > MAX_POLE_LENGTH_CM;
-  const overHeightGapCm = Math.max(0, ceilingHeightCm - MAX_POLE_LENGTH_CM);
 
   // Determine optimal mount recommendation based on predicted height
   let recommendedMount: BaseMountId = 'tension';
   let isWithinTensionRange = true;
-  if (ceilingHeightCm > BASE_MOUNTS.tension.maxHeightCm) {
+  if (ceilingHeightCm > 335) {
     recommendedMount = 'permanent-ceiling';
     isWithinTensionRange = false;
-  } else if (ceilingHeightCm < BASE_MOUNTS.tension.minHeightCm) {
-    recommendedMount = 'stage-podium';
+  } else if (ceilingHeightCm < 225) {
+    recommendedMount = 'permanent-ceiling';
     isWithinTensionRange = false;
   }
 
@@ -293,18 +191,7 @@ export function calculateARMeasurement(
     recommendedMount,
     finishId
   );
-  const roomClearance = analyzeFloorClearance(roomWidthM, roomDepthM, recommendedMount);
-
-  // Incorporate depth & lateral free-space clearance into dynamic status
-  let clearanceStatus = roomClearance.status;
-  let clearanceLabel = roomClearance.label;
-  if (!canPlacePole) {
-    clearanceStatus = 'restricted';
-    clearanceLabel = `Under 1.25m free space (${spinRadiusClearanceM.toFixed(2)}m)`;
-  } else if (spinRadiusClearanceM < 1.4 && clearanceStatus === 'optimal') {
-    clearanceStatus = 'caution';
-    clearanceLabel = `Tight spin clearance (${spinRadiusClearanceM.toFixed(2)}m radial)`;
-  }
+  const clearance = analyzeFloorClearance(roomWidthM, roomDepthM, recommendedMount);
 
   const extensionsLabel =
     heightSol.extensions.length > 0
@@ -318,27 +205,9 @@ export function calculateARMeasurement(
     recommendationNote = `Tall ${ceilingHeightM.toFixed(2)}m ceiling: Fixed Ceiling mount recommended`;
   } else if (ceilingHeightCm < 225) {
     recommendationNote = `Low ${ceilingHeightM.toFixed(2)}m ceiling: Verify beam clearance`;
-  } else if (clearanceStatus === 'caution') {
-    recommendationNote = `Fits ${ceilingHeightM.toFixed(2)}m · Tight ${spinRadiusClearanceM.toFixed(2)}m spin radius`;
+  } else if (clearance.status === 'caution') {
+    recommendationNote = `Fits ${ceilingHeightM.toFixed(2)}m · Tight ${roomWidthM.toFixed(1)}m spin zone`;
   }
-
-  // Quantitative optical accuracy score (0..99%)
-  const distOptimality =
-    distanceM >= 1.6 && distanceM <= 4.5
-      ? 1.0
-      : Math.max(0.45, 1 - Math.min(Math.abs(distanceM - 1.6), Math.abs(distanceM - 4.5)) / 2.5);
-  const pitchOptimality =
-    Math.abs(s.cameraPitchDeg) <= 12
-      ? 1.0
-      : Math.max(0.4, 1 - (Math.abs(s.cameraPitchDeg) - 12) / 18);
-  const verticalSpan = s.floorY - s.ceilingY;
-  const spanOptimality =
-    verticalSpan >= 0.42 && verticalSpan <= 0.72
-      ? 1.0
-      : Math.max(0.5, 1 - Math.abs(verticalSpan - 0.55) / 0.45);
-  const accuracyPct = Math.round(
-    Math.max(68, Math.min(96, 66 + distOptimality * 12 + pitchOptimality * 10 + spanOptimality * 8))
-  );
 
   const confidenceLabel: ARMeasurementResult['confidenceLabel'] =
     distanceM >= 1.5 && distanceM <= 4.6 && Math.abs(s.cameraPitchDeg) <= 16
@@ -347,9 +216,6 @@ export function calculateARMeasurement(
         ? 'Adjust Angle'
         : 'Calibrated';
 
-  const topProj = projectARScenePointToScreen(poleOffsetXM, ceilingHeightM, poleDepthZM, distanceM, s);
-  const botProj = projectARScenePointToScreen(poleOffsetXM, 0, poleDepthZM, distanceM, s);
-
   return {
     distanceM: Number(distanceM.toFixed(2)),
     ceilingHeightCm,
@@ -357,29 +223,13 @@ export function calculateARMeasurement(
     roomWidthM,
     roomDepthM,
     poleOffsetXM,
-    poleDepthZM,
     leftWallXM,
     rightWallXM,
-    spinRadiusClearanceM,
-    depthClearanceM,
-    leftClearanceM,
-    rightClearanceM,
-    requiredFreeRadiusM: MIN_POLE_FREE_RADIUS_M,
-    canPlacePole,
-    placementBlockReason,
-    maxPoleLengthCm: MAX_POLE_LENGTH_CM,
-    exceedsMaxPoleLength,
-    overHeightGapCm,
-    accuracyPct,
-    ceilingScreenU: topProj.u,
-    ceilingScreenV: topProj.v,
-    floorScreenU: botProj.u,
-    floorScreenV: botProj.v,
     recommendedMount,
     recommendedDiameterMm,
     extensionsLabel,
-    clearanceStatus,
-    clearanceLabel,
+    clearanceStatus: clearance.status,
+    clearanceLabel: clearance.label,
     confidenceLabel,
     recommendationNote,
     isWithinTensionRange,

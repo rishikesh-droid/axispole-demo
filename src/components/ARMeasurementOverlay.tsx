@@ -4,21 +4,18 @@ import {
   useMemo,
   useRef,
   useState,
+  type ChangeEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import {
-  AlertTriangle,
-  ArrowDown,
-  ArrowUp,
-  CameraOff,
+  AlertCircle,
   Check,
-  CircleDot,
   Compass,
   Crosshair,
-  Minus,
+  Gauge,
+  ImagePlus,
+  Loader2,
   MoveHorizontal,
-  Plus,
-  RefreshCw,
   RotateCw,
   ScanLine,
   SlidersHorizontal,
@@ -26,7 +23,7 @@ import {
   Undo2,
   X,
 } from 'lucide-react';
-import type { CushionPosition, PoleFinishId } from '../types/pole';
+import type { PoleFinishId, RoomReplicaScene } from '../types/pole';
 import {
   calculateARMeasurement,
   clampARMarkers,
@@ -36,6 +33,7 @@ import {
 import {
   accumulateRoomScan,
   analyzeFrameForPointCloud,
+  computeLiveARAccuracy,
   createRoomScanAccumulator,
   extractVideoFrameRGBA,
   generateCalibratedRoomScanFrame,
@@ -44,19 +42,20 @@ import {
 } from '../utils/arPointCloud';
 import {
   buildMeasurementFromSurfaceCalibration,
-  predictFloorQuadFromMarkers,
   screenToFloorPoint3D,
   solveFloorSurfaceCalibration,
   type FloorPoint3D,
   type FloorTapPoint2D,
   type SurfaceCalibrationResult,
 } from '../utils/arSurfaceCalibration';
+import {
+  captureVideoFrameDataUrl,
+  compressImageFileToDataUrl,
+} from '../utils/roomReplica';
 import type { ARScanPhase } from '../three/arPointCloudMesh';
 import {
   BASE_MOUNTS,
   formatHeightMetricAndImperial,
-  MAX_POLE_LENGTH_M,
-  MIN_POLE_FREE_RADIUS_M,
   POLE_FINISHES,
 } from '../utils/poleConfig';
 import { getPoleMaterialAvatars } from '../utils/materialThumbnails';
@@ -64,6 +63,8 @@ import { getPoleMaterialAvatars } from '../utils/materialThumbnails';
 interface ARMeasurementOverlayProps {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   arCameraError: string | null;
+  uploadedPhotoUrl: string | null;
+  onUploadRoomPhoto: (dataUrl: string | null) => void;
   markers: ARMarkerState;
   onChangeMarkers: (next: ARMarkerState) => void;
   scanPhase: ARScanPhase;
@@ -78,24 +79,28 @@ interface ARMeasurementOverlayProps {
   onToggleShowPointCloud: () => void;
   activeFinish: PoleFinishId;
   isSpinning: boolean;
-  cushionPosition: CushionPosition;
-  arOpenCeilingMode: boolean;
   onChangeFinish: (finish: PoleFinishId) => void;
   onToggleSpin: () => void;
-  onChangeCushionPosition: (pos: CushionPosition) => void;
-  onSwitchToOpenCeiling: () => void;
-  onRetryCamera: () => void;
   onAutoSyncRoom: (result: ARMeasurementResult, silent?: boolean) => void;
+  onApplyRoomReplica: (result: ARMeasurementResult, replica: RoomReplicaScene) => void;
   onExit: () => void;
 }
 
 const FINISH_ORDER: PoleFinishId[] = ['brass', 'stainless', 'powder-black', 'silicone'];
-
 type DragHandleId = 'ceiling' | 'floor' | 'pole' | `floor-pin-${number}`;
+
+const REPLICA_STAGES = [
+  'Capturing live room frame & AR geometry…',
+  'Detecting visible desks, chairs, walls & lighting…',
+  'Extrapolating unseen room zones & layout…',
+  'Constructing 3D Room Replica…',
+];
 
 export function ARMeasurementOverlay({
   videoRef,
   arCameraError,
+  uploadedPhotoUrl,
+  onUploadRoomPhoto,
   markers,
   onChangeMarkers,
   scanPhase,
@@ -108,29 +113,25 @@ export function ARMeasurementOverlay({
   onUpdatePointCloud,
   activeFinish,
   isSpinning,
-  cushionPosition,
-  arOpenCeilingMode,
   onChangeFinish,
   onToggleSpin,
-  onChangeCushionPosition,
-  onSwitchToOpenCeiling,
-  onRetryCamera,
   onAutoSyncRoom,
+  onApplyRoomReplica,
   onExit,
 }: ARMeasurementOverlayProps) {
   const overlayRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [draggingHandle, setDraggingHandle] = useState<DragHandleId | null>(null);
   const [gyroActive, setGyroActive] = useState(false);
   const [showCalibPanel, setShowCalibPanel] = useState(false);
   const [tapWarning, setTapWarning] = useState<string | null>(null);
-  const [lockToast, setLockToast] = useState<string | null>(null);
-  const [dismissedUnsupportedPrompt, setDismissedUnsupportedPrompt] = useState(false);
+  const [userAdjustedCeiling, setUserAdjustedCeiling] = useState(false);
+  const [userAdjustedFloor, setUserAdjustedFloor] = useState(false);
 
-  useEffect(() => {
-    if (arCameraError) {
-      setDismissedUnsupportedPrompt(false);
-    }
-  }, [arCameraError]);
+  // Scene Capture -> 3D Room Replica build state
+  const [isBuildingReplica, setIsBuildingReplica] = useState(false);
+  const [replicaStageIdx, setReplicaStageIdx] = useState(0);
+  const [replicaError, setReplicaError] = useState<string | null>(null);
 
   const [scanAcc, setScanAcc] = useState<RoomScanAccumulator>(() =>
     createRoomScanAccumulator(markers)
@@ -148,7 +149,6 @@ export function ARMeasurementOverlay({
   finishRef.current = activeFinish;
   const scanStepRef = useRef(0);
   const autoLockedRef = useRef(false);
-  const smoothedPitchRef = useRef(markers.cameraPitchDeg);
 
   const avatars = useMemo(() => getPoleMaterialAvatars(), []);
 
@@ -161,6 +161,27 @@ export function ARMeasurementOverlay({
       return calculateARMeasurement(nextMarkers, finishRef.current);
     },
     []
+  );
+
+  // Live unified Accuracy Meter readout (Floor %, Ceiling %, Overall %, ±cm)
+  const liveAccuracy = useMemo(
+    () =>
+      computeLiveARAccuracy({
+        scanAcc,
+        markers,
+        surfaceCalibrated: Boolean(surfaceCalibration?.valid),
+        gyroActive,
+        userAdjustedCeiling,
+        userAdjustedFloor,
+      }),
+    [
+      scanAcc,
+      markers,
+      surfaceCalibration?.valid,
+      gyroActive,
+      userAdjustedCeiling,
+      userAdjustedFloor,
+    ]
   );
 
   // Sync aspect ratio & vertical FOV to viewport orientation on mount & resize
@@ -189,31 +210,114 @@ export function ARMeasurementOverlay({
     return () => window.clearTimeout(t);
   }, [tapWarning]);
 
+  // Cycle informative progress step labels while Gemini Vision builds the 3D Room Replica
   useEffect(() => {
-    if (!lockToast) return;
-    const t = window.setTimeout(() => setLockToast(null), 2600);
-    return () => window.clearTimeout(t);
-  }, [lockToast]);
+    if (!isBuildingReplica) {
+      setReplicaStageIdx(0);
+      return;
+    }
+    const id = window.setInterval(() => {
+      setReplicaStageIdx((prev) => Math.min(REPLICA_STAGES.length - 1, prev + 1));
+    }, 1600);
+    return () => window.clearInterval(id);
+  }, [isBuildingReplica]);
 
-  // High-resolution (160x216) live camera auto-scan with multi-frame RANSAC consensus
+  // Helper: analyze either the live camera video OR an uploaded room photo at 160x200
+  const analyzeSourceFrame = useCallback(
+    async (curMarkers: ARMarkerState) => {
+      const rgba = extractVideoFrameRGBA(videoRef.current, 160, 200);
+      if (rgba) {
+        return analyzeFrameForPointCloud(rgba, 160, 200, curMarkers);
+      }
+      if (uploadedPhotoUrl) {
+        try {
+          const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+            const el = new Image();
+            el.onload = () => resolve(el);
+            el.onerror = () => reject(new Error('Image decode failed'));
+            el.src = uploadedPhotoUrl;
+          });
+          const canvas = document.createElement('canvas');
+          canvas.width = 160;
+          canvas.height = 200;
+          const ctx = canvas.getContext('2d', { willReadFrequently: true });
+          if (ctx) {
+            ctx.drawImage(img, 0, 0, 160, 200);
+            const data = ctx.getImageData(0, 0, 160, 200).data;
+            return analyzeFrameForPointCloud(data, 160, 200, curMarkers);
+          }
+        } catch {
+          // Fall through
+        }
+      }
+      if (arCameraError) {
+        return generateCalibratedRoomScanFrame(scanStepRef.current, curMarkers);
+      }
+      return null;
+    },
+    [videoRef, uploadedPhotoUrl, arCameraError]
+  );
+
+  // Passive real-time plane tracking in pole-ready mode so live Accuracy Meter & pole height stay synced!
+  useEffect(() => {
+    if (scanPhase !== 'pole-ready' || isBuildingReplica) return;
+    let cancelled = false;
+    const tickPassive = async () => {
+      if (cancelled || draggingRef.current !== null) return;
+      const rgba = extractVideoFrameRGBA(videoRef.current, 160, 200);
+      if (!rgba) return;
+      const frame = analyzeFrameForPointCloud(rgba, 160, 200, markersRef.current);
+      if (cancelled || !frame.detected) return;
+
+      const nextAcc = accumulateRoomScan(scanAccRef.current, frame);
+      scanAccRef.current = nextAcc;
+      setScanAcc(nextAcc);
+
+      // Gently auto-adjust pole ceiling & floor alignment when user hasn't manually overridden them
+      if (!userAdjustedCeiling && !userAdjustedFloor && !surfaceCalibration?.valid) {
+        const cur = markersRef.current;
+        const c = nextAcc.consensusCorners;
+        const blend = 0.22;
+        const nextMarkers = clampARMarkers({
+          ...cur,
+          ceilingY: cur.ceilingY + (c.ceilingY - cur.ceilingY) * blend,
+          floorY: cur.floorY + (c.floorY - cur.floorY) * blend,
+          leftCornerX: cur.leftCornerX + (c.leftCornerX - cur.leftCornerX) * blend,
+          rightCornerX: cur.rightCornerX + (c.rightCornerX - cur.rightCornerX) * blend,
+        });
+        onChangeMarkers(nextMarkers);
+      }
+    };
+
+    const id = window.setInterval(() => {
+      void tickPassive();
+    }, 520);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [
+    scanPhase,
+    isBuildingReplica,
+    videoRef,
+    userAdjustedCeiling,
+    userAdjustedFloor,
+    surfaceCalibration?.valid,
+    onChangeMarkers,
+  ]);
+
+  // High-precision active Auto Scan loop (160x200 multi-channel RANSAC + sub-pixel refinement)
   useEffect(() => {
     if (scanPhase !== 'scanning') return;
     autoLockedRef.current = false;
     scanStepRef.current = 0;
+    let cancelled = false;
 
-    const tickScan = () => {
-      if (draggingRef.current !== null) return;
+    const tickScan = async () => {
+      if (cancelled || draggingRef.current !== null) return;
       const curMarkers = markersRef.current;
-
-      const rgba = extractVideoFrameRGBA(videoRef.current, 160, 216);
-      let frameResult;
-      if (rgba) {
-        frameResult = analyzeFrameForPointCloud(rgba, 160, 216, curMarkers);
-      } else if (arCameraError) {
-        frameResult = generateCalibratedRoomScanFrame(scanStepRef.current, curMarkers);
-      } else {
-        return;
-      }
+      const frameResult = await analyzeSourceFrame(curMarkers);
+      if (cancelled || !frameResult) return;
 
       scanStepRef.current += 1;
 
@@ -238,28 +342,29 @@ export function ARMeasurementOverlay({
         if (nextAcc.isLocked && !autoLockedRef.current) {
           autoLockedRef.current = true;
           const lockedResult = computeBestMeasurement(nextMarkers, floorTapsRef.current);
-          setLockToast(
-            `Ceiling ${lockedResult.ceilingHeightM.toFixed(2)}m locked (${nextAcc.confidencePct}% accuracy)`
-          );
           window.setTimeout(() => {
             onAutoSyncRoom(lockedResult, false);
             onUpdatePointCloud([]);
             onChangeScanPhase('pole-ready');
-          }, 160);
+          }, 220);
         }
       }
     };
 
-    const initialTimer = window.setTimeout(tickScan, 120);
-    const intervalId = window.setInterval(tickScan, 175);
+    const initialTimer = window.setTimeout(() => {
+      void tickScan();
+    }, 150);
+    const intervalId = window.setInterval(() => {
+      void tickScan();
+    }, 210);
     return () => {
+      cancelled = true;
       window.clearTimeout(initialTimer);
       window.clearInterval(intervalId);
     };
   }, [
     scanPhase,
-    arCameraError,
-    videoRef,
+    analyzeSourceFrame,
     onChangeMarkers,
     onUpdatePointCloud,
     onAutoSyncRoom,
@@ -267,20 +372,16 @@ export function ARMeasurementOverlay({
     computeBestMeasurement,
   ]);
 
-  // Low-pass filtered DeviceOrientation pitch sensor fusion
+  // Optional DeviceOrientation pitch sensor
   useEffect(() => {
     if (!gyroActive || typeof window === 'undefined') return;
-    smoothedPitchRef.current = markersRef.current.cameraPitchDeg;
     const onOrientation = (e: DeviceOrientationEvent) => {
       if (typeof e.beta !== 'number') return;
-      const rawPitch = Math.max(-22, Math.min(22, e.beta - 90));
-      const nextSmoothed = smoothedPitchRef.current * 0.8 + rawPitch * 0.2;
-      smoothedPitchRef.current = nextSmoothed;
-      if (Math.abs(nextSmoothed - markersRef.current.cameraPitchDeg) < 0.2) return;
+      const pitchDeg = Math.max(-22, Math.min(22, e.beta - 90));
       onChangeMarkers(
         clampARMarkers({
           ...markersRef.current,
-          cameraPitchDeg: Number(nextSmoothed.toFixed(1)),
+          cameraPitchDeg: Number(pitchDeg.toFixed(1)),
         })
       );
     };
@@ -309,6 +410,7 @@ export function ARMeasurementOverlay({
   };
 
   const handleToggleAutoScan = useCallback(() => {
+    setReplicaError(null);
     if (scanPhase === 'scanning') {
       onUpdatePointCloud([]);
       onChangeScanPhase('pole-ready');
@@ -316,6 +418,8 @@ export function ARMeasurementOverlay({
     }
     autoLockedRef.current = false;
     scanStepRef.current = 0;
+    setUserAdjustedCeiling(false);
+    setUserAdjustedFloor(false);
     const fresh = createRoomScanAccumulator(markersRef.current);
     scanAccRef.current = fresh;
     setScanAcc(fresh);
@@ -324,6 +428,7 @@ export function ARMeasurementOverlay({
   }, [scanPhase, onChangeScanPhase, onUpdatePointCloud]);
 
   const handleToggleFloorCalibrate = useCallback(() => {
+    setReplicaError(null);
     if (scanPhase === 'surface-calibrate') {
       onChangeScanPhase('pole-ready');
       return;
@@ -332,43 +437,129 @@ export function ARMeasurementOverlay({
     onChangeScanPhase('surface-calibrate');
   }, [scanPhase, onChangeScanPhase, onUpdatePointCloud]);
 
-  const applyFourFloorTaps = useCallback(
-    (nextTaps: FloorTapPoint2D[], autoClosePhase: boolean) => {
-      onChangeFloorTaps(nextTaps);
-      setTapWarning(null);
-      if (nextTaps.length === 4) {
-        const cal = solveFloorSurfaceCalibration(nextTaps, markersRef.current);
-        if (cal && cal.valid) {
-          const syncedMarkers = clampARMarkers({
+  const handleSelectPhotoFile = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      setReplicaError(null);
+      const dataUrl = await compressImageFileToDataUrl(file, 1024, 0.86);
+      onUploadRoomPhoto(dataUrl);
+      // Run instant plane analysis on the uploaded room photo to snap pole & boost accuracy
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const el = new Image();
+        el.onload = () => resolve(el);
+        el.onerror = () => reject(new Error('Decode failed'));
+        el.src = dataUrl;
+      });
+      const canvas = document.createElement('canvas');
+      canvas.width = 160;
+      canvas.height = 200;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (ctx) {
+        ctx.drawImage(img, 0, 0, 160, 200);
+        const rgba = ctx.getImageData(0, 0, 160, 200).data;
+        const frame = analyzeFrameForPointCloud(rgba, 160, 200, markersRef.current);
+        let acc = createRoomScanAccumulator(markersRef.current);
+        for (let i = 0; i < 6; i++) {
+          acc = accumulateRoomScan(acc, frame);
+        }
+        scanAccRef.current = acc;
+        setScanAcc(acc);
+        if (frame.detected) {
+          const nextM = clampARMarkers({
             ...markersRef.current,
-            poleX: cal.centroidScreenU,
-            floorY: cal.centroidScreenV,
+            ceilingY: frame.corners.ceilingY,
+            floorY: frame.corners.floorY,
+            leftCornerX: frame.corners.leftCornerX,
+            rightCornerX: frame.corners.rightCornerX,
           });
-          onChangeMarkers(syncedMarkers);
-          const res = buildMeasurementFromSurfaceCalibration(
-            cal,
-            syncedMarkers,
-            finishRef.current
-          );
-          onAutoSyncRoom(res, false);
-          if (autoClosePhase) {
-            setLockToast(
-              `4-Pt Floor Locked · ${cal.rawWidthM.toFixed(1)}×${cal.rawDepthM.toFixed(1)}m (${cal.accuracyScore}%)`
-            );
-            window.setTimeout(() => {
-              onChangeScanPhase('pole-ready');
-            }, 380);
-          }
+          onChangeMarkers(nextM);
+          onAutoSyncRoom(computeBestMeasurement(nextM, floorTapsRef.current), true);
         }
       }
-    },
-    [onChangeFloorTaps, onChangeMarkers, onAutoSyncRoom, onChangeScanPhase]
-  );
+    } catch (err) {
+      setReplicaError(err instanceof Error ? err.message : 'Could not load room photo.');
+    }
+  };
 
-  const handleAutoFitFourCorners = useCallback(() => {
-    const predicted = predictFloorQuadFromMarkers(markersRef.current);
-    applyFourFloorTaps(predicted, false);
-  }, [applyFourFloorTaps]);
+  /**
+   * "Use This Fit": Captures the live camera scene (or uploaded room photo) + AR metrics,
+   * sends it to /api/analyze-room (Gemini Vision) to reconstruct visible furniture AND
+   * extrapolate unseen room zones, then transitions directly to the 3D Room Replica!
+   */
+  const handleUseThisFitWithReplica = useCallback(async () => {
+    setReplicaError(null);
+    const snapshotDataUrl =
+      captureVideoFrameDataUrl(videoRef.current, 1024, 0.86) ?? uploadedPhotoUrl;
+
+    if (!snapshotDataUrl) {
+      setReplicaError(
+        'No live camera frame available to capture your room. Upload a room photo to build your 3D Room Replica, or apply dimensions only.'
+      );
+      return;
+    }
+
+    setIsBuildingReplica(true);
+    setReplicaStageIdx(0);
+
+    try {
+      const displayW = surfaceCalibration?.valid
+        ? surfaceCalibration.rawWidthM
+        : measurement.roomWidthM;
+      const displayD = surfaceCalibration?.valid
+        ? surfaceCalibration.rawDepthM
+        : measurement.roomDepthM;
+
+      const res = await fetch('/api/analyze-room', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imageDataUrl: snapshotDataUrl,
+          ceilingHeightCm: measurement.ceilingHeightCm,
+          roomWidthM: displayW,
+          roomDepthM: displayD,
+          distanceM: measurement.distanceM,
+          poleOffsetXM: measurement.poleOffsetXM,
+          floorAccuracyPct: liveAccuracy.floorAccuracyPct,
+          ceilingAccuracyPct: liveAccuracy.ceilingAccuracyPct,
+          overallAccuracyPct: liveAccuracy.overallAccuracyPct,
+        }),
+      });
+
+      const payload = (await res.json().catch(() => ({}))) as {
+        scene?: RoomReplicaScene;
+        error?: string;
+      };
+
+      if (!res.ok || !payload.scene) {
+        throw new Error(
+          payload.error || 'Could not reconstruct room scene. Please retry or apply dimensions only.'
+        );
+      }
+
+      const replicaScene: RoomReplicaScene = {
+        ...payload.scene,
+        previewDataUrl: snapshotDataUrl,
+      };
+      setIsBuildingReplica(false);
+      onApplyRoomReplica(measurement, replicaScene);
+    } catch (err) {
+      setIsBuildingReplica(false);
+      setReplicaError(
+        err instanceof Error
+          ? err.message
+          : 'Could not scan room scene. Please retry or apply dimensions only.'
+      );
+    }
+  }, [
+    videoRef,
+    uploadedPhotoUrl,
+    surfaceCalibration,
+    measurement,
+    liveAccuracy,
+    onApplyRoomReplica,
+  ]);
 
   const handleFloorSurfaceTap = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (scanPhase !== 'surface-calibrate' || draggingHandle !== null) return;
@@ -382,7 +573,7 @@ export function ARMeasurementOverlay({
 
     const hit3D = screenToFloorPoint3D(u, v, markersRef.current, floorTapsRef.current.length + 1);
     if (!hit3D) {
-      setTapWarning('Tap lower on the floor below horizon');
+      setTapWarning('Tap lower on the floor');
       return;
     }
 
@@ -390,21 +581,20 @@ export function ARMeasurementOverlay({
       ...floorTapsRef.current,
       { id: floorTapsRef.current.length + 1, u, v },
     ];
-    applyFourFloorTaps(nextTaps, true);
-  };
+    onChangeFloorTaps(nextTaps);
+    setTapWarning(null);
 
-  const handleNudgeCeilingHeight = useCallback(
-    (deltaY: number) => {
-      const cur = markersRef.current;
-      const next = clampARMarkers({
-        ...cur,
-        ceilingY: cur.ceilingY + deltaY,
-      });
-      onChangeMarkers(next);
-      onAutoSyncRoom(computeBestMeasurement(next, floorTapsRef.current), true);
-    },
-    [onChangeMarkers, onAutoSyncRoom, computeBestMeasurement]
-  );
+    if (nextTaps.length === 4) {
+      const cal = solveFloorSurfaceCalibration(nextTaps, markersRef.current);
+      if (cal && cal.valid) {
+        const res = buildMeasurementFromSurfaceCalibration(cal, markersRef.current, finishRef.current);
+        onAutoSyncRoom(res, false);
+        window.setTimeout(() => {
+          onChangeScanPhase('pole-ready');
+        }, 420);
+      }
+    }
+  };
 
   const updateMarkerFromPointer = useCallback(
     (clientX: number, clientY: number, handle: DragHandleId) => {
@@ -430,15 +620,19 @@ export function ARMeasurementOverlay({
       const cur = markersRef.current;
       let next: ARMarkerState = cur;
       if (handle === 'ceiling') {
+        setUserAdjustedCeiling(true);
         next = clampARMarkers({ ...cur, ceilingY: ny });
       } else if (handle === 'floor') {
+        setUserAdjustedFloor(true);
         next = clampARMarkers({ ...cur, floorY: ny });
       } else if (handle === 'pole') {
         next = clampARMarkers({ ...cur, poleX: nx });
       }
 
       onChangeMarkers(next);
-      onAutoSyncRoom(computeBestMeasurement(next, floorTapsRef.current), true);
+      if (handle !== 'pole') {
+        onAutoSyncRoom(computeBestMeasurement(next, floorTapsRef.current), true);
+      }
     },
     [onChangeMarkers, onChangeFloorTaps, onAutoSyncRoom, computeBestMeasurement]
   );
@@ -450,7 +644,7 @@ export function ARMeasurementOverlay({
   };
 
   const onPointerUp = () => {
-    if (draggingHandle) {
+    if (draggingHandle && draggingHandle !== 'pole') {
       onAutoSyncRoom(computeBestMeasurement(markersRef.current, floorTapsRef.current), true);
     }
     setDraggingHandle(null);
@@ -465,8 +659,6 @@ export function ARMeasurementOverlay({
   const floorPct = `${(markers.floorY * 100).toFixed(2)}%`;
   const poleXPct = `${(markers.poleX * 100).toFixed(2)}%`;
   const midYPct = `${(((markers.ceilingY + markers.floorY) / 2) * 100).toFixed(2)}%`;
-  const leftCornerPct = `${(markers.leftCornerX * 100).toFixed(2)}%`;
-  const rightCornerPct = `${(markers.rightCornerX * 100).toFixed(2)}%`;
 
   const isSurfaceMode = scanPhase === 'surface-calibrate';
   const isScanning = scanPhase === 'scanning';
@@ -478,9 +670,19 @@ export function ARMeasurementOverlay({
     ? surfaceCalibration.rawDepthM
     : measurement.roomDepthM;
 
-  const liveAccuracyPct = isScanning
-    ? Math.max(measurement.accuracyPct, scanAcc.confidencePct)
-    : measurement.accuracyPct;
+  const accuracyColorClass =
+    liveAccuracy.overallAccuracyPct >= 91
+      ? 'text-emerald-300'
+      : liveAccuracy.overallAccuracyPct >= 78
+        ? 'text-cyan-300'
+        : 'text-amber-300';
+
+  const accuracyBarColor =
+    liveAccuracy.overallAccuracyPct >= 91
+      ? 'bg-emerald-400'
+      : liveAccuracy.overallAccuracyPct >= 78
+        ? 'bg-cyan-400'
+        : 'bg-amber-400';
 
   return (
     <div
@@ -492,8 +694,19 @@ export function ARMeasurementOverlay({
       data-testid="ar-measurement-overlay"
       data-scan-phase={scanPhase}
       data-floor-calibrated={surfaceCalibration?.valid ? 'true' : 'false'}
+      data-accuracy-pct={String(liveAccuracy.overallAccuracyPct)}
     >
-      {/* Floor Tap Capture Layer (active while user is in 4-Pt Floor mode) */}
+      {/* Hidden file input for room photo upload fallback/desktop scanning */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        onChange={handleSelectPhotoFile}
+        data-testid="ar-photo-file-input"
+        className="hidden"
+      />
+
+      {/* Optional Floor Tap Capture Layer (ONLY active while user chose 4-Pt Floor; pole stays visible on camera!) */}
       {isSurfaceMode && (
         <div
           onPointerDown={handleFloorSurfaceTap}
@@ -503,7 +716,7 @@ export function ARMeasurementOverlay({
         />
       )}
 
-      {/* 4-Pt Floor Polygon & Metric Edge Readout during surface calibration */}
+      {/* Subtle Floor Polygon & Pins ONLY during 4-Pt Floor tapping */}
       {isSurfaceMode && orderedFloorPoints.length > 0 && (
         <svg
           className="absolute inset-0 w-full h-full pointer-events-none"
@@ -512,29 +725,19 @@ export function ARMeasurementOverlay({
           aria-hidden="true"
         >
           {orderedFloorPoints.length === 4 ? (
-            <>
-              <polygon
-                points={orderedFloorPoints.map((p) => `${p.u * 100},${p.v * 100}`).join(' ')}
-                fill="rgba(16, 185, 129, 0.16)"
-                stroke="#34d399"
-                strokeWidth={0.4}
-              />
-              {surfaceCalibration?.valid && (
-                <circle
-                  cx={surfaceCalibration.centroidScreenU * 100}
-                  cy={surfaceCalibration.centroidScreenV * 100}
-                  r={1.1}
-                  fill="#22d3ee"
-                />
-              )}
-            </>
+            <polygon
+              points={orderedFloorPoints.map((p) => `${p.u * 100},${p.v * 100}`).join(' ')}
+              fill="rgba(16, 185, 129, 0.14)"
+              stroke="#34d399"
+              strokeWidth={0.35}
+            />
           ) : (
             orderedFloorPoints.length >= 2 && (
               <polyline
                 points={orderedFloorPoints.map((p) => `${p.u * 100},${p.v * 100}`).join(' ')}
                 fill="none"
                 stroke="#34d399"
-                strokeWidth={0.4}
+                strokeWidth={0.35}
               />
             )
           )}
@@ -557,56 +760,24 @@ export function ARMeasurementOverlay({
               left: `${(tap.u * 100).toFixed(2)}%`,
               top: `${(tap.v * 100).toFixed(2)}%`,
             }}
-            className="absolute -translate-x-1/2 -translate-y-1/2 pointer-events-auto touch-none w-7 h-7 rounded-full border-2 border-emerald-300 bg-black/80 text-emerald-100 font-mono text-xs font-bold flex items-center justify-center shadow-lg active:scale-110 transition-transform"
+            className="absolute -translate-x-1/2 -translate-y-1/2 pointer-events-auto touch-none w-7 h-7 rounded-full border-2 border-emerald-300 bg-black/75 text-emerald-100 font-mono text-xs font-bold flex items-center justify-center shadow-lg"
           >
             {idx + 1}
           </button>
         ))}
 
       {tapWarning && isSurfaceMode && (
-        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 px-3 py-1 rounded-lg bg-black/85 border border-rose-400/60 text-rose-100 text-[11px] font-medium whitespace-nowrap">
+        <div className="fixed top-28 left-1/2 -translate-x-1/2 z-50 px-3 py-1 rounded-lg bg-black/85 border border-rose-400/60 text-rose-100 text-[11px] font-medium whitespace-nowrap">
           {tapWarning}
         </div>
       )}
 
-      {/* Precision Plumb Laser Axis, Wall Corner Ticks & Ceiling/Floor Alignment Handles */}
-      {!isSurfaceMode && (
+      {/* Clean, Minimal Ceiling & Floor Alignment Handles directly over the live camera & 3D pole */}
+      {!isSurfaceMode && !isBuildingReplica && (
         <>
-          {/* Vertical Laser Plumb Line connecting Ceiling Dome to Floor Base */}
-          <div
-            className={`absolute w-px -translate-x-1/2 pointer-events-none ${
-              measurement.canPlacePole
-                ? 'bg-gradient-to-b from-violet-300/65 via-cyan-300/40 to-emerald-300/65'
-                : 'bg-gradient-to-b from-rose-400/65 via-rose-400/25 to-rose-400/65'
-            }`}
-            style={{
-              left: poleXPct,
-              top: ceilPct,
-              height: `${Math.max(4, (markers.floorY - markers.ceilingY) * 100).toFixed(2)}%`,
-            }}
-            aria-hidden="true"
-          >
-            {/* Top Dome Laser Reticle Dot */}
-            <div
-              className={`absolute -top-1.5 left-1/2 -translate-x-1/2 w-3 h-3 rounded-full border ${
-                measurement.canPlacePole
-                  ? 'border-violet-300 bg-violet-400/35'
-                  : 'border-rose-400 bg-rose-500/35'
-              }`}
-            />
-            {/* Bottom Base Laser Reticle Dot */}
-            <div
-              className={`absolute -bottom-1.5 left-1/2 -translate-x-1/2 w-3 h-3 rounded-full border ${
-                measurement.canPlacePole
-                  ? 'border-cyan-300 bg-cyan-400/35'
-                  : 'border-rose-400 bg-rose-500/35'
-              }`}
-            />
-          </div>
-
           {/* Slim Ceiling Alignment Handle */}
           <div
-            className="absolute left-5 right-5 pointer-events-auto touch-none cursor-ns-resize py-3 -translate-y-1/2"
+            className="absolute left-6 right-6 pointer-events-auto touch-none cursor-ns-resize py-3 -translate-y-1/2"
             style={{ top: ceilPct }}
             onPointerDown={(e) => {
               e.stopPropagation();
@@ -621,30 +792,18 @@ export function ARMeasurementOverlay({
             tabIndex={0}
             data-testid="ar-ceiling-handle"
           >
-            <div className="relative h-[1.5px] bg-white/60">
-              {/* Detected Left & Right Room Corner Ticks on Ceiling Line */}
-              <span
-                className="absolute top-0 w-1.5 h-2.5 border-l-2 border-t-2 border-amber-300/75"
-                style={{ left: leftCornerPct }}
-                aria-hidden="true"
-              />
-              <span
-                className="absolute top-0 w-1.5 h-2.5 border-r-2 border-t-2 border-amber-300/75 -translate-x-full"
-                style={{ left: rightCornerPct }}
-                aria-hidden="true"
-              />
-              <div className="absolute left-0 top-1/2 -translate-y-1/2 px-2 py-0.5 rounded-md bg-black/75 border border-white/25 text-[10px] font-semibold text-white whitespace-nowrap flex items-center gap-1.5">
-                <span>Ceiling · {measurement.ceilingHeightM.toFixed(2)}m</span>
-                <span className="text-violet-300 font-mono">{measurement.ceilingHeightCm}cm</span>
+            <div className="relative h-[1.5px] bg-white/55">
+              <div className="absolute left-0 top-1/2 -translate-y-1/2 px-2 py-0.5 rounded-md bg-black/75 border border-white/25 text-[10px] font-semibold text-white whitespace-nowrap">
+                Ceiling · {measurement.ceilingHeightM.toFixed(2)}m
               </div>
-              <div className="absolute right-0 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full border-2 border-white bg-black/80 shadow-md" />
+              <div className="absolute right-0 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full border-2 border-white bg-black/75" />
             </div>
           </div>
 
-          {/* Slim Floor Alignment Handle (Hidden only if 4-pt calibrated floor already locks exact ground plane) */}
-          {!surfaceCalibration?.valid ? (
+          {/* Slim Floor Alignment Handle */}
+          {!surfaceCalibration?.valid && (
             <div
-              className="absolute left-5 right-5 pointer-events-auto touch-none cursor-ns-resize py-3 -translate-y-1/2"
+              className="absolute left-6 right-6 pointer-events-auto touch-none cursor-ns-resize py-3 -translate-y-1/2"
               style={{ top: floorPct }}
               onPointerDown={(e) => {
                 e.stopPropagation();
@@ -659,35 +818,16 @@ export function ARMeasurementOverlay({
               tabIndex={0}
               data-testid="ar-floor-handle"
             >
-              <div className="relative h-[1.5px] bg-cyan-300/65">
-                <span
-                  className="absolute bottom-0 w-1.5 h-2.5 border-l-2 border-b-2 border-amber-300/75"
-                  style={{ left: leftCornerPct }}
-                  aria-hidden="true"
-                />
-                <span
-                  className="absolute bottom-0 w-1.5 h-2.5 border-r-2 border-b-2 border-amber-300/75 -translate-x-full"
-                  style={{ left: rightCornerPct }}
-                  aria-hidden="true"
-                />
+              <div className="relative h-[1.5px] bg-cyan-300/60">
                 <div className="absolute left-0 top-1/2 -translate-y-1/2 px-2 py-0.5 rounded-md bg-black/75 border border-cyan-300/40 text-[10px] font-semibold text-cyan-100 whitespace-nowrap">
-                  Floor · {measurement.distanceM.toFixed(1)}m dist
+                  Floor · {measurement.distanceM.toFixed(1)}m
                 </div>
-                <div className="absolute right-0 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full border-2 border-cyan-300 bg-black/80 shadow-md" />
-              </div>
-            </div>
-          ) : (
-            <div
-              className="absolute left-5 pointer-events-none -translate-y-1/2"
-              style={{ top: `${(surfaceCalibration.centroidScreenV * 100).toFixed(2)}%` }}
-            >
-              <div className="px-2 py-0.5 rounded-md bg-black/75 border border-emerald-400/45 text-[10px] font-semibold text-emerald-200 whitespace-nowrap">
-                4-Pt Floor · {surfaceCalibration.floorAreaSqM.toFixed(1)}m²
+                <div className="absolute right-0 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full border-2 border-cyan-300 bg-black/75" />
               </div>
             </div>
           )}
 
-          {/* Horizontal Pole Drag Handle directly on the 3D pole */}
+          {/* Subtle Horizontal Pole Drag Handle directly on the 3D pole */}
           <button
             type="button"
             onPointerDown={(e) => {
@@ -698,19 +838,17 @@ export function ARMeasurementOverlay({
             style={{ left: poleXPct, top: midYPct }}
             aria-label="Slide pole left or right on camera"
             title="Drag left or right to position pole"
-            className={`absolute -translate-x-1/2 -translate-y-1/2 pointer-events-auto touch-none w-9 h-9 rounded-full bg-black/70 border text-white flex items-center justify-center shadow-lg active:scale-95 ${
-              measurement.canPlacePole ? 'border-white/40' : 'border-rose-400 text-rose-200'
-            }`}
+            className="absolute -translate-x-1/2 -translate-y-1/2 pointer-events-auto touch-none w-9 h-9 rounded-full bg-black/60 border border-white/35 text-white flex items-center justify-center shadow-lg active:scale-95"
           >
             <MoveHorizontal className="w-4 h-4" aria-hidden="true" />
           </button>
         </>
       )}
 
-      {/* Floating Top Camera Controls */}
-      <div className="fixed top-0 left-0 right-0 z-50 px-2.5 sm:px-3 pt-2.5 pb-2 bg-gradient-to-b from-black/75 to-transparent pointer-events-auto">
-        <div className="max-w-3xl mx-auto flex items-center justify-between gap-1.5 sm:gap-2">
-          {/* Quick Camera Measurement Tools: 4-Pt Floor + Auto Scan */}
+      {/* Top Camera Controls + Live Accuracy Meter */}
+      <div className="fixed top-0 left-0 right-0 z-50 px-3 pt-2.5 pb-2 bg-gradient-to-b from-black/75 to-transparent pointer-events-auto">
+        <div className="max-w-3xl mx-auto flex items-center justify-between gap-2">
+          {/* Quick Camera Measurement Tools: 4-Pt Floor + Auto Scan + Room Photo */}
           <div className="flex items-center gap-1.5">
             <button
               type="button"
@@ -720,8 +858,8 @@ export function ARMeasurementOverlay({
                 isSurfaceMode
                   ? 'border-emerald-400 bg-emerald-500/30 text-emerald-100'
                   : surfaceCalibration?.valid
-                    ? 'border-emerald-400/55 bg-black/70 text-emerald-200'
-                    : 'border-white/25 bg-black/70 text-white hover:bg-black/85'
+                    ? 'border-emerald-400/55 bg-black/65 text-emerald-200'
+                    : 'border-white/25 bg-black/65 text-white hover:bg-black/80'
               }`}
             >
               <Crosshair className="w-3.5 h-3.5" aria-hidden="true" />
@@ -741,11 +879,26 @@ export function ARMeasurementOverlay({
               className={`min-h-[34px] px-2.5 rounded-lg border text-[11px] font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap ${
                 isScanning
                   ? 'border-cyan-400 bg-cyan-500/25 text-cyan-100'
-                  : 'border-white/25 bg-black/70 text-white hover:bg-black/85'
+                  : 'border-white/25 bg-black/65 text-white hover:bg-black/80'
               }`}
             >
               <ScanLine className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>{isScanning ? `Scanning ${scanAcc.scanProgress}%` : 'Auto Scan'}</span>
+              <span>{isScanning ? `Scan ${scanAcc.scanProgress}%` : 'Auto Scan'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              data-testid="ar-upload-photo-btn"
+              title="Upload a photo of your room to fit pole & generate 3D replica"
+              className={`min-h-[34px] px-2 rounded-lg border text-[11px] font-semibold inline-flex items-center gap-1 transition-colors whitespace-nowrap ${
+                uploadedPhotoUrl
+                  ? 'border-violet-400/70 bg-violet-500/25 text-violet-100'
+                  : 'border-white/25 bg-black/65 text-zinc-200 hover:bg-black/80'
+              }`}
+            >
+              <ImagePlus className="w-3.5 h-3.5" aria-hidden="true" />
+              <span className="hidden sm:inline">{uploadedPhotoUrl ? 'Photo Loaded' : 'Room Photo'}</span>
             </button>
           </div>
 
@@ -760,7 +913,7 @@ export function ARMeasurementOverlay({
               className={`min-h-[34px] min-w-[34px] px-2 rounded-lg border text-[11px] font-semibold inline-flex items-center justify-center transition-colors ${
                 gyroActive
                   ? 'border-cyan-400 bg-cyan-500/25 text-cyan-200'
-                  : 'border-white/25 bg-black/70 text-zinc-200'
+                  : 'border-white/25 bg-black/65 text-zinc-200'
               }`}
             >
               <Compass className="w-3.5 h-3.5" aria-hidden="true" />
@@ -774,7 +927,7 @@ export function ARMeasurementOverlay({
               className={`min-h-[34px] px-2 rounded-lg border text-[11px] font-semibold inline-flex items-center gap-1 transition-colors ${
                 showCalibPanel
                   ? 'border-amber-400 bg-amber-500/25 text-amber-100'
-                  : 'border-white/25 bg-black/70 text-zinc-200'
+                  : 'border-white/25 bg-black/65 text-zinc-200'
               }`}
             >
               <SlidersHorizontal className="w-3.5 h-3.5" aria-hidden="true" />
@@ -788,7 +941,7 @@ export function ARMeasurementOverlay({
               onClick={onExit}
               aria-label="Exit AR Camera"
               data-testid="exit-ar-button"
-              className="min-h-[34px] min-w-[34px] px-2.5 rounded-lg border border-white/25 bg-black/75 text-white hover:bg-white/15 inline-flex items-center justify-center gap-1 text-xs font-semibold"
+              className="min-h-[34px] min-w-[34px] px-2.5 rounded-lg border border-white/25 bg-black/70 text-white hover:bg-white/15 inline-flex items-center justify-center gap-1 text-xs font-semibold"
             >
               <X className="w-4 h-4" aria-hidden="true" />
               <span className="hidden sm:inline">Close</span>
@@ -796,52 +949,45 @@ export function ARMeasurementOverlay({
           </div>
         </div>
 
-        {/* Live Auto-Scan Progress & Clutter-Filter Telemetry Banner */}
-        {isScanning && (
-          <div className="max-w-md mx-auto mt-2 px-3 py-2 rounded-xl bg-black/85 border border-cyan-400/40 text-zinc-100 shadow-lg">
-            <div className="flex items-center justify-between gap-2 text-[11px]">
-              <span className="font-medium text-cyan-200 truncate">{scanAcc.statusMessage}</span>
-              <span className="font-mono font-bold text-cyan-300 tabular-nums shrink-0">
-                {scanAcc.confidencePct > 0 ? `${scanAcc.confidencePct}%` : `${scanAcc.scanProgress}%`}
-              </span>
-            </div>
-            <div className="mt-1.5 h-1.5 w-full rounded-full bg-white/10 overflow-hidden">
-              <div
-                className="h-full bg-gradient-to-r from-cyan-400 to-emerald-400 transition-all duration-150"
-                style={{ width: `${Math.max(8, scanAcc.scanProgress)}%` }}
-              />
-            </div>
-          </div>
-        )}
-
-        {/* Brief Lock Confirmation Toast */}
-        {!isScanning && lockToast && (
-          <div className="max-w-sm mx-auto mt-2 px-3 py-1.5 rounded-xl bg-black/85 border border-emerald-400/50 text-emerald-200 text-[11px] font-semibold text-center shadow-lg">
-            {lockToast}
-          </div>
-        )}
-
-        {/* 1.25m Free-Space Depth & Wall Proximity Gate Banner */}
-        {!measurement.canPlacePole && (
-          <div
-            data-testid="ar-wall-proximity-warning"
-            role="alert"
-            className="max-w-md mx-auto mt-2 px-3 py-2 rounded-xl bg-rose-950/90 border border-rose-400/65 text-rose-100 shadow-xl flex items-start gap-2"
-          >
-            <AlertTriangle className="w-4 h-4 text-rose-300 shrink-0 mt-0.5" aria-hidden="true" />
-            <div className="min-w-0">
-              <p className="text-[11px] font-bold leading-tight">
-                Pole Not Placed · Need {MIN_POLE_FREE_RADIUS_M.toFixed(2)}m Free Space
-              </p>
-              <p className="text-[10.5px] text-rose-200/90 leading-snug mt-0.5">
-                {measurement.placementBlockReason ??
-                  `Depth ${measurement.depthClearanceM.toFixed(2)}m · Min ${MIN_POLE_FREE_RADIUS_M.toFixed(2)}m clearance around pole required.`}
-              </p>
+        {/* Live Floor & Ceiling Detection Accuracy Meter */}
+        <div
+          className="max-w-3xl mx-auto mt-2 flex items-center justify-between gap-2"
+          data-testid="ar-accuracy-meter"
+        >
+          <div className="px-2.5 py-1.5 rounded-xl bg-black/78 border border-white/15 text-zinc-100 flex items-center gap-2.5 shadow-lg">
+            <Gauge className={`w-4 h-4 shrink-0 ${accuracyColorClass}`} aria-hidden="true" />
+            <div className="min-w-[148px] sm:min-w-[185px]">
+              <div className="flex items-baseline justify-between gap-2 text-[11px]">
+                <span className="font-semibold text-zinc-200">Plane Accuracy</span>
+                <span
+                  className={`font-mono font-bold tabular-nums ${accuracyColorClass}`}
+                  data-testid="ar-accuracy-value"
+                >
+                  {liveAccuracy.overallAccuracyPct}%
+                </span>
+              </div>
+              <div className="mt-1 h-1.5 w-full rounded-full bg-white/15 overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all duration-200 ${accuracyBarColor}`}
+                  style={{ width: `${liveAccuracy.overallAccuracyPct}%` }}
+                />
+              </div>
+              <div className="mt-1 flex items-center justify-between gap-2 text-[10px] font-mono tabular-nums text-zinc-400">
+                <span data-testid="ar-floor-accuracy">Floor {liveAccuracy.floorAccuracyPct}%</span>
+                <span data-testid="ar-ceiling-accuracy">Ceil {liveAccuracy.ceilingAccuracyPct}%</span>
+                <span>±{liveAccuracy.errorMarginCm.toFixed(1)}cm</span>
+              </div>
             </div>
           </div>
-        )}
 
-        {/* Optional Lens Height & Pitch Calibration Drawer */}
+          {isScanning && (
+            <div className="hidden sm:block px-2.5 py-1.5 rounded-xl bg-black/78 border border-cyan-400/35 text-cyan-100 text-[11px] font-medium truncate max-w-[260px]">
+              {scanAcc.statusMessage}
+            </div>
+          )}
+        </div>
+
+        {/* Optional Lens Height Calibration Drawer */}
         {showCalibPanel && (
           <div className="max-w-3xl mx-auto mt-2 p-2.5 rounded-xl bg-black/85 border border-white/15 text-zinc-100 flex flex-wrap items-center justify-between gap-2.5">
             <div className="flex items-center gap-2 flex-1 min-w-[180px]">
@@ -893,53 +1039,90 @@ export function ARMeasurementOverlay({
         )}
       </div>
 
-      {/* Unsupported AR Device / Camera Unavailable Prompt */}
-      {arCameraError && !dismissedUnsupportedPrompt && (
+      {/* Scene Capture & 3D Room Replica Generation Progress Modal */}
+      {isBuildingReplica && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 pointer-events-auto"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="ar-unsupported-heading"
-          data-testid="ar-unsupported-prompt"
+          className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4 pointer-events-auto"
+          data-testid="ar-replica-progress"
         >
-          <div className="w-full max-w-sm rounded-2xl border border-white/20 bg-[#12141d] text-zinc-100 p-4 shadow-2xl space-y-3">
-            <div className="flex items-start gap-2.5">
-              <div className="w-9 h-9 rounded-xl bg-amber-500/20 border border-amber-400/40 text-amber-300 flex items-center justify-center shrink-0">
-                <CameraOff className="w-4 h-4" aria-hidden="true" />
+          <div className="w-full max-w-sm rounded-2xl border border-cyan-400/35 bg-[#0e111a] p-5 text-zinc-100 shadow-2xl">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-cyan-500/15 border border-cyan-400/40 flex items-center justify-center shrink-0">
+                <Loader2 className="w-5 h-5 text-cyan-300 animate-spin" aria-hidden="true" />
               </div>
               <div className="min-w-0">
-                <h2 id="ar-unsupported-heading" className="text-sm font-bold leading-tight">
-                  AR Camera Not Supported / Blocked
-                </h2>
-                <p className="text-[11px] text-zinc-400 mt-1 leading-relaxed">
-                  {arCameraError} Live AR Room requires HTTPS and camera access on mobile Safari or
-                  Chrome.
-                </p>
+                <h3 className="text-sm font-semibold text-white">Building 3D Room Replica</h3>
+                <p className="text-xs text-cyan-200 mt-0.5">{REPLICA_STAGES[replicaStageIdx]}</p>
               </div>
             </div>
+            <div className="mt-4 grid grid-cols-4 gap-1.5">
+              {REPLICA_STAGES.map((_, idx) => (
+                <div
+                  key={idx}
+                  className={`h-1.5 rounded-full transition-colors ${
+                    idx <= replicaStageIdx ? 'bg-cyan-400' : 'bg-white/15'
+                  }`}
+                />
+              ))}
+            </div>
+            <p className="mt-3 text-[11px] text-zinc-400">
+              Measuring {displayWidthM.toFixed(1)}×{displayDepthM.toFixed(1)}m ·{' '}
+              {measurement.ceilingHeightM.toFixed(2)}m ceiling ({liveAccuracy.overallAccuracyPct}% fit)
+            </p>
+          </div>
+        </div>
+      )}
 
-            <div className="flex flex-col gap-1.5 pt-1">
+      {/* Honest Scene Scan Error Banner (with Retry, Upload Photo, or Apply Dimensions Only) */}
+      {replicaError && !isBuildingReplica && (
+        <div
+          className="fixed bottom-28 left-3 right-3 z-50 pointer-events-auto"
+          data-testid="ar-replica-error"
+        >
+          <div className="max-w-xl mx-auto rounded-2xl border border-rose-400/50 bg-[#180f14]/95 p-3 text-rose-100 shadow-2xl">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-start gap-2 min-w-0">
+                <AlertCircle className="w-4 h-4 text-rose-300 shrink-0 mt-0.5" aria-hidden="true" />
+                <p className="text-xs leading-snug">{replicaError}</p>
+              </div>
               <button
                 type="button"
-                onClick={onRetryCamera}
-                className="w-full min-h-[36px] px-3 rounded-xl bg-cyan-400 hover:bg-cyan-300 text-zinc-950 text-xs font-bold inline-flex items-center justify-center gap-1.5 transition-colors"
+                onClick={() => setReplicaError(null)}
+                aria-label="Dismiss error"
+                className="p-0.5 text-rose-300 hover:text-white shrink-0"
               >
-                <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>Retry Camera Permission</span>
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="px-2.5 py-1.5 rounded-lg border border-white/20 bg-white/10 text-white text-[11px] font-semibold inline-flex items-center gap-1"
+              >
+                <ImagePlus className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Upload Room Photo</span>
               </button>
               <button
                 type="button"
-                onClick={() => setDismissedUnsupportedPrompt(true)}
-                className="w-full min-h-[36px] px-3 rounded-xl border border-white/20 bg-white/10 hover:bg-white/15 text-zinc-100 text-xs font-semibold transition-colors"
+                onClick={() => {
+                  void handleUseThisFitWithReplica();
+                }}
+                className="px-2.5 py-1.5 rounded-lg border border-cyan-400/50 bg-cyan-500/20 text-cyan-100 text-[11px] font-semibold"
               >
-                Continue in Simulated AR Mode
+                Retry Scene Scan
               </button>
               <button
                 type="button"
-                onClick={onExit}
-                className="w-full min-h-[34px] px-3 rounded-xl text-zinc-400 hover:text-white text-xs font-medium transition-colors"
+                onClick={() => {
+                  setReplicaError(null);
+                  onAutoSyncRoom(measurement, false);
+                  onExit();
+                }}
+                data-testid="ar-apply-dimensions-only"
+                className="px-2.5 py-1.5 rounded-lg bg-zinc-100 text-zinc-950 text-[11px] font-semibold"
               >
-                Back to 3D Studio
+                Apply Dimensions Only
               </button>
             </div>
           </div>
@@ -947,91 +1130,19 @@ export function ARMeasurementOverlay({
       )}
 
       {/* Slim Bottom Live AR Camera Bar */}
-      <div className="fixed bottom-0 left-0 right-0 z-50 px-2.5 sm:px-3 pb-2.5 sm:pb-3 pt-1 pointer-events-auto">
-        <div className="max-w-xl mx-auto space-y-1.5">
-          {/* Max Pole Length (2.50m) Cushion / Open-Ceiling Choice Prompt */}
-          {!isSurfaceMode && measurement.exceedsMaxPoleLength && (
-            <div
-              data-testid="ar-max-length-prompt"
-              className="rounded-xl border border-amber-400/45 bg-black/88 px-2.5 py-2 text-zinc-100 shadow-xl"
-            >
-              <div className="flex items-center justify-between gap-2 text-[11px]">
-                <span className="font-semibold text-amber-200 truncate">
-                  Ceiling {measurement.ceilingHeightM.toFixed(2)}m &gt;{' '}
-                  {MAX_POLE_LENGTH_M.toFixed(2)}m max pole (+{measurement.overHeightGapCm}cm)
-                </span>
-                <span className="text-[10px] text-zinc-400 shrink-0 hidden sm:inline">
-                  Select fit option
-                </span>
-              </div>
-              <div className="mt-1.5 grid grid-cols-3 gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => onChangeCushionPosition('above')}
-                  aria-pressed={!arOpenCeilingMode && cushionPosition === 'above'}
-                  className={`min-h-[30px] px-2 py-1 rounded-lg border text-[10.5px] font-semibold inline-flex items-center justify-center gap-1 transition-colors ${
-                    !arOpenCeilingMode && cushionPosition === 'above'
-                      ? 'border-cyan-400 bg-cyan-500/25 text-cyan-100'
-                      : 'border-white/20 bg-white/10 text-zinc-200 hover:bg-white/15'
-                  }`}
-                >
-                  <ArrowUp className="w-3 h-3 shrink-0" aria-hidden="true" />
-                  <span className="truncate">Cushion Above</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onChangeCushionPosition('below')}
-                  aria-pressed={!arOpenCeilingMode && cushionPosition === 'below'}
-                  className={`min-h-[30px] px-2 py-1 rounded-lg border text-[10.5px] font-semibold inline-flex items-center justify-center gap-1 transition-colors ${
-                    !arOpenCeilingMode && cushionPosition === 'below'
-                      ? 'border-cyan-400 bg-cyan-500/25 text-cyan-100'
-                      : 'border-white/20 bg-white/10 text-zinc-200 hover:bg-white/15'
-                  }`}
-                >
-                  <ArrowDown className="w-3 h-3 shrink-0" aria-hidden="true" />
-                  <span className="truncate">Cushion Below</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={onSwitchToOpenCeiling}
-                  aria-pressed={arOpenCeilingMode}
-                  className={`min-h-[30px] px-2 py-1 rounded-lg border text-[10.5px] font-semibold inline-flex items-center justify-center gap-1 transition-colors ${
-                    arOpenCeilingMode
-                      ? 'border-emerald-400 bg-emerald-500/25 text-emerald-100'
-                      : 'border-white/20 bg-white/10 text-zinc-200 hover:bg-white/15'
-                  }`}
-                >
-                  <CircleDot className="w-3 h-3 shrink-0" aria-hidden="true" />
-                  <span className="truncate">Open-Ceiling</span>
-                </button>
-              </div>
-            </div>
-          )}
-
-          <div className="rounded-2xl border border-white/15 bg-black/85 text-zinc-100 shadow-2xl overflow-hidden">
+      <div className="fixed bottom-0 left-0 right-0 z-50 px-3 pb-3 pt-1 pointer-events-auto">
+        <div className="max-w-xl mx-auto rounded-2xl border border-white/15 bg-black/82 text-zinc-100 shadow-2xl overflow-hidden">
           {isSurfaceMode ? (
             <div className="px-3 py-2.5 flex items-center justify-between gap-2">
               <div className="min-w-0">
                 <p className="text-xs font-semibold text-emerald-200 truncate" data-testid="ar-surface-status">
-                  {surfaceCalibration?.valid
-                    ? `Floor Calibrated: ${surfaceCalibration.rawWidthM.toFixed(2)}×${surfaceCalibration.rawDepthM.toFixed(2)}m (${surfaceCalibration.accuracyScore}%)`
-                    : `Tap 4 corners on your physical floor (${floorTaps.length}/4)`}
+                  Tap 4 corners on your physical floor ({floorTaps.length}/4)
                 </p>
                 <p className="text-[11px] text-zinc-400 truncate">
-                  {surfaceCalibration?.valid
-                    ? 'Drag corners 1–4 to fine-tune or tap Done to lock'
-                    : 'Or tap Auto-Fit to snap 4 corners to detected floor'}
+                  Locks real floor bounds & boosts accuracy to 95%+
                 </p>
               </div>
               <div className="flex items-center gap-1.5 shrink-0">
-                <button
-                  type="button"
-                  onClick={handleAutoFitFourCorners}
-                  className="min-h-[34px] px-2.5 rounded-xl border border-emerald-400/50 bg-emerald-500/20 text-emerald-100 text-[11px] font-semibold inline-flex items-center gap-1"
-                >
-                  <Sparkles className="w-3 h-3" aria-hidden="true" />
-                  <span>Auto-Fit</span>
-                </button>
                 {floorTaps.length > 0 && (
                   <button
                     type="button"
@@ -1047,53 +1158,28 @@ export function ARMeasurementOverlay({
                   onClick={() => onChangeScanPhase('pole-ready')}
                   className="min-h-[34px] px-3 rounded-xl bg-zinc-100 text-zinc-950 text-[11px] font-semibold"
                 >
-                  {surfaceCalibration?.valid ? 'Done' : 'Cancel'}
+                  Cancel
                 </button>
               </div>
             </div>
           ) : (
             <>
-              {/* Slim Top Measurement & Micro-Tune Strip */}
-              <div className="px-2.5 sm:px-3 py-1.5 sm:py-2 border-b border-white/10 flex items-center justify-between gap-2 text-xs">
-                <div className="flex items-center gap-2 min-w-0 flex-1">
-                  {/* Ceiling Height + 1cm Fine-Tune Buttons */}
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <div>
-                      <span className="block text-[10px] text-zinc-400 leading-none">Ceiling</span>
-                      <span
-                        className="font-mono font-bold text-cyan-300 tabular-nums"
-                        data-testid="ar-predicted-ceiling"
-                      >
-                        <span className="sm:hidden">{measurement.ceilingHeightM.toFixed(2)}m</span>
-                        <span className="hidden sm:inline">
-                          {formatHeightMetricAndImperial(measurement.ceilingHeightCm)}
-                        </span>
+              {/* Slim Top Measurement Strip */}
+              <div className="px-3 py-2 border-b border-white/10 flex items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="shrink-0">
+                    <span className="block text-[10px] text-zinc-400 leading-none">Ceiling</span>
+                    <span
+                      className="font-mono font-bold text-cyan-300 tabular-nums"
+                      data-testid="ar-predicted-ceiling"
+                    >
+                      <span className="sm:hidden">{measurement.ceilingHeightM.toFixed(2)}m</span>
+                      <span className="hidden sm:inline">
+                        {formatHeightMetricAndImperial(measurement.ceilingHeightCm)}
                       </span>
-                    </div>
-                    <div className="flex items-center gap-0.5">
-                      <button
-                        type="button"
-                        onClick={() => handleNudgeCeilingHeight(0.004)}
-                        aria-label="Decrease ceiling height"
-                        title="Lower ceiling line"
-                        className="w-5 h-5 rounded-md border border-white/15 bg-white/10 text-zinc-200 hover:bg-white/20 flex items-center justify-center"
-                      >
-                        <Minus className="w-2.5 h-2.5" aria-hidden="true" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleNudgeCeilingHeight(-0.004)}
-                        aria-label="Increase ceiling height"
-                        title="Raise ceiling line"
-                        className="w-5 h-5 rounded-md border border-white/15 bg-white/10 text-zinc-200 hover:bg-white/20 flex items-center justify-center"
-                      >
-                        <Plus className="w-2.5 h-2.5" aria-hidden="true" />
-                      </button>
-                    </div>
+                    </span>
                   </div>
-
                   <span className="h-5 w-px bg-white/15 shrink-0" aria-hidden="true" />
-
                   <div className="shrink-0">
                     <span className="block text-[10px] text-zinc-400 leading-none">Room</span>
                     <span
@@ -1103,38 +1189,18 @@ export function ARMeasurementOverlay({
                       {displayWidthM.toFixed(1)}×{displayDepthM.toFixed(1)}m
                     </span>
                   </div>
-
                   <span className="h-5 w-px bg-white/15 shrink-0" aria-hidden="true" />
-
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between gap-1">
-                      <span
-                        className={`text-[10px] leading-none ${
-                          measurement.canPlacePole ? 'text-emerald-300' : 'text-rose-300'
-                        }`}
-                      >
-                        {measurement.canPlacePole
-                          ? arOpenCeilingMode
-                            ? 'Open-Ceiling (2.5m)'
-                            : measurement.exceedsMaxPoleLength && cushionPosition !== 'none'
-                              ? `2.5m + Cushion ${cushionPosition === 'above' ? 'Top' : 'Base'}`
-                              : 'Fitted Pole'
-                          : `Need ≥${MIN_POLE_FREE_RADIUS_M.toFixed(2)}m Space`}
-                      </span>
-                      <span className="font-mono text-[10px] font-bold text-emerald-300 tabular-nums shrink-0">
-                        {liveAccuracyPct}%
-                      </span>
-                    </div>
+                  <div className="min-w-0">
+                    <span className="block text-[10px] text-emerald-300 leading-none">Fitted Pole</span>
                     <span className="font-semibold text-zinc-100 truncate block text-[11px]">
-                      {arOpenCeilingMode
-                        ? 'Circular Stage · 2.50m Freestanding'
-                        : `${BASE_MOUNTS[measurement.recommendedMount].shortName} · ${measurement.recommendedDiameterMm}mm · Depth ${measurement.depthClearanceM.toFixed(1)}m`}
+                      {BASE_MOUNTS[measurement.recommendedMount].shortName} ·{' '}
+                      {measurement.recommendedDiameterMm}mm · {measurement.extensionsLabel}
                     </span>
                   </div>
                 </div>
               </div>
 
-              {/* Material Finish PFPs + Spin + Apply & Close */}
+              {/* Material Finish PFPs + Spin + Use This Fit (3D Room Replica Capture) */}
               <div className="px-2.5 py-1.5 flex items-center justify-between gap-2">
                 <div className="flex items-center gap-1" role="group" aria-label="Pole finish in AR">
                   {FINISH_ORDER.map((fid) => {
@@ -1181,25 +1247,24 @@ export function ARMeasurementOverlay({
 
                 <button
                   type="button"
-                  disabled={!measurement.canPlacePole}
+                  disabled={isBuildingReplica}
                   onClick={() => {
-                    onAutoSyncRoom(measurement, false);
-                    onExit();
+                    void handleUseThisFitWithReplica();
                   }}
                   data-testid="ar-done-button"
-                  className={`min-h-[34px] px-3.5 rounded-xl text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
-                    measurement.canPlacePole
-                      ? 'bg-zinc-100 hover:bg-white text-zinc-950'
-                      : 'bg-zinc-700/60 text-zinc-400 cursor-not-allowed'
-                  }`}
+                  className="min-h-[34px] px-3.5 rounded-xl bg-zinc-100 hover:bg-white disabled:opacity-60 text-zinc-950 text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
                 >
-                  <Check className="w-3.5 h-3.5" aria-hidden="true" />
-                  <span>{measurement.canPlacePole ? 'Use This Fit' : 'Too Close'}</span>
+                  {isBuildingReplica ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <Sparkles className="w-3.5 h-3.5 text-cyan-700" aria-hidden="true" />
+                  )}
+                  <span>Use This Fit</span>
+                  <Check className="w-3 h-3 hidden sm:inline" aria-hidden="true" />
                 </button>
               </div>
             </>
           )}
-          </div>
         </div>
       </div>
     </div>

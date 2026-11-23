@@ -5,8 +5,9 @@ import type {
   BaseMountSpec,
   BOMLineItem,
   BOMSummary,
+  CeilingType,
   ClearanceAnalysis,
-  EnvironmentPreset,
+  CushionPlacement,
   ExtensionPiece,
   HardwarePartId,
   HardwarePartSpec,
@@ -18,61 +19,63 @@ import type {
   PoleFinishSpec,
   PoleInstance,
   PoleRigConfig,
-} from '../types/pole.ts';
+} from '../types/pole';
 
 export const MIN_ROOM_SIZE_M = 3.0;
+export const DEV_MIN_ROOM_SIZE_M = 1.5;
 export const MAX_ROOM_SIZE_M = 7.0;
+export const MIN_WALL_CLEARANCE_M = 1.25;
+export const DEV_MIN_WALL_CLEARANCE_M = 0.35;
 export const MAX_POLES_IN_STUDIO = 4;
-export const MAX_POLE_LENGTH_CM = 250;
-export const MAX_POLE_LENGTH_M = 2.5;
-export const MIN_POLE_FREE_RADIUS_M = 1.25;
 
-export const ENVIRONMENT_PRESETS: {
-  id: EnvironmentPreset;
-  label: string;
-  shortLabel: string;
-}[] = [
-  { id: 'studio', label: 'Pro Dance Studio', shortLabel: 'Studio' },
-  { id: 'home', label: 'Modern Home Loft', shortLabel: 'Home' },
-  { id: 'penthouse', label: 'Glass Penthouse', shortLabel: 'Penthouse' },
-  { id: 'industrial', label: 'Industrial Warehouse', shortLabel: 'Warehouse' },
-  { id: 'velvet-club', label: 'Velvet Cabaret', shortLabel: 'Cabaret' },
-];
+/** Room ceiling height bounds (2.00m – 5.00m) */
+export const MIN_CEILING_HEIGHT_CM = 200;
+export const MAX_CEILING_HEIGHT_CM = 500;
 
-export function getEffectiveVaultAngleRad(
-  ceilingHeightCm: number,
-  roomWidthM: number,
-  mount: BaseMountId,
-  vaultAngleDeg: number
-): number {
-  if (mount !== 'vaulted-beam') return 0;
-  const H = ceilingHeightCm / 100;
-  const maxVisualRad = Math.atan(Math.max(0.32, H - 1.55) / Math.max(1.2, roomWidthM * 0.5));
-  return Math.min(maxVisualRad, (Math.max(4, vaultAngleDeg) * Math.PI) / 180);
-}
+/** Individual pole height bounds (1.50m min, 3.00m max pole height) */
+export const MIN_POLE_HEIGHT_CM = 150;
+export const MAX_POLE_HEIGHT_CM = 300;
 
 export const LIGHTING_PRESETS: {
   id: LightingPreset;
   label: string;
   shortLabel: string;
+  mobileLabel: string;
   isDarkTheme: boolean;
 }[] = [
   {
     id: 'studio-daylight',
     label: 'Studio Daylight',
     shortLabel: 'Daylight',
+    mobileLabel: 'Day',
     isDarkTheme: false,
   },
   {
     id: 'mood-neon',
     label: 'Mood/Night Neon',
-    shortLabel: 'Night Neon',
+    shortLabel: 'Neon',
+    mobileLabel: 'Neon',
     isDarkTheme: true,
   },
   {
     id: 'pro-spotlight',
     label: 'Professional Spotlight',
     shortLabel: 'Spotlight',
+    mobileLabel: 'Spot',
+    isDarkTheme: true,
+  },
+  {
+    id: 'sunset-flow',
+    label: 'Sunset Flow',
+    shortLabel: 'Sunset',
+    mobileLabel: 'Sunset',
+    isDarkTheme: true,
+  },
+  {
+    id: 'cyber-pulse',
+    label: 'Cyber Pulse',
+    shortLabel: 'Pulse',
+    mobileLabel: 'Pulse',
     isDarkTheme: true,
   },
 ];
@@ -227,8 +230,8 @@ export const BASE_MOUNTS: Record<BaseMountId, BaseMountSpec> = {
     shortName: 'Tension',
     priceDeltaUsd: 0,
     weightKg: 3.4,
-    minHeightCm: 225,
-    maxHeightCm: 335,
+    minHeightCm: MIN_POLE_HEIGHT_CM,
+    maxHeightCm: MAX_POLE_HEIGHT_CM,
     drillingRequired: false,
     ceilingLoadKn: 1.8,
     floorFootprintM: 0.24,
@@ -243,8 +246,8 @@ export const BASE_MOUNTS: Record<BaseMountId, BaseMountSpec> = {
     shortName: 'Fixed Ceiling',
     priceDeltaUsd: 85,
     weightKg: 4.1,
-    minHeightCm: 225,
-    maxHeightCm: 360,
+    minHeightCm: MIN_POLE_HEIGHT_CM,
+    maxHeightCm: MAX_POLE_HEIGHT_CM,
     drillingRequired: true,
     ceilingLoadKn: 4.5,
     floorFootprintM: 0.23,
@@ -252,38 +255,6 @@ export const BASE_MOUNTS: Record<BaseMountId, BaseMountSpec> = {
     torqueNm: 38,
     description:
       'Studio-grade 6mm laser-cut steel ceiling flange bolted into solid timber joist or concrete slab.',
-  },
-  'vaulted-beam': {
-    id: 'vaulted-beam',
-    name: 'Vaulted Ceiling Clevis Adapter',
-    shortName: 'Vaulted',
-    priceDeltaUsd: 135,
-    weightKg: 4.6,
-    minHeightCm: 235,
-    maxHeightCm: 360,
-    drillingRequired: true,
-    ceilingLoadKn: 4.2,
-    floorFootprintM: 0.23,
-    fastenerSpec: '4× M10 Anchors + M16 Hardened Pivot Clevis Pin',
-    torqueNm: 42,
-    description:
-      'Articulating 0°–45° steel yoke mount for pitched rafters and exposed beams.',
-  },
-  'stage-podium': {
-    id: 'stage-podium',
-    name: 'Freestanding Stage Podium (1.6m)',
-    shortName: 'Stage',
-    priceDeltaUsd: 640,
-    weightKg: 58.0,
-    minHeightCm: 240,
-    maxHeightCm: 340,
-    drillingRequired: false,
-    ceilingLoadKn: 0.0,
-    floorFootprintM: 1.6,
-    fastenerSpec: '6× Pie-Deck Cam Locks + 12× M8 Chassis Bolts',
-    torqueNm: 28,
-    description:
-      'Self-supporting 1.6m modular CNC aluminum stage deck. Zero ceiling contact required.',
   },
 };
 
@@ -304,7 +275,7 @@ export const HARDWARE_PARTS: Record<HardwarePartId, HardwarePartSpec> = {
     name: 'Base Flange & Elastomer Ring',
     category: 'Foundation',
     material: 'CNC 6061-T6 Aluminum + 70A Silicone',
-    torqueSpec: 'Level ±0.5° (Stage: 28 N·m)',
+    torqueSpec: 'Level ±0.5° · Friction Seated',
     inspectionNote: 'Ensure dry floor contact with zero debris under elastomer ring.',
     cameraFocus: 'base-hub',
   },
@@ -371,6 +342,15 @@ export const HARDWARE_PARTS: Record<HardwarePartId, HardwarePartSpec> = {
     inspectionNote: 'Center directly beneath solid timber ceiling joist or beam.',
     cameraFocus: 'top-mount',
   },
+  'height-cushion': {
+    id: 'height-cushion',
+    name: 'Structural Height Cushion & Load Spacer',
+    category: 'Height Compensator',
+    material: 'High-Density Ribbed Elastomer Core + 6061-T6 Load Caps',
+    torqueSpec: '2.4 kN Compression Rated · Top or Floor Seated',
+    inspectionNote: 'Bridges gap when ceiling exceeds pole height or 3.00m max pole limit.',
+    cameraFocus: 'top-mount',
+  },
 };
 
 export const ASSEMBLY_STEPS: AssemblyStepSpec[] = [
@@ -383,11 +363,11 @@ export const ASSEMBLY_STEPS: AssemblyStepSpec[] = [
     cameraFocus: 'base-hub',
     torqueNm: 0,
     torqueFtLb: 0,
-    fastener: 'Elastomer Ring (Stage: 6× Cam Locks)',
+    fastener: '70A Silicone Compression Ring',
     toolRequired: 'Spirit Level',
     safetyNote: 'Align base directly beneath solid ceiling joist.',
     installInstruction:
-      'Position the machined base flange centered in your training zone. For Freestanding Stage, lock all 6 aluminum panels and level feet.',
+      'Position the machined 230mm micro-base flange centered in your training zone directly beneath a ceiling joist or structural beam.',
     dismantleInstruction:
       'Lift base plate straight up after upper column removal. Wipe elastomer clean and stow inside padded pouch.',
   },
@@ -499,7 +479,10 @@ export const DEFAULT_CONFIG: PoleRigConfig = {
   finish: 'brass',
   diameterMm: 45,
   mount: 'tension',
+  ceilingType: 'flat',
   ceilingHeightCm: 274,
+  poleHeightCm: 274,
+  cushionPlacement: 'top',
   isSpinning: true,
   spinRpm: 18,
   environment: 'studio',
@@ -507,9 +490,83 @@ export const DEFAULT_CONFIG: PoleRigConfig = {
   roomWidthM: 5.4,
   roomDepthM: 5.2,
   showClearanceRing: true,
+  enforceMinClearance: true,
   vaultAngleDeg: 22,
-  cushionPosition: 'above',
 };
+
+/**
+ * Computes the effective visual/physical slope angle (radians) of a tilted/vaulted
+ * room ceiling, clamped so the lower eave wall stays architecturally realistic (>= 1.68m).
+ */
+export function computeEffectiveVaultRad(
+  ceilingHeightM: number,
+  roomWidthM: number,
+  ceilingType: CeilingType,
+  vaultAngleDeg: number
+): number {
+  if (ceilingType !== 'vaulted') return 0;
+  const maxVisualRad = Math.atan(
+    Math.max(0.25, ceilingHeightM - 1.68) / Math.max(1.2, roomWidthM * 0.5)
+  );
+  return Math.min(maxVisualRad, (Math.max(4, vaultAngleDeg) * Math.PI) / 180);
+}
+
+/**
+ * Computes the exact ceiling height directly above a pole at horizontal coordinate poleX
+ * under a flat or globally tilted/vaulted room ceiling.
+ */
+export function computeLocalCeilingHeightCm(
+  ceilingHeightCm: number,
+  roomWidthM: number,
+  ceilingType: CeilingType,
+  vaultAngleDeg: number,
+  poleX: number
+): number {
+  const safeCeil = Math.round(ceilingHeightCm);
+  if (ceilingType !== 'vaulted') return safeCeil;
+  const H = safeCeil / 100;
+  const vaultRad = computeEffectiveVaultRad(H, roomWidthM, ceilingType, vaultAngleDeg);
+  const localM = H + poleX * Math.tan(vaultRad);
+  return Math.max(MIN_POLE_HEIGHT_CM, Math.round(localM * 100));
+}
+
+export function clampPoleHeightCm(rawHeightCm: number, ceilingHeightCm: number): number {
+  const maxAllowed = Math.max(
+    MIN_POLE_HEIGHT_CM,
+    Math.min(Math.round(ceilingHeightCm), MAX_POLE_HEIGHT_CM)
+  );
+  return Math.max(MIN_POLE_HEIGHT_CM, Math.min(maxAllowed, Math.round(rawHeightCm)));
+}
+
+export function getCushionHeightCm(ceilingHeightCm: number, poleHeightCm: number): number {
+  const effectivePole = clampPoleHeightCm(poleHeightCm, ceilingHeightCm);
+  return Math.max(0, Math.round(ceilingHeightCm) - effectivePole);
+}
+
+/**
+ * Updates all poles when the shared room ceiling height changes:
+ * - Poles that were flush with the previous ceiling (or at the 3.00m max limit) track the new ceiling up to 3.00m.
+ * - Poles intentionally set to custom shorter heights preserve their individual height (clamped if ceiling drops below them).
+ */
+export function reconcilePolesForCeilingHeight(
+  poles: PoleInstance[],
+  prevCeilingCm: number,
+  nextCeilingCm: number
+): PoleInstance[] {
+  const prevMaxPole = Math.min(Math.round(prevCeilingCm), MAX_POLE_HEIGHT_CM);
+  const nextMaxPole = Math.max(MIN_POLE_HEIGHT_CM, Math.min(Math.round(nextCeilingCm), MAX_POLE_HEIGHT_CM));
+
+  return poles.map((p) => {
+    const wasFlush = p.heightCm >= prevMaxPole - 1;
+    const nextHeight = wasFlush
+      ? nextMaxPole
+      : clampPoleHeightCm(p.heightCm, nextCeilingCm);
+    return {
+      ...p,
+      heightCm: nextHeight,
+    };
+  });
+}
 
 export function createInitialPoles(): PoleInstance[] {
   return [
@@ -518,7 +575,8 @@ export function createInitialPoles(): PoleInstance[] {
       label: 'Pole 1',
       finish: 'brass',
       diameterMm: 45,
-      mount: 'tension',
+      heightCm: clampPoleHeightCm(DEFAULT_CONFIG.ceilingHeightCm, DEFAULT_CONFIG.ceilingHeightCm),
+      cushionPlacement: 'top',
       isSpinning: true,
       spinRpm: 18,
       x: 0,
@@ -527,18 +585,28 @@ export function createInitialPoles(): PoleInstance[] {
   ];
 }
 
-export function getWallClearanceMarginM(mountId: BaseMountId): number {
-  return mountId === 'stage-podium' ? 1.4 : 1.2;
+export function getMinRoomSizeM(enforceMinClearance = true): number {
+  return enforceMinClearance ? MIN_ROOM_SIZE_M : DEV_MIN_ROOM_SIZE_M;
 }
 
-export function getMinPoleSeparationM(mountA: BaseMountId, mountB: BaseMountId): number {
-  if (mountA === 'stage-podium' || mountB === 'stage-podium') return 2.15;
-  return 1.65;
+export function getWallClearanceMarginM(
+  _mountId?: BaseMountId,
+  enforceMinClearance = true
+): number {
+  return enforceMinClearance ? MIN_WALL_CLEARANCE_M : DEV_MIN_WALL_CLEARANCE_M;
+}
+
+export function getMinPoleSeparationM(
+  _mountA?: BaseMountId,
+  _mountB?: BaseMountId,
+  enforceMinClearance = true
+): number {
+  return enforceMinClearance ? 1.65 : 0.65;
 }
 
 /**
- * Clamps a pole's floor (x, z) coordinates strictly within the room's minimum
- * safe wall clearance margin AND maintains safe separation from other poles.
+ * Clamps a pole's floor (x, z) coordinates strictly within the room's wall
+ * clearance margin AND maintains safe separation from other poles.
  */
 export function clampPolePosition(
   rawX: number,
@@ -546,11 +614,13 @@ export function clampPolePosition(
   roomWidthM: number,
   roomDepthM: number,
   mountId: BaseMountId,
-  otherPoles: Pick<PoleInstance, 'x' | 'z' | 'mount'>[] = []
+  otherPoles: Pick<PoleInstance, 'x' | 'z'>[] = [],
+  enforceMinClearance = true
 ): PoleClampResult {
-  const minWallMarginM = getWallClearanceMarginM(mountId);
-  const safeW = Math.max(MIN_ROOM_SIZE_M, roomWidthM);
-  const safeD = Math.max(MIN_ROOM_SIZE_M, roomDepthM);
+  const minWallMarginM = getWallClearanceMarginM(mountId, enforceMinClearance);
+  const minRoomM = getMinRoomSizeM(enforceMinClearance);
+  const safeW = Math.max(minRoomM, roomWidthM);
+  const safeD = Math.max(minRoomM, roomDepthM);
 
   const maxX = Math.max(0, safeW / 2 - minWallMarginM);
   const maxZ = Math.max(0, safeD / 2 - minWallMarginM);
@@ -561,10 +631,10 @@ export function clampPolePosition(
     Math.abs(rawX) > maxX + 1e-4 || Math.abs(rawZ) > maxZ + 1e-4;
   let hitPoleBoundary = false;
 
-  // Resolve inter-pole minimum separation iteratively so poles cannot clip each other's spin zone
+  // Resolve inter-pole minimum separation iteratively so poles cannot clip each other
   for (let pass = 0; pass < 4; pass++) {
     for (const other of otherPoles) {
-      const minDist = getMinPoleSeparationM(mountId, other.mount);
+      const minDist = getMinPoleSeparationM(mountId, mountId, enforceMinClearance);
       const dx = x - other.x;
       const dz = z - other.z;
       const dist = Math.hypot(dx, dz);
@@ -620,7 +690,9 @@ export function clampPolePosition(
 export function createNextPoleInstance(
   existingPoles: PoleInstance[],
   roomWidthM: number,
-  roomDepthM: number
+  roomDepthM: number,
+  enforceMinClearance = true,
+  ceilingHeightCm = DEFAULT_CONFIG.ceilingHeightCm
 ): PoleInstance {
   const finishCycle: PoleFinishId[] = ['brass', 'stainless', 'powder-black', 'silicone'];
   const usedFinishes = new Set(existingPoles.map((p) => p.finish));
@@ -629,20 +701,30 @@ export function createNextPoleInstance(
     finishCycle[existingPoles.length % finishCycle.length];
 
   const nextNum = existingPoles.length + 1;
+  const minSep = getMinPoleSeparationM('tension', 'tension', enforceMinClearance);
+  const stepDist = enforceMinClearance ? 1.75 : 0.78;
   const candidateOffsets: [number, number][] = [
-    [1.75, 0],
-    [-1.75, 0],
-    [0, 1.7],
-    [0, -1.7],
-    [1.6, 1.4],
-    [-1.6, 1.4],
+    [stepDist, 0],
+    [-stepDist, 0],
+    [0, stepDist],
+    [0, -stepDist],
+    [stepDist * 0.9, stepDist * 0.8],
+    [-stepDist * 0.9, stepDist * 0.8],
   ];
 
-  let chosen = { x: 1.75, z: 0 };
+  let chosen = { x: stepDist, z: 0 };
   for (const [cx, cz] of candidateOffsets) {
-    const res = clampPolePosition(cx, cz, roomWidthM, roomDepthM, 'tension', existingPoles);
+    const res = clampPolePosition(
+      cx,
+      cz,
+      roomWidthM,
+      roomDepthM,
+      'tension',
+      existingPoles,
+      enforceMinClearance
+    );
     const clearOfAll = existingPoles.every(
-      (p) => Math.hypot(res.x - p.x, res.z - p.z) >= getMinPoleSeparationM('tension', p.mount) - 0.05
+      (p) => Math.hypot(res.x - p.x, res.z - p.z) >= minSep - 0.05
     );
     if (clearOfAll) {
       chosen = { x: res.x, z: res.z };
@@ -655,7 +737,8 @@ export function createNextPoleInstance(
     label: `Pole ${nextNum}`,
     finish: nextFinish,
     diameterMm: 45,
-    mount: 'tension',
+    heightCm: clampPoleHeightCm(ceilingHeightCm, ceilingHeightCm),
+    cushionPlacement: 'top',
     isSpinning: true,
     spinRpm: 16,
     x: chosen.x,
@@ -673,23 +756,30 @@ const EXTENSION_CATALOG: { lengthMm: number; priceUsd: number; weightFactor: num
 export function calculateHeightSolution(
   ceilingHeightCm: number,
   mountId: BaseMountId,
-  finishId: PoleFinishId
+  finishId: PoleFinishId,
+  poleHeightCm?: number,
+  cushionPlacement: CushionPlacement = 'top',
+  ceilingType: CeilingType = 'flat'
 ): HeightSolution {
   const mount = BASE_MOUNTS[mountId];
   const finish = POLE_FINISHES[finishId];
-  const targetMm = Math.round(ceilingHeightCm * 10);
+  const safeCeilingCm = Math.round(ceilingHeightCm);
+  const rawPoleCm = poleHeightCm ?? Math.min(safeCeilingCm, MAX_POLE_HEIGHT_CM);
+  const effectivePoleCm = clampPoleHeightCm(rawPoleCm, Math.max(safeCeilingCm, MIN_POLE_HEIGHT_CM));
+  const cushionHeightCm = Math.max(0, safeCeilingCm - effectivePoleCm);
+  const cappedAtMaxPoleHeight = safeCeilingCm > MAX_POLE_HEIGHT_CM;
+  const targetMm = effectivePoleCm * 10;
 
   const baseStackMm =
-    mountId === 'stage-podium'
-      ? 210
-      : mountId === 'vaulted-beam'
-        ? 235
-        : mountId === 'permanent-ceiling'
-          ? 185
-          : 195;
+    ceilingType === 'vaulted'
+      ? 235
+      : mountId === 'permanent-ceiling'
+        ? 185
+        : 195;
 
-  const aPoleMm = 1020;
-  const bPoleMm = 1020;
+  const usableSpanMm = Math.max(900, targetMm - baseStackMm);
+  const aPoleMm = Math.min(1020, Math.round(usableSpanMm * 0.48));
+  const bPoleMm = Math.min(1020, Math.round(usableSpanMm * 0.48));
   const coreHeightMm = baseStackMm + aPoleMm + bPoleMm;
   const rawDeltaMm = Math.max(0, targetMm - coreHeightMm);
 
@@ -716,26 +806,31 @@ export function calculateHeightSolution(
   let isValid = true;
   let warning: string | undefined;
 
-  if (ceilingHeightCm < mount.minHeightCm) {
+  if (safeCeilingCm < mount.minHeightCm) {
     isValid = false;
     warning = `${mount.shortName} min ${(mount.minHeightCm / 100).toFixed(2)}m.`;
-  } else if (ceilingHeightCm > mount.maxHeightCm) {
+  } else if (rawPoleCm > MAX_POLE_HEIGHT_CM) {
     isValid = false;
-    warning = `${mount.shortName} max ${(mount.maxHeightCm / 100).toFixed(2)}m.`;
-  } else if (mountId !== 'stage-podium' && adjusterTravelMm > 125) {
+    warning = `Max pole height ${(MAX_POLE_HEIGHT_CM / 100).toFixed(2)}m.`;
+  } else if (adjusterTravelMm > 125) {
     isValid = false;
     warning = `Adjuster travel (${adjusterTravelMm}mm) exceeds 125mm limit.`;
   }
 
   return {
-    targetHeightCm: ceilingHeightCm,
+    targetHeightCm: effectivePoleCm,
+    poleHeightCm: effectivePoleCm,
+    ceilingHeightCm: safeCeilingCm,
+    cushionHeightCm,
+    cushionPlacement,
+    cappedAtMaxPoleHeight,
     baseStackMm,
     aPoleMm,
     bPoleMm,
     extensions,
     adjusterTravelMm,
     xJointCount,
-    totalRigHeightMm: coreHeightMm + finalExtTotalMm + adjusterTravelMm,
+    totalRigHeightMm: coreHeightMm + finalExtTotalMm + adjusterTravelMm + cushionHeightCm * 10,
     isValid,
     warning,
   };
@@ -749,7 +844,10 @@ export function generateBOM(config: PoleRigConfig): BOMSummary {
   const heightSolution = calculateHeightSolution(
     config.ceilingHeightCm,
     config.mount,
-    config.finish
+    config.finish,
+    config.poleHeightCm,
+    config.cushionPlacement,
+    config.ceilingType
   );
 
   const items: BOMLineItem[] = [];
@@ -769,15 +867,24 @@ export function generateBOM(config: PoleRigConfig): BOMSummary {
   items.push({
     sku: `MNT-${config.mount.toUpperCase().slice(0, 4)}`,
     name: mount.name,
-    material:
-      config.mount === 'stage-podium'
-        ? 'CNC 6061-T6 Modular Aluminum Deck + Steel Chassis'
-        : 'Laser-Cut Structural Steel + 70A Silicone Interface',
+    material: 'Laser-Cut Structural Steel + 70A Silicone Interface',
     quantity: 1,
     unitWeightKg: mount.weightKg,
     unitPriceUsd: mount.priceDeltaUsd === 0 ? 0 : mount.priceDeltaUsd,
     totalPriceUsd: mount.priceDeltaUsd === 0 ? 0 : mount.priceDeltaUsd,
   });
+
+  if (config.ceilingType === 'vaulted') {
+    items.push({
+      sku: 'MNT-VAULT-CLV',
+      name: `Vaulted Ceiling Articulating Clevis Adapter (${config.vaultAngleDeg}° Pitch)`,
+      material: '4140 Alloy Steel Yoke + M16 Hardened Pivot Pin',
+      quantity: 1,
+      unitWeightKg: 1.2,
+      unitPriceUsd: 135,
+      totalPriceUsd: 135,
+    });
+  }
 
   const extByLength = new Map<number, { piece: ExtensionPiece; qty: number }>();
   for (const ext of heightSolution.extensions) {
@@ -813,6 +920,23 @@ export function generateBOM(config: PoleRigConfig): BOMSummary {
     });
   }
 
+  if (heightSolution.cushionHeightCm > 0) {
+    const posCode = heightSolution.cushionPlacement === 'top' ? 'TOP' : 'BLW';
+    const posLabel = heightSolution.cushionPlacement === 'top' ? 'Ceiling Top' : 'Floor Below';
+    const cushionMeters = (heightSolution.cushionHeightCm / 100).toFixed(2);
+    const cushionPrice = 65 + Math.ceil(heightSolution.cushionHeightCm / 25) * 18;
+    const cushionWeight = Number((1.6 + (heightSolution.cushionHeightCm / 100) * 4.2).toFixed(2));
+    items.push({
+      sku: `CSH-${posCode}-${heightSolution.cushionHeightCm}`,
+      name: `Height Cushion Spacer (${cushionMeters}m · ${posLabel})`,
+      material: 'High-Density Ribbed Elastomer Core + 6061-T6 Load Caps',
+      quantity: 1,
+      unitWeightKg: cushionWeight,
+      unitPriceUsd: cushionPrice,
+      totalPriceUsd: cushionPrice,
+    });
+  }
+
   items.push({
     sku: 'FST-KIT-129',
     name: 'Class 12.9 Fastener Pack & 4mm / 5mm Hex Torque Keys',
@@ -832,8 +956,8 @@ export function generateBOM(config: PoleRigConfig): BOMSummary {
     items,
     totalPriceUsd,
     totalWeightKg,
-    packedLengthCm: config.mount === 'stage-podium' ? 112 : 108,
-    packedBagsCount: config.mount === 'stage-podium' ? 3 : 1,
+    packedLengthCm: 108,
+    packedBagsCount: 1,
     heightSolution,
   };
 }
@@ -853,7 +977,8 @@ export function generateMultiPoleBOM(
             ...baseConfig,
             finish: p.finish,
             diameterMm: p.diameterMm,
-            mount: p.mount,
+            poleHeightCm: p.heightCm,
+            cushionPlacement: p.cushionPlacement,
             isSpinning: p.isSpinning,
             spinRpm: p.spinRpm,
           }
@@ -866,8 +991,11 @@ export function generateMultiPoleBOM(
   let maxPacked = 108;
   let primarySolution = calculateHeightSolution(
     baseConfig.ceilingHeightCm,
-    poles[0].mount,
-    poles[0].finish
+    baseConfig.mount,
+    poles[0].finish,
+    poles[0].heightCm,
+    poles[0].cushionPlacement,
+    baseConfig.ceilingType
   );
 
   poles.forEach((p, idx) => {
@@ -875,7 +1003,8 @@ export function generateMultiPoleBOM(
       ...baseConfig,
       finish: p.finish,
       diameterMm: p.diameterMm,
-      mount: p.mount,
+      poleHeightCm: p.heightCm,
+      cushionPlacement: p.cushionPlacement,
       isSpinning: p.isSpinning,
       spinRpm: p.spinRpm,
     });
@@ -912,12 +1041,25 @@ export function generateMultiPoleBOM(
 export function analyzeFloorClearance(
   roomWidthM: number,
   roomDepthM: number,
-  mountId: BaseMountId
+  _mountId?: BaseMountId,
+  enforceMinClearance = true
 ): ClearanceAnalysis {
-  const minClearRadiusM = mountId === 'stage-podium' ? 1.65 : 1.5;
+  const minClearRadiusM = enforceMinClearance ? MIN_WALL_CLEARANCE_M : DEV_MIN_WALL_CLEARANCE_M;
   const availableRadiusM = Number((Math.min(roomWidthM, roomDepthM) / 2).toFixed(2));
 
-  if (availableRadiusM >= minClearRadiusM + 0.15) {
+  if (!enforceMinClearance) {
+    return {
+      roomWidthM,
+      roomDepthM,
+      minClearRadiusM,
+      availableRadiusM,
+      status: availableRadiusM >= 0.45 ? 'optimal' : 'caution',
+      label: '1.25m Limit Off',
+      recommendation: 'Compact testing mode: 1.25m minimum radius check bypassed.',
+    };
+  }
+
+  if (availableRadiusM >= minClearRadiusM + 0.35) {
     return {
       roomWidthM,
       roomDepthM,
@@ -929,7 +1071,7 @@ export function analyzeFloorClearance(
     };
   }
 
-  if (availableRadiusM >= minClearRadiusM - 0.15) {
+  if (availableRadiusM >= minClearRadiusM) {
     return {
       roomWidthM,
       roomDepthM,
@@ -949,6 +1091,119 @@ export function analyzeFloorClearance(
     status: 'restricted',
     label: 'Clearance Restricted',
     recommendation: `${availableRadiusM.toFixed(2)}m radius below ${minClearRadiusM.toFixed(2)}m safe envelope.`,
+  };
+}
+
+export interface RoomCameraPose {
+  pos: [number, number, number];
+  target: [number, number, number];
+}
+
+/**
+ * Computes a pulled-back architectural establishing shot that frames the entire
+ * studio room model (floor, left slat wall, back mirror wall, ceiling, and poles).
+ */
+export function computeFullRoomCamera(
+  roomWidthM: number,
+  roomDepthM: number,
+  ceilingHeightCm: number,
+  isPortraitMobile = false,
+  hasMultiplePoles = false
+): RoomCameraPose {
+  const H = ceilingHeightCm / 100;
+  const span = Math.max(roomWidthM, roomDepthM);
+  const multiBoost = hasMultiplePoles ? 0.55 : 0;
+
+  if (isPortraitMobile) {
+    const dist = Math.max(6.8, span * 1.46 + H * 0.38 + multiBoost);
+    const az = 0.25;
+    return {
+      pos: [
+        Number((Math.sin(az) * dist).toFixed(3)),
+        Number((H * 0.53).toFixed(3)),
+        Number((Math.cos(az) * dist).toFixed(3)),
+      ],
+      target: [0, Number((H * 0.4).toFixed(3)), 0],
+    };
+  }
+
+  const dist = Math.max(5.8, span * 1.24 + H * 0.34 + multiBoost);
+  const az = 0.42;
+  return {
+    pos: [
+      Number((Math.sin(az) * dist).toFixed(3)),
+      Number((H * 0.55).toFixed(3)),
+      Number((Math.cos(az) * dist).toFixed(3)),
+    ],
+    target: [0, Number((H * 0.42).toFixed(3)), 0],
+  };
+}
+
+/**
+ * Computes a smooth 360-degree interior orbit camera position around (poleX, poleZ)
+ * that is mathematically guaranteed to stay strictly INSIDE the studio walls
+ * (never clipping behind the back wall at z = -D/2 or left wall at x = -W/2)
+ * and safely beneath the flat or vaulted ceiling.
+ */
+export function computeInRoomOrbitPosition(
+  angleRad: number,
+  poleX: number,
+  poleZ: number,
+  roomWidthM: number,
+  roomDepthM: number,
+  ceilingHeightM: number,
+  elapsedSec: number,
+  desiredRadius = 2.25,
+  isVaulted = false,
+  vaultAngleDeg = 0
+): {
+  x: number;
+  y: number;
+  z: number;
+  bounds: { xMin: number; xMax: number; zMin: number; zMax: number; yMin: number; yMax: number };
+} {
+  const wallPad = Math.min(0.45, Math.min(roomWidthM, roomDepthM) * 0.24);
+  const openEdgePad = Math.min(0.24, Math.min(roomWidthM, roomDepthM) * 0.14);
+
+  const xMin = -roomWidthM / 2 + wallPad;
+  const xMax = roomWidthM / 2 - openEdgePad;
+  const zMin = -roomDepthM / 2 + wallPad;
+  const zMax = roomDepthM / 2 - openEdgePad;
+
+  const anchorX = Math.max(xMin + 0.05, Math.min(xMax - 0.05, poleX));
+  const anchorZ = Math.max(zMin + 0.05, Math.min(zMax - 0.05, poleZ));
+
+  const dx = Math.sin(angleRad);
+  const dz = Math.cos(angleRad);
+
+  let rMax = desiredRadius;
+  if (dx < -1e-5) rMax = Math.min(rMax, (xMin - anchorX) / dx);
+  if (dx > 1e-5) rMax = Math.min(rMax, (xMax - anchorX) / dx);
+  if (dz < -1e-5) rMax = Math.min(rMax, (zMin - anchorZ) / dz);
+  if (dz > 1e-5) rMax = Math.min(rMax, (zMax - anchorZ) / dz);
+
+  const r = Math.max(0.35, Math.min(desiredRadius, rMax));
+  const x = Math.max(xMin, Math.min(xMax, anchorX + dx * r));
+  const z = Math.max(zMin, Math.min(zMax, anchorZ + dz * r));
+
+  // Respect vaulted roof eave height on the -X side so orbit never clips sloped soffit
+  const vaultRad = computeEffectiveVaultRad(
+    ceilingHeightM,
+    roomWidthM,
+    isVaulted ? 'vaulted' : 'flat',
+    vaultAngleDeg
+  );
+  const localCeilingY = ceilingHeightM + x * Math.tan(vaultRad);
+  const yMin = 0.45;
+  const yMax = Math.max(0.95, localCeilingY - 0.34);
+  const rawY = ceilingHeightM * 0.45 + Math.sin(elapsedSec * 0.65) * 0.24;
+  const y = Math.max(yMin, Math.min(yMax, rawY));
+
+  return {
+    x,
+    y,
+    z,
+    bounds: { xMin, xMax, zMin, zMax, yMin, yMax },
   };
 }
 
@@ -1011,7 +1266,7 @@ export function computeAssemblyOffsets(
 }
 
 export function isDarkLighting(preset: LightingPreset): boolean {
-  return preset === 'mood-neon' || preset === 'pro-spotlight';
+  return preset !== 'studio-daylight';
 }
 
 export function formatHeightMetricAndImperial(cm: number): string {
@@ -1042,9 +1297,13 @@ export function exportBOMToCSV(bom: BOMSummary, config: PoleRigConfig): string {
     item.totalPriceUsd.toFixed(2),
   ]);
 
+  const ceilingDesc =
+    config.ceilingType === 'vaulted'
+      ? `Tilted / Vaulted ${config.vaultAngleDeg}°`
+      : 'Flat';
   const meta = [
     `# AxisPole Studio Bill of Materials`,
-    `# Configuration: ${POLE_FINISHES[config.finish].name} | ${config.diameterMm}mm | ${BASE_MOUNTS[config.mount].name} | Ceiling ${formatHeightMetricAndImperial(config.ceilingHeightCm)}`,
+    `# Configuration: ${POLE_FINISHES[config.finish].name} | ${config.diameterMm}mm | ${BASE_MOUNTS[config.mount].name} | ${ceilingDesc} Ceiling ${formatHeightMetricAndImperial(config.ceilingHeightCm)}`,
     `# Total Weight: ${bom.totalWeightKg} kg | Total Price: $${bom.totalPriceUsd.toFixed(2)} USD`,
     header.join(','),
     ...rows.map((r) => r.join(',')),

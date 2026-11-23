@@ -135,6 +135,10 @@ export function Modals({
             </h2>
             <p className="text-xs text-stone-600 mt-0.5">
               {finish.name} · {config.diameterMm}mm · {mount.name} ·{' '}
+              {config.ceilingType === 'vaulted'
+                ? `Tilted Ceiling ${config.vaultAngleDeg}°`
+                : 'Flat Ceiling'}{' '}
+              ·{' '}
               <span className="font-mono tabular-nums">
                 {formatHeightMetricAndImperial(config.ceilingHeightCm)}
               </span>

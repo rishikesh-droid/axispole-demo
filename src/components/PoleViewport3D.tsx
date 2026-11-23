@@ -16,13 +16,19 @@ import type {
   PoleFinishId,
   PoleInstance,
   PoleRigConfig,
+  RoomReplicaScene,
 } from '../types/pole';
 import {
   ASSEMBLY_STEPS,
   clampPolePosition,
   computeAssemblyOffsets,
-  getEffectiveVaultAngleRad,
+  computeFullRoomCamera,
+  computeInRoomOrbitPosition,
+  computeLocalCeilingHeightCm,
+  MAX_CEILING_HEIGHT_CM,
+  MAX_POLE_HEIGHT_CM,
   MAX_POLES_IN_STUDIO,
+  MIN_CEILING_HEIGHT_CM,
 } from '../utils/poleConfig';
 import type { ARMarkerState, ARMeasurementResult } from '../utils/arMeasure';
 import type { ARPoint3D } from '../utils/arPointCloud';
@@ -79,7 +85,8 @@ interface PoleViewport3DProps {
   arShowPointCloud: boolean;
   arSurfaceCalibration: SurfaceCalibrationResult | null;
   arPartialFloorPoints: FloorPoint3D[];
-  arOpenCeilingMode?: boolean;
+  roomReplica: RoomReplicaScene | null;
+  showInferredObjects: boolean;
 }
 
 const _camGoalPos = new THREE.Vector3();
@@ -131,7 +138,8 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       arShowPointCloud,
       arSurfaceCalibration,
       arPartialFloorPoints,
-      arOpenCeilingMode = false,
+      roomReplica,
+      showInferredObjects,
     },
     ref
   ) {
@@ -162,7 +170,8 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       arShowPointCloud,
       arSurfaceCalibration,
       arPartialFloorPoints,
-      arOpenCeilingMode,
+      roomReplica,
+      showInferredObjects,
       onSelectPart,
       onPlaybackProgress,
     });
@@ -190,7 +199,8 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       arShowPointCloud,
       arSurfaceCalibration,
       arPartialFloorPoints,
-      arOpenCeilingMode,
+      roomReplica,
+      showInferredObjects,
       onSelectPart,
       onPlaybackProgress,
     };
@@ -277,26 +287,21 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
         }
         case 'full-rig':
         default: {
-          const multiBoost = stateRef.current.poles.length > 1 ? 0.55 : 0;
+          const s = stateRef.current;
           const isPortraitMobile =
-            typeof window !== 'undefined' && window.innerWidth < 640 && window.innerHeight > window.innerWidth;
-          if (isPortraitMobile) {
-            return {
-              pos: new THREE.Vector3(
-                ox * 0.4 + 1.55 + multiBoost * 0.35,
-                H * 0.44,
-                oz * 0.4 + 4.45 + multiBoost
-              ),
-              target: new THREE.Vector3(ox * 0.5, H * 0.38, oz * 0.5),
-            };
-          }
+            typeof window !== 'undefined' &&
+            window.innerWidth < 640 &&
+            window.innerHeight > window.innerWidth;
+          const fullPose = computeFullRoomCamera(
+            s.config.roomWidthM,
+            s.config.roomDepthM,
+            heightCm,
+            isPortraitMobile,
+            s.poles.length > 1
+          );
           return {
-            pos: new THREE.Vector3(
-              ox * 0.4 + 1.85 + multiBoost * 0.35,
-              H * 0.45,
-              oz * 0.4 + 3.85 + multiBoost
-            ),
-            target: new THREE.Vector3(ox * 0.5, H * 0.36, oz * 0.5),
+            pos: new THREE.Vector3(...fullPose.pos),
+            target: new THREE.Vector3(...fullPose.target),
           };
         }
       }
@@ -340,7 +345,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       const height = container.clientHeight || window.innerHeight;
 
       const scene = new THREE.Scene();
-      const camera = new THREE.PerspectiveCamera(44, width / height, 0.05, 45);
+      const camera = new THREE.PerspectiveCamera(44, width / height, 0.05, 60);
       const initialCam = computeCameraPreset('full-rig', stateRef.current.config.ceilingHeightCm);
       camera.position.copy(initialCam.pos);
 
@@ -371,7 +376,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       controls.enableDamping = !isSoftwareGl;
       controls.dampingFactor = 0.07;
       controls.minDistance = 0.35;
-      controls.maxDistance = 9.5;
+      controls.maxDistance = 18;
       controls.maxPolarAngle = Math.PI * 0.495;
       controls.minPolarAngle = 0.08;
       controls.update();
@@ -408,12 +413,15 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       }[] {
         const s = stateRef.current;
         if (s.arCameraActive) {
-          // Enforce 1.25m depth & lateral free-space gate: do not place pole if too close to wall!
-          if (!s.arMeasurement.canPlacePole) {
-            return [];
-          }
+          // Always keep the 3D pole visible live on the camera feed!
           const active = s.poles.find((p) => p.id === s.activePoleId) ?? s.poles[0];
-          const arHeightCm = Math.max(215, Math.min(360, s.arMeasurement.ceilingHeightCm));
+          const arHeightCm = Math.max(
+            MIN_CEILING_HEIGHT_CM,
+            Math.min(MAX_CEILING_HEIGHT_CM, s.arMeasurement.ceilingHeightCm)
+          );
+          const calibratedZ = s.arSurfaceCalibration?.valid
+            ? Number((s.arMeasurement.distanceM + s.arSurfaceCalibration.centroidZ).toFixed(3))
+            : 0;
           return [
             {
               id: active.id,
@@ -421,30 +429,51 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
                 ...s.config,
                 finish: active.finish,
                 diameterMm: active.diameterMm,
-                mount: s.arOpenCeilingMode ? 'stage-podium' : s.arMeasurement.recommendedMount,
+                mount: s.arMeasurement.recommendedMount,
+                ceilingType: 'flat',
                 ceilingHeightCm: arHeightCm,
+                poleHeightCm: Math.min(arHeightCm, MAX_POLE_HEIGHT_CM),
+                cushionPlacement: active.cushionPlacement,
                 isSpinning: active.isSpinning,
                 spinRpm: active.spinRpm,
               },
               x: s.arMeasurement.poleOffsetXM,
-              z: s.arMeasurement.poleDepthZM,
+              z: calibratedZ,
               isSelected: true,
             },
           ];
         }
         if (s.compareMode) {
           const active = s.poles.find((p) => p.id === s.activePoleId) ?? s.poles[0];
+          const leftCeilCm = computeLocalCeilingHeightCm(
+            s.config.ceilingHeightCm,
+            s.config.roomWidthM,
+            s.config.ceilingType,
+            s.config.vaultAngleDeg,
+            -0.58
+          );
+          const rightCeilCm = computeLocalCeilingHeightCm(
+            s.config.ceilingHeightCm,
+            s.config.roomWidthM,
+            s.config.ceilingType,
+            s.config.vaultAngleDeg,
+            0.58
+          );
           const leftRig: PoleRigConfig = {
             ...s.config,
             finish: active.finish,
             diameterMm: active.diameterMm,
-            mount: active.mount,
+            ceilingHeightCm: leftCeilCm,
+            poleHeightCm: Math.min(active.heightCm, leftCeilCm),
+            cushionPlacement: active.cushionPlacement,
             isSpinning: active.isSpinning,
             spinRpm: active.spinRpm,
           };
           const rightRig: PoleRigConfig = {
             ...leftRig,
             finish: s.compareFinish,
+            ceilingHeightCm: rightCeilCm,
+            poleHeightCm: Math.min(active.heightCm, rightCeilCm),
           };
           return [
             { id: 'compare-left', rig: leftRig, x: -0.58, z: 0, isSelected: true },
@@ -453,30 +482,22 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
         }
 
         return s.poles.slice(0, MAX_POLES_IN_STUDIO).map((p) => {
-          const vaultRad = getEffectiveVaultAngleRad(
+          const localCeilCm = computeLocalCeilingHeightCm(
             s.config.ceilingHeightCm,
             s.config.roomWidthM,
-            p.mount,
-            s.config.vaultAngleDeg
+            s.config.ceilingType,
+            s.config.vaultAngleDeg,
+            p.x
           );
-          const localHeightCm =
-            p.mount === 'vaulted-beam'
-              ? Math.max(
-                  215,
-                  Math.min(
-                    360,
-                    Math.round((s.config.ceilingHeightCm / 100 + p.x * Math.tan(vaultRad)) * 100)
-                  )
-                )
-              : s.config.ceilingHeightCm;
           return {
             id: p.id,
             rig: {
               ...s.config,
-              ceilingHeightCm: localHeightCm,
               finish: p.finish,
               diameterMm: p.diameterMm,
-              mount: p.mount,
+              ceilingHeightCm: localCeilCm,
+              poleHeightCm: Math.min(p.heightCm, localCeilCm),
+              cushionPlacement: p.cushionPlacement,
               isSpinning: p.isSpinning,
               spinRpm: p.spinRpm,
             },
@@ -502,7 +523,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
           handle.root.visible = true;
           handle.root.position.set(item.x, 0, item.z);
 
-          const gKey = `${item.rig.finish}-${item.rig.diameterMm}-${item.rig.mount}-${item.rig.ceilingHeightCm}-${item.rig.vaultAngleDeg}-${item.rig.cushionPosition ?? 'none'}-${item.rig.roomWidthM}`;
+          const gKey = `${item.rig.finish}-${item.rig.diameterMm}-${item.rig.mount}-${item.rig.ceilingType}-${item.rig.ceilingHeightCm}-${item.rig.poleHeightCm}-${item.rig.cushionPlacement}-${item.rig.vaultAngleDeg}-${item.rig.roomWidthM.toFixed(2)}`;
           if (poleGeoKeys[i] !== gKey) {
             handle.rebuild(item.rig);
             poleGeoKeys[i] = gKey;
@@ -521,12 +542,20 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
           });
         }
 
-        const activeMount = rendered.find((r) => r.isSelected)?.rig.mount ?? s.config.mount;
-        env.update(s.config, s.arCameraActive, renderer, markers, {
-          active: (s.moveMode || draggingPoleIdx !== null) && !s.compareMode,
-          hitWall: dragHitWall,
-          activeMount,
-        });
+        const activeMount = s.config.mount;
+        env.update(
+          s.config,
+          s.arCameraActive,
+          renderer,
+          markers,
+          {
+            active: (s.moveMode || draggingPoleIdx !== null) && !s.compareMode,
+            hitWall: dragHitWall,
+            activeMount,
+          },
+          s.roomReplica,
+          s.showInferredObjects
+        );
         arCloudRig.update(
           s.arCameraActive,
           s.arScanPhase,
@@ -554,6 +583,8 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       let camTransitionActive = false;
       let userOverrodePlaybackCam = false;
       let prevPlaybackMode: 'idle' | 'assemble' | 'dismantle' = stateRef.current.playbackMode;
+      let prevCameraMotion: CameraMotionMode = stateRef.current.cameraMotion;
+      let orbitAngleRad = 0.45;
       const startCameraTransition = (pos: THREE.Vector3, target: THREE.Vector3) => {
         _camGoalPos.copy(pos);
         _camGoalTarget.copy(target);
@@ -723,23 +754,56 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
             camera.fov = 44;
             camera.updateProjectionMatrix();
           }
-          // Dynamic Perspective Camera Animations (Orbit / Hero Crane / Auto-Tracking Install-Dismantle)
+          // Initialize orbit phase seamlessly from current camera angle on entering 'orbit'
+          if (s.cameraMotion !== prevCameraMotion) {
+            if (s.cameraMotion === 'orbit') {
+              const cxInit = s.compareMode ? 0 : activePoleItem?.x ?? 0;
+              const czInit = s.compareMode ? 0 : activePoleItem?.z ?? 0;
+              orbitAngleRad = Math.atan2(
+                camera.position.x - cxInit,
+                camera.position.z - czInit
+              );
+              camTransitionActive = false;
+            }
+            prevCameraMotion = s.cameraMotion;
+          }
+
+          // Dynamic Perspective Camera Animations (Inside-Room Orbit / Hero Crane / Auto-Tracking Install-Dismantle)
           if (s.cameraMotion !== 'manual') {
             const H = s.config.ceilingHeightCm / 100;
             const cx = s.compareMode ? 0 : activePoleItem?.x ?? 0;
             const cz = s.compareMode ? 0 : activePoleItem?.z ?? 0;
 
             if (s.cameraMotion === 'orbit') {
-              const radius = s.compareMode ? 3.2 : 3.55;
-              const ang = elapsedSec * 0.42;
-              const targetPosX = cx + Math.sin(ang) * radius;
-              const targetPosZ = cz + Math.cos(ang) * radius;
-              const targetPosY = H * 0.44 + Math.sin(elapsedSec * 0.65) * 0.28;
-              const k = 1 - Math.exp(-3.2 * dt);
-              camera.position.x = THREE.MathUtils.lerp(camera.position.x, targetPosX, k);
-              camera.position.y = THREE.MathUtils.lerp(camera.position.y, targetPosY, k);
-              camera.position.z = THREE.MathUtils.lerp(camera.position.z, targetPosZ, k);
-              controls.target.lerp(_camGoalTarget.set(cx, H * 0.39, cz), k);
+              orbitAngleRad += 0.45 * dt;
+              const desiredR = s.compareMode
+                ? Math.min(2.45, Math.min(s.config.roomWidthM, s.config.roomDepthM) * 0.46)
+                : Math.min(2.25, Math.min(s.config.roomWidthM, s.config.roomDepthM) * 0.44);
+              const orbitPos = computeInRoomOrbitPosition(
+                orbitAngleRad,
+                cx,
+                cz,
+                s.config.roomWidthM,
+                s.config.roomDepthM,
+                H,
+                elapsedSec,
+                desiredR,
+                s.config.ceilingType === 'vaulted',
+                s.config.vaultAngleDeg
+              );
+              const k = 1 - Math.exp(-4.6 * dt);
+              const nextX = THREE.MathUtils.lerp(camera.position.x, orbitPos.x, k);
+              const nextY = THREE.MathUtils.lerp(camera.position.y, orbitPos.y, k);
+              const nextZ = THREE.MathUtils.lerp(camera.position.z, orbitPos.z, k);
+              // Hard-enforce solid back & left wall interior boundaries so camera NEVER passes behind walls!
+              camera.position.x = Math.max(orbitPos.bounds.xMin, nextX);
+              camera.position.y = THREE.MathUtils.clamp(
+                nextY,
+                orbitPos.bounds.yMin,
+                orbitPos.bounds.yMax
+              );
+              camera.position.z = Math.max(orbitPos.bounds.zMin, nextZ);
+              controls.target.lerp(_camGoalTarget.set(cx, H * 0.42, cz), k);
             } else if (s.cameraMotion === 'crane') {
               // Hero Crane Sweep: smooth low-to-high ascending/descending architectural reveal
               const wave = (Math.sin(elapsedSec * 0.55 - Math.PI / 2) + 1) * 0.5;
@@ -895,8 +959,9 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
             rawZ,
             s.config.roomWidthM,
             s.config.roomDepthM,
-            poleItem.mount,
-            others
+            s.config.mount,
+            others,
+            s.config.enforceMinClearance
           );
 
           dragHitWall = clamped.hitWallBoundary || clamped.hitPoleBoundary;
@@ -1038,7 +1103,8 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       arShowPointCloud,
       arSurfaceCalibration,
       arPartialFloorPoints,
-      arOpenCeilingMode,
+      roomReplica,
+      showInferredObjects,
     ]);
 
     useEffect(() => {

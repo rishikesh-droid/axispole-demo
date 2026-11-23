@@ -1,4 +1,4 @@
-import { AlertTriangle, CheckCircle2, Move, ShieldCheck, Wrench, X } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Eye, EyeOff, Move, ShieldCheck, ShieldOff, Sparkles, Wrench, X } from 'lucide-react';
 import type {
   BOMSummary,
   ClearanceAnalysis,
@@ -8,14 +8,16 @@ import type {
   PoleFinishId,
   PoleInstance,
   PoleRigConfig,
+  RoomReplicaScene,
 } from '../types/pole';
 import {
   ASSEMBLY_STEPS,
   BASE_MOUNTS,
+  getCushionHeightCm,
   getWallClearanceMarginM,
   HARDWARE_PARTS,
   isDarkLighting,
-  MAX_POLE_LENGTH_CM,
+  MAX_POLE_HEIGHT_CM,
   POLE_FINISHES,
 } from '../utils/poleConfig';
 
@@ -35,7 +37,11 @@ interface InspectorCalloutProps {
   playbackMode: 'idle' | 'assemble' | 'dismantle';
   selectedPart: HardwarePartId | null;
   onClearSelectedPart: () => void;
+  onToggleMinClearance: () => void;
   arCameraActive: boolean;
+  roomReplica: RoomReplicaScene | null;
+  showInferredObjects: boolean;
+  onToggleInferredObjects: () => void;
 }
 
 export function InspectorCallout({
@@ -54,51 +60,68 @@ export function InspectorCallout({
   playbackMode,
   selectedPart,
   onClearSelectedPart,
+  onToggleMinClearance,
   arCameraActive,
+  roomReplica,
+  showInferredObjects,
+  onToggleInferredObjects,
 }: InspectorCalloutProps) {
   // Hide studio callout during Live AR Room Measurement so the AR HUD has full control
   if (arCameraActive) return null;
 
   const isDark = isDarkLighting(config.lighting);
   const isNeon = config.lighting === 'mood-neon';
+  const isSunset = config.lighting === 'sunset-flow';
+  const isPulse = config.lighting === 'cyber-pulse';
   const finish = POLE_FINISHES[activePole.finish];
   const compareSpec = POLE_FINISHES[compareFinish];
-  const mount = BASE_MOUNTS[activePole.mount];
+  const mount = BASE_MOUNTS[config.mount];
   const stepSpec = ASSEMBLY_STEPS[activeStepIndex] ?? ASSEMBLY_STEPS[0];
   const partSpec = selectedPart ? HARDWARE_PARTS[selectedPart] : null;
   const isDismantling = playbackMode === 'dismantle';
 
   const surfaceClass = isNeon
     ? 'bg-[#11131d]/93 border-violet-400/25 text-zinc-100 shadow-[0_8px_24px_rgba(0,0,0,0.45)]'
-    : isDark
-      ? 'bg-[#151412]/93 border-amber-500/25 text-stone-100 shadow-[0_8px_24px_rgba(0,0,0,0.45)]'
-      : 'bg-[#faf9f6]/94 border-stone-300/90 text-stone-900 shadow-xs';
+    : isSunset
+      ? 'bg-[#1c1317]/93 border-rose-400/28 text-rose-50 shadow-[0_8px_24px_rgba(0,0,0,0.45)]'
+      : isPulse
+        ? 'bg-[#0e161b]/93 border-emerald-400/28 text-emerald-50 shadow-[0_8px_24px_rgba(0,0,0,0.45)]'
+        : isDark
+          ? 'bg-[#151412]/93 border-amber-500/25 text-stone-100 shadow-[0_8px_24px_rgba(0,0,0,0.45)]'
+          : 'bg-[#faf9f6]/94 border-stone-300/90 text-stone-900 shadow-xs';
 
   const mutedClass = isDark ? 'text-zinc-400' : 'text-stone-500';
   const accentTextClass = isNeon
     ? 'text-cyan-300'
-    : isDark
-      ? 'text-amber-400'
-      : 'text-amber-700';
+    : isSunset
+      ? 'text-orange-300'
+      : isPulse
+        ? 'text-emerald-300'
+        : isDark
+          ? 'text-amber-400'
+          : 'text-amber-700';
 
-  const clearanceShort =
-    clearance.status === 'optimal'
+  const clearanceShort = !config.enforceMinClearance
+    ? '1.25m Off'
+    : clearance.status === 'optimal'
       ? 'Optimal'
       : clearance.status === 'caution'
         ? 'Tight'
         : 'Restricted';
 
   const priceDelta = compareSpec.basePriceUsd - finish.basePriceUsd;
+  const activeCushionCm = getCushionHeightCm(config.ceilingHeightCm, activePole.heightCm);
+  const cappedAtMax = config.ceilingHeightCm > MAX_POLE_HEIGHT_CM;
 
   return (
     <div
-      className={`fixed top-12.5 sm:top-15 left-2.5 right-2.5 sm:right-auto sm:left-5 z-20 flex flex-col gap-1.5 sm:gap-2 pointer-events-none ${
-        activeTab === 'assembly' && !partSpec ? 'sm:w-[310px]' : 'sm:w-[258px]'
+      className={`fixed top-14 sm:top-15 left-3 right-3 sm:right-auto sm:left-5 z-20 flex flex-col gap-1.5 sm:gap-2 pointer-events-none ${
+        activeTab === 'assembly' && !partSpec ? 'sm:w-[310px]' : 'sm:w-[272px]'
       }`}
     >
       {/* Minimal Rig Spec Strip (1-line slim strip on mobile, crisp card on desktop) */}
       <div
-        className={`pointer-events-auto rounded-xl sm:rounded-lg border px-2.5 py-1 sm:px-3 sm:py-2 ${surfaceClass}`}
+        className={`pointer-events-auto rounded-xl sm:rounded-lg border px-3 py-1.5 sm:py-2 ${surfaceClass}`}
         data-testid="rig-summary-hud"
       >
         {compareMode ? (
@@ -113,7 +136,7 @@ export function InspectorCallout({
             </div>
             <div className={`hidden sm:flex mt-0.5 items-center justify-between gap-2 text-[11px] ${mutedClass}`}>
               <span className="truncate">
-                {activePole.diameterMm}mm · {(config.ceilingHeightCm / 100).toFixed(2)}m
+                {activePole.diameterMm}mm · {(activePole.heightCm / 100).toFixed(2)}m
               </span>
               <span className="shrink-0">Side-by-Side</span>
             </div>
@@ -129,29 +152,40 @@ export function InspectorCallout({
                 </h1>
                 <span className={mutedClass} aria-hidden="true">·</span>
                 <span className={`font-mono text-[11px] tabular-nums shrink-0 ${mutedClass}`}>
-                  {(config.ceilingHeightCm / 100).toFixed(2)}m
+                  {(activePole.heightCm / 100).toFixed(2)}m
                 </span>
-                <span className={mutedClass} aria-hidden="true">·</span>
-                <span className="inline-flex items-center gap-0.5 shrink-0 text-[11px]">
-                  {clearance.status === 'optimal' ? (
-                    <CheckCircle2
-                      className={`w-3 h-3 shrink-0 ${isNeon ? 'text-cyan-400' : 'text-teal-500'}`}
-                      aria-hidden="true"
-                    />
-                  ) : (
-                    <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0" aria-hidden="true" />
-                  )}
-                  <span className={mutedClass}>
-                    {poles.length > 1 ? `${poles.length}×` : clearanceShort}
-                  </span>
-                </span>
+                {activeCushionCm > 0 ? (
+                  <>
+                    <span className={mutedClass} aria-hidden="true">·</span>
+                    <span className={`font-mono text-[10px] font-semibold tabular-nums shrink-0 ${accentTextClass}`}>
+                      +{(activeCushionCm / 100).toFixed(2)}m {activePole.cushionPlacement === 'top' ? 'Top' : 'Below'}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span className={mutedClass} aria-hidden="true">·</span>
+                    <span className="inline-flex items-center gap-0.5 shrink-0 text-[11px]">
+                      {clearance.status === 'optimal' ? (
+                        <CheckCircle2
+                          className={`w-3 h-3 shrink-0 ${isNeon ? 'text-cyan-400' : 'text-teal-500'}`}
+                          aria-hidden="true"
+                        />
+                      ) : (
+                        <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0" aria-hidden="true" />
+                      )}
+                      <span className={mutedClass}>
+                        {poles.length > 1 ? `${poles.length}×` : clearanceShort}
+                      </span>
+                    </span>
+                  </>
+                )}
               </div>
               <span className="font-mono text-xs font-semibold tabular-nums shrink-0">
                 ${bom.totalPriceUsd}
               </span>
             </div>
 
-            {/* Desktop crisp 2-line card */}
+            {/* Desktop crisp card */}
             <div className="hidden sm:block">
               <div className="flex items-baseline justify-between gap-2">
                 <h1 className="text-xs font-semibold tracking-tight truncate">
@@ -165,9 +199,10 @@ export function InspectorCallout({
 
               <div className={`mt-0.5 flex items-center justify-between gap-2 text-[11px] ${mutedClass}`}>
                 <span className="truncate">
-                  {mount.shortName}
-                  {activePole.mount === 'vaulted-beam' ? ` ${config.vaultAngleDeg}°` : ''} ·{' '}
-                  {(config.ceilingHeightCm / 100).toFixed(2)}m ·{' '}
+                  {config.ceilingType === 'vaulted'
+                    ? `Tilted ${config.vaultAngleDeg}°`
+                    : mount.shortName}{' '}
+                  · {(activePole.heightCm / 100).toFixed(2)}m ·{' '}
                   {activePole.isSpinning ? 'Spin' : 'Static'}
                 </span>
                 <span className="inline-flex items-center gap-1 shrink-0 font-medium">
@@ -184,21 +219,28 @@ export function InspectorCallout({
                   </span>
                 </span>
               </div>
+
+              {activeCushionCm > 0 && (
+                <div
+                  className={`mt-1.5 pt-1.5 border-t flex items-center justify-between gap-2 text-[10px] ${
+                    isDark ? 'border-white/10' : 'border-stone-200'
+                  }`}
+                  data-testid="hud-cushion-readout"
+                >
+                  <span className={`font-semibold ${accentTextClass}`}>
+                    Cushion {(activeCushionCm / 100).toFixed(2)}m ·{' '}
+                    {activePole.cushionPlacement === 'top' ? 'Top (Ceiling)' : 'Below (Floor)'}
+                  </span>
+                  <span className={`font-mono tabular-nums ${mutedClass}`}>
+                    {cappedAtMax
+                      ? '3.00m Max'
+                      : `Ceil ${(config.ceilingHeightCm / 100).toFixed(2)}m`}
+                  </span>
+                </div>
+              )}
             </div>
           </>
         )}
-
-        {config.ceilingHeightCm > MAX_POLE_LENGTH_CM &&
-          activePole.mount !== 'stage-podium' && (
-            <p className={`mt-1 text-[10px] leading-tight ${accentTextClass}`}>
-              2.50m Max Pole ·{' '}
-              {config.cushionPosition === 'below'
-                ? `+${config.ceilingHeightCm - MAX_POLE_LENGTH_CM}cm Floor Cushion`
-                : config.cushionPosition === 'above'
-                  ? `+${config.ceilingHeightCm - MAX_POLE_LENGTH_CM}cm Ceiling Cushion`
-                  : `Add +${config.ceilingHeightCm - MAX_POLE_LENGTH_CM}cm Cushion or Open-Ceiling Base`}
-            </p>
-          )}
 
         {!bom.heightSolution.isValid && bom.heightSolution.warning && (
           <p className="mt-1 text-[11px] text-rose-400 leading-tight">
@@ -206,6 +248,52 @@ export function InspectorCallout({
           </p>
         )}
       </div>
+
+      {/* Active 3D Room Replica Summary Card (shown when viewing scanned My Room environment) */}
+      {config.environment === 'replica' && roomReplica && (
+        <div
+          className={`pointer-events-auto rounded-xl sm:rounded-lg border px-3 py-1.5 ${surfaceClass}`}
+          data-testid="room-replica-hud"
+        >
+          <div className="flex items-center justify-between gap-2 text-[11px]">
+            <span className={`inline-flex items-center gap-1 font-semibold truncate ${accentTextClass}`}>
+              <Sparkles className="w-3 h-3 shrink-0" aria-hidden="true" />
+              <span className="truncate">My Room · {roomReplica.roomType}</span>
+            </span>
+            <span
+              className={`font-mono text-[10px] font-semibold tabular-nums shrink-0 ${
+                isDark ? 'text-emerald-400' : 'text-emerald-700'
+              }`}
+            >
+              {roomReplica.overallAccuracyPct}% fit
+            </span>
+          </div>
+          <div className="mt-1 flex items-center justify-between gap-2">
+            <span className={`text-[10px] truncate ${mutedClass}`}>
+              {roomReplica.visibleObjectCount} detected · {roomReplica.inferredObjectCount} inferred
+            </span>
+            <button
+              type="button"
+              onClick={onToggleInferredObjects}
+              data-testid="hud-toggle-inferred"
+              className={`px-1.5 py-0.5 rounded-xs border text-[10px] font-semibold inline-flex items-center gap-1 shrink-0 transition-colors ${
+                showInferredObjects
+                  ? isDark
+                    ? 'border-white/15 bg-white/8 text-zinc-200'
+                    : 'border-stone-300 bg-white text-stone-800'
+                  : 'border-amber-400/60 bg-amber-500/15 text-amber-300'
+              }`}
+            >
+              {showInferredObjects ? (
+                <Eye className="w-2.5 h-2.5" aria-hidden="true" />
+              ) : (
+                <EyeOff className="w-2.5 h-2.5" aria-hidden="true" />
+              )}
+              <span>Unseen {showInferredObjects ? 'On' : 'Off'}</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Move / Placement Clearance Readout */}
       {moveMode && !compareMode && (
@@ -222,19 +310,41 @@ export function InspectorCallout({
               {activePole.x.toFixed(1)}m, {activePole.z.toFixed(1)}m
             </span>
           </div>
-          <p
-            className={`mt-0.5 text-[10px] ${
-              lastClamp?.hitWallBoundary || lastClamp?.hitPoleBoundary
-                ? 'text-amber-400 font-medium'
-                : mutedClass
-            }`}
-          >
-            {lastClamp?.hitPoleBoundary
-              ? 'Minimum inter-pole spacing limit'
-              : lastClamp?.hitWallBoundary
-                ? `Min ${getWallClearanceMarginM(activePole.mount).toFixed(1)}m wall clearance limit`
-                : `Min ${getWallClearanceMarginM(activePole.mount).toFixed(1)}m wall clearance enforced`}
-          </p>
+          <div className="mt-1 flex items-center justify-between gap-2">
+            <p
+              className={`text-[10px] ${
+                lastClamp?.hitWallBoundary || lastClamp?.hitPoleBoundary
+                  ? 'text-amber-400 font-medium'
+                  : mutedClass
+              }`}
+            >
+              {lastClamp?.hitPoleBoundary
+                ? 'Minimum inter-pole spacing limit'
+                : lastClamp?.hitWallBoundary
+                  ? `Min ${getWallClearanceMarginM(config.mount, config.enforceMinClearance).toFixed(2)}m wall limit`
+                  : config.enforceMinClearance
+                    ? `1.25m min wall clearance`
+                    : `0.35m compact dev limit`}
+            </p>
+            <button
+              type="button"
+              onClick={onToggleMinClearance}
+              className={`px-1.5 py-0.5 rounded-xs border text-[10px] font-semibold inline-flex items-center gap-1 shrink-0 transition-colors ${
+                config.enforceMinClearance
+                  ? isDark
+                    ? 'border-white/15 bg-white/8 text-zinc-200 hover:bg-white/15'
+                    : 'border-stone-300 bg-white text-stone-800 hover:bg-stone-100'
+                  : 'border-amber-400/70 bg-amber-500/20 text-amber-300'
+              }`}
+            >
+              {config.enforceMinClearance ? (
+                <ShieldCheck className="w-2.5 h-2.5" aria-hidden="true" />
+              ) : (
+                <ShieldOff className="w-2.5 h-2.5" aria-hidden="true" />
+              )}
+              <span>1.25m {config.enforceMinClearance ? 'On' : 'Off'}</span>
+            </button>
+          </div>
         </div>
       )}
 
@@ -349,7 +459,7 @@ export function InspectorCallout({
           </div>
 
           {/* Actionable Install / Dismantle Instruction (visible cleanly on desktop, concise on mobile) */}
-          <p className={`mt-1 sm:mt-1.5 text-[10.5px] sm:text-[11px] leading-snug sm:leading-relaxed line-clamp-2 sm:line-clamp-none ${isDark ? 'text-zinc-300' : 'text-stone-700'}`}>
+          <p className={`mt-1.5 text-[11px] leading-relaxed ${isDark ? 'text-zinc-300' : 'text-stone-700'}`}>
             {isDismantling ? stepSpec.dismantleInstruction : stepSpec.installInstruction}
           </p>
 

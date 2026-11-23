@@ -6,8 +6,9 @@ import type {
 } from '../types/pole';
 import {
   calculateHeightSolution,
-  getEffectiveVaultAngleRad,
-  MAX_POLE_LENGTH_M,
+  clampPoleHeightCm,
+  computeEffectiveVaultRad,
+  getCushionHeightCm,
   POLE_FINISHES,
 } from '../utils/poleConfig';
 import type { ProceduralTextureSet } from './proceduralTextures';
@@ -126,18 +127,31 @@ export function createPoleAssembly(textures: ProceduralTextureSet): PoleAssembly
     roughness: 0.86,
   });
 
-  const stageDeckMat = new THREE.MeshStandardMaterial({
-    color: 0x2a2d33,
-    metalness: 0.35,
-    roughness: 0.58,
-    bumpMap: textures.stageDeckBump,
-    bumpScale: 0.003,
-  });
-
   const safetyRedMat = new THREE.MeshStandardMaterial({
     color: 0xb91c1c,
     metalness: 0.15,
     roughness: 0.45,
+  });
+
+  // Architectural high-density structural cushion materials (ribbed charcoal EVA + warm metallic trim)
+  const cushionCoreMat = new THREE.MeshStandardMaterial({
+    color: 0x333b4a,
+    metalness: 0.06,
+    roughness: 0.78,
+    envMapIntensity: 0.75,
+  });
+
+  const cushionRibMat = new THREE.MeshStandardMaterial({
+    color: 0x1f2530,
+    metalness: 0.14,
+    roughness: 0.65,
+  });
+
+  const cushionTrimMat = new THREE.MeshStandardMaterial({
+    color: 0xc8a35f,
+    metalness: 0.84,
+    roughness: 0.26,
+    envMapIntensity: 1.0,
   });
 
   const highlightRingMat = new THREE.MeshStandardMaterial({
@@ -148,19 +162,6 @@ export function createPoleAssembly(textures: ProceduralTextureSet): PoleAssembly
     metalness: 0.4,
     transparent: true,
     opacity: 0.9,
-  });
-
-  const cushionMat = new THREE.MeshStandardMaterial({
-    color: 0x20232b,
-    roughness: 0.76,
-    metalness: 0.08,
-  });
-
-  const gapGuideMat = new THREE.MeshBasicMaterial({
-    color: 0x22d3ee,
-    transparent: true,
-    opacity: 0.22,
-    wireframe: true,
   });
 
   const hexKeyMat = new THREE.MeshStandardMaterial({
@@ -183,7 +184,7 @@ export function createPoleAssembly(textures: ProceduralTextureSet): PoleAssembly
   let adjusterRodGroup = new THREE.Group();
   let topMountGroup = new THREE.Group();
   let coverSleeveGroup = new THREE.Group();
-  let cushionGroup = new THREE.Group();
+  let heightCushionGroup = new THREE.Group();
   let torqueIndicatorGroup = new THREE.Group();
 
   // Cached base Y positions for kinematic offsets
@@ -197,10 +198,13 @@ export function createPoleAssembly(textures: ProceduralTextureSet): PoleAssembly
     adjusterRod: 2.52,
     topMount: 2.66,
     coverSleeve: 2.48,
+    heightCushion: 0,
   };
 
   let currentHeightM = 2.74;
   let currentRadiusM = 0.0225;
+  let currentCushionHeightM = 0;
+  let currentCushionPlacement: 'top' | 'below' = 'top';
 
   function clearDisposables(): void {
     const keepMats = new Set<THREE.Material>([
@@ -210,11 +214,11 @@ export function createPoleAssembly(textures: ProceduralTextureSet): PoleAssembly
       hardenedSteelMat,
       blackOxideBoltMat,
       elastomerMat,
-      stageDeckMat,
       safetyRedMat,
+      cushionCoreMat,
+      cushionRibMat,
+      cushionTrimMat,
       highlightRingMat,
-      cushionMat,
-      gapGuideMat,
       hexKeyMat,
     ]);
 
@@ -282,195 +286,185 @@ export function createPoleAssembly(textures: ProceduralTextureSet): PoleAssembly
     clearDisposables();
     updatePoleMaterial(config);
 
-    const H = config.ceilingHeightCm / 100; // room ceiling height above pole in meters
-    const r = (config.diameterMm / 1000) / 2; // pole outer radius in meters
-    const isOpenCeilingStage = config.mount === 'stage-podium';
-    const exceedsMaxPole = H > MAX_POLE_LENGTH_M + 0.005;
-    const gapM = !isOpenCeilingStage && exceedsMaxPole ? H - MAX_POLE_LENGTH_M : 0;
-    const cushionPos = config.cushionPosition ?? 'none';
-
-    // Cap the structural pole column itself at 2.50m max length!
-    const poleSpanM = Math.min(H, MAX_POLE_LENGTH_M);
-    const poleBaseOffsetY = !isOpenCeilingStage && gapM > 0 && cushionPos === 'below' ? gapM : 0;
-    const poleTopY = poleBaseOffsetY + poleSpanM;
-    const effectiveCeilingCm = Math.round(poleSpanM * 100);
-    const sol = calculateHeightSolution(effectiveCeilingCm, config.mount, config.finish);
-    const vaultRad = getEffectiveVaultAngleRad(
+    const effectivePoleCm = clampPoleHeightCm(config.poleHeightCm, config.ceilingHeightCm);
+    const cushionCm = getCushionHeightCm(config.ceilingHeightCm, effectivePoleCm);
+    const sol = calculateHeightSolution(
       config.ceilingHeightCm,
-      config.roomWidthM,
       config.mount,
-      config.vaultAngleDeg
+      config.finish,
+      effectivePoleCm,
+      config.cushionPlacement,
+      config.ceilingType
     );
 
-    currentHeightM = poleTopY;
-    currentRadiusM = r;
+    const H = config.ceilingHeightCm / 100; // local room ceiling height above this pole in meters
+    const P = effectivePoleCm / 100; // individual pole height in meters
+    const C = cushionCm / 100; // structural cushion height in meters (0 if flush)
+    const hasCushion = C >= 0.005;
+    const isVaulted = config.ceilingType === 'vaulted';
+    const vaultRad = computeEffectiveVaultRad(
+      H,
+      config.roomWidthM,
+      config.ceilingType,
+      config.vaultAngleDeg
+    );
+    const poleOffsetY = hasCushion && config.cushionPlacement === 'below' ? C : 0;
 
-    // 0. OPTIONAL ARCHITECTURAL CUSHION (BELOW OR ABOVE) OR GAP GUIDE WHEN H > 2.50M
-    cushionGroup = new THREE.Group();
-    cushionGroup.name = 'CushionRiser_Assembly';
-    if (!isOpenCeilingStage && gapM > 0.01) {
-      if (cushionPos === 'below') {
-        const coreH = Math.max(0.02, gapM - 0.024);
-        const footPad = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.265, 0.275, 0.012, 40),
-          elastomerMat
+    const r = (config.diameterMm / 1000) / 2; // pole outer radius in meters
+    currentHeightM = H;
+    currentRadiusM = r;
+    currentCushionHeightM = hasCushion ? C : 0;
+    currentCushionPlacement = config.cushionPlacement;
+
+    // 0. STRUCTURAL HEIGHT CUSHION / RISER BLOCK (Top against ceiling OR Below on studio floor)
+    heightCushionGroup = new THREE.Group();
+    heightCushionGroup.name = 'HeightCushion_Assembly';
+    if (hasCushion) {
+      const isBelow = config.cushionPlacement === 'below';
+      // On a vaulted ceiling with Top cushion, seat cushion neatly beneath the sloped clevis yoke so nothing protrudes above the roof
+      const vaultedTopClearance = !isBelow && isVaulted ? Math.min(0.105, C * 0.55) : 0;
+      const cushionVisualH = Math.max(0.012, C - vaultedTopClearance);
+      const cushionStartY = isBelow ? 0 : P;
+      baseY.heightCushion = cushionStartY;
+      heightCushionGroup.position.y = cushionStartY;
+
+      const outerR = isBelow ? 0.21 : isVaulted ? 0.145 : 0.205;
+      const coreR = isBelow ? 0.19 : isVaulted ? 0.128 : 0.184;
+      const capH = Math.min(0.016, cushionVisualH * 0.22);
+      const padH = Math.min(0.01, cushionVisualH * 0.16);
+      const coreH = Math.max(0.004, cushionVisualH - (capH + padH) * 2);
+
+      // Lower elastomer grip pad (sits on floor if below, or against top mount if top)
+      const lowerPad = new THREE.Mesh(
+        new THREE.CylinderGeometry(outerR, outerR + 0.004, padH, 40),
+        elastomerMat
+      );
+      lowerPad.position.y = padH / 2;
+      lowerPad.receiveShadow = true;
+      lowerPad.castShadow = true;
+
+      // Lower chamfered CNC load-distribution cap
+      const lowerCap = new THREE.Mesh(
+        new THREE.CylinderGeometry(coreR + 0.008, outerR, capH, 40),
+        darkAnodizedMat
+      );
+      lowerCap.position.y = padH + capH / 2;
+      lowerCap.castShadow = true;
+      lowerCap.receiveShadow = true;
+
+      // Sculpted high-density cushion body
+      const coreGeo = new THREE.CylinderGeometry(coreR, coreR, coreH, 40);
+      const coreMesh = new THREE.Mesh(coreGeo, cushionCoreMat);
+      coreMesh.position.y = padH + capH + coreH / 2;
+      coreMesh.castShadow = true;
+      coreMesh.receiveShadow = true;
+
+      // Upper chamfered CNC load-distribution cap
+      const upperCap = new THREE.Mesh(
+        new THREE.CylinderGeometry(outerR, coreR + 0.008, capH, 40),
+        darkAnodizedMat
+      );
+      upperCap.position.y = cushionVisualH - padH - capH / 2;
+      upperCap.castShadow = true;
+      upperCap.receiveShadow = true;
+
+      // Upper elastomer friction pad (receives pole base if below, or presses ceiling/clevis if top)
+      const upperPad = new THREE.Mesh(
+        new THREE.CylinderGeometry(outerR + 0.004, outerR, padH, 40),
+        elastomerMat
+      );
+      upperPad.position.y = cushionVisualH - padH / 2;
+      upperPad.receiveShadow = true;
+
+      heightCushionGroup.add(lowerPad, lowerCap, coreMesh, upperCap, upperPad);
+
+      // Recessed architectural metallic trim bands at top & bottom of cushion core
+      if (cushionVisualH >= 0.05) {
+        const lowerTrim = new THREE.Mesh(
+          new THREE.TorusGeometry(coreR + 0.002, 0.0032, 10, 40),
+          cushionTrimMat
         );
-        footPad.position.y = 0.006;
-        const cushionDrum = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.245, 0.26, coreH, 40),
-          cushionMat
+        lowerTrim.rotation.x = Math.PI / 2;
+        lowerTrim.position.y = padH + capH + 0.003;
+
+        const upperTrim = new THREE.Mesh(
+          new THREE.TorusGeometry(coreR + 0.002, 0.0032, 10, 40),
+          cushionTrimMat
         );
-        cushionDrum.position.y = 0.012 + coreH / 2;
-        cushionDrum.castShadow = true;
-        cushionDrum.receiveShadow = true;
-        const topCollar = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.22, 0.245, 0.012, 40),
-          machinedAlumMat
-        );
-        topCollar.position.y = gapM - 0.006;
-        cushionGroup.add(footPad, cushionDrum, topCollar);
-      } else if (cushionPos === 'above') {
-        const coreH = Math.max(0.02, gapM - 0.024);
-        const botCollar = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.21, 0.195, 0.012, 40),
-          machinedAlumMat
-        );
-        botCollar.position.y = poleTopY + 0.006;
-        const cushionDrum = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.205, 0.205, coreH, 40),
-          cushionMat
-        );
-        cushionDrum.position.y = poleTopY + 0.012 + coreH / 2;
-        cushionDrum.castShadow = true;
-        const topPad = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.215, 0.21, 0.014, 40),
-          elastomerMat
-        );
-        topPad.position.y = H - 0.007;
-        topPad.rotation.z = vaultRad;
-        cushionGroup.add(botCollar, cushionDrum, topPad);
-      } else {
-        // Subtle dashed wireframe spacer indicating >2.50m ceiling gap awaiting cushion choice
-        const gapMesh = new THREE.Mesh(
-          new THREE.CylinderGeometry(r + 0.035, r + 0.035, gapM, 16, 2, true),
-          gapGuideMat
-        );
-        gapMesh.position.y = poleTopY + gapM / 2;
-        gapMesh.userData.excludeFromExport = true;
-        cushionGroup.add(gapMesh);
+        upperTrim.rotation.x = Math.PI / 2;
+        upperTrim.position.y = cushionVisualH - padH - capH - 0.003;
+        heightCushionGroup.add(lowerTrim, upperTrim);
       }
-      root.add(cushionGroup);
+
+      // Sculpted quilted compression ribs along taller cushions so height reads clearly
+      if (coreH >= 0.08) {
+        const ribCount = Math.min(12, Math.max(1, Math.floor(coreH / 0.11)));
+        for (let i = 1; i <= ribCount; i++) {
+          const frac = i / (ribCount + 1);
+          const rib = new THREE.Mesh(
+            new THREE.TorusGeometry(coreR + 0.001, 0.0042, 10, 36),
+            cushionRibMat
+          );
+          rib.rotation.x = Math.PI / 2;
+          rib.position.y = padH + capH + coreH * frac;
+          heightCushionGroup.add(rib);
+        }
+      }
+
+      addHitProxy(
+        heightCushionGroup,
+        'height-cushion',
+        outerR + 0.025,
+        Math.max(0.05, cushionVisualH),
+        cushionVisualH / 2
+      );
+      tagPart(heightCushionGroup, 'height-cushion');
+      root.add(heightCushionGroup);
+    } else {
+      baseY.heightCushion = 0;
     }
 
-    // 1. BASE PLATE / FREESTANDING OPEN-CEILING STAGE PODIUM
+    // 1. PRECISION LOW-PROFILE MICRO-BASE FLANGE (230mm diameter)
     basePlateGroup = new THREE.Group();
     basePlateGroup.name = 'BasePlate_Assembly';
-    let hubBaseY = 0.028;
+    basePlateGroup.position.y = poleOffsetY;
+    const gasketGeo = new THREE.CylinderGeometry(0.118, 0.12, 0.007, 40);
+    const gasket = new THREE.Mesh(gasketGeo, elastomerMat);
+    gasket.position.y = 0.0035;
+    gasket.receiveShadow = true;
 
-    if (isOpenCeilingStage) {
-      // 1.6m diameter modular 6-sector CNC aluminum circular stage deck (zero ceiling contact)
-      const deckRadius = 0.8;
-      const deckHeight = 0.115;
-      const deckGeo = new THREE.CylinderGeometry(deckRadius, deckRadius + 0.02, deckHeight, 48);
-      const deck = new THREE.Mesh(deckGeo, stageDeckMat);
-      deck.position.y = deckHeight / 2 + 0.025;
-      deck.castShadow = true;
-      deck.receiveShadow = true;
+    const flangeProfile = [
+      new THREE.Vector2(0.015, 0.007),
+      new THREE.Vector2(0.115, 0.007),
+      new THREE.Vector2(0.112, 0.016),
+      new THREE.Vector2(0.088, 0.022),
+      new THREE.Vector2(0.068, 0.028),
+      new THREE.Vector2(0.042, 0.032),
+      new THREE.Vector2(0.018, 0.032),
+    ];
+    const flangeGeo = new THREE.LatheGeometry(flangeProfile, 40);
+    const flange = new THREE.Mesh(flangeGeo, machinedAlumMat);
+    flange.castShadow = true;
+    flange.receiveShadow = true;
 
-      // Machined aluminum outer bevel trim ring
-      const rimPoints = [
-        new THREE.Vector2(deckRadius - 0.01, 0.025),
-        new THREE.Vector2(deckRadius + 0.025, 0.025),
-        new THREE.Vector2(deckRadius + 0.025, deckHeight + 0.022),
-        new THREE.Vector2(deckRadius - 0.015, deckHeight + 0.028),
-      ];
-      const rimGeo = new THREE.LatheGeometry(rimPoints, 48);
-      const rim = new THREE.Mesh(rimGeo, machinedAlumMat);
-      rim.castShadow = true;
+    // Machined dark accent ring
+    const baseRingGeo = new THREE.TorusGeometry(0.095, 0.0025, 10, 40);
+    const baseRing = new THREE.Mesh(baseRingGeo, darkAnodizedMat);
+    baseRing.rotation.x = Math.PI / 2;
+    baseRing.position.y = 0.019;
 
-      // 6 radial pie-panel seam ribs + 6 adjustable perimeter leveling feet
-      for (let i = 0; i < 6; i++) {
-        const angle = (i * Math.PI) / 3;
-        const seamGeo = new THREE.BoxGeometry(deckRadius - 0.14, 0.004, 0.008);
-        const seam = new THREE.Mesh(seamGeo, darkAnodizedMat);
-        seam.position.set(
-          Math.cos(angle) * (deckRadius * 0.52),
-          deckHeight + 0.027,
-          Math.sin(angle) * (deckRadius * 0.52)
-        );
-        seam.rotation.y = -angle;
-        basePlateGroup.add(seam);
-
-        // Adjustable elastomer leveling foot
-        const footGeo = new THREE.CylinderGeometry(0.032, 0.038, 0.028, 16);
-        const foot = new THREE.Mesh(footGeo, elastomerMat);
-        foot.position.set(
-          Math.cos(angle) * (deckRadius - 0.07),
-          0.014,
-          Math.sin(angle) * (deckRadius - 0.07)
-        );
-        foot.castShadow = true;
-        basePlateGroup.add(foot);
-      }
-
-      // Central steel socket flange mounted on deck
-      const centerFlangeGeo = new THREE.CylinderGeometry(0.125, 0.145, 0.032, 32);
-      const centerFlange = new THREE.Mesh(centerFlangeGeo, darkAnodizedMat);
-      centerFlange.position.y = deckHeight + 0.04;
-      centerFlange.castShadow = true;
-
-      // 6 M8 chassis bolts around center flange
-      for (let i = 0; i < 6; i++) {
-        const a = (i * Math.PI) / 3;
-        const bolt = createHexBoltMesh(0.009, 0.008, 0.012, blackOxideBoltMat);
-        bolt.position.set(Math.cos(a) * 0.1, deckHeight + 0.056, Math.sin(a) * 0.1);
-        basePlateGroup.add(bolt);
-      }
-
-      basePlateGroup.add(deck, rim, centerFlange);
-      hubBaseY = deckHeight + 0.056;
-      addHitProxy(basePlateGroup, 'base-plate', deckRadius, 0.18, 0.09);
-    } else {
-      // Precision low-profile micro-base flange (230mm diameter) using LatheGeometry
-      const gasketGeo = new THREE.CylinderGeometry(0.118, 0.12, 0.007, 40);
-      const gasket = new THREE.Mesh(gasketGeo, elastomerMat);
-      gasket.position.y = 0.0035;
-      gasket.receiveShadow = true;
-
-      const flangeProfile = [
-        new THREE.Vector2(0.015, 0.007),
-        new THREE.Vector2(0.115, 0.007),
-        new THREE.Vector2(0.112, 0.016),
-        new THREE.Vector2(0.088, 0.022),
-        new THREE.Vector2(0.068, 0.028),
-        new THREE.Vector2(0.042, 0.032),
-        new THREE.Vector2(0.018, 0.032),
-      ];
-      const flangeGeo = new THREE.LatheGeometry(flangeProfile, 40);
-      const flange = new THREE.Mesh(flangeGeo, machinedAlumMat);
-      flange.castShadow = true;
-      flange.receiveShadow = true;
-
-      // Machined dark accent ring
-      const ringGeo = new THREE.TorusGeometry(0.095, 0.0025, 10, 40);
-      const ring = new THREE.Mesh(ringGeo, darkAnodizedMat);
-      ring.rotation.x = Math.PI / 2;
-      ring.position.y = 0.019;
-
-      basePlateGroup.add(gasket, flange, ring);
-      hubBaseY = 0.03;
-      addHitProxy(basePlateGroup, 'base-plate', 0.13, 0.05, 0.025);
-    }
-    baseY.basePlate = poleBaseOffsetY;
-    basePlateGroup.position.y = poleBaseOffsetY;
+    basePlateGroup.add(gasket, flange, baseRing);
+    const hubBaseY = poleOffsetY + 0.03;
+    addHitProxy(basePlateGroup, 'base-plate', 0.13, 0.05, 0.025);
+    baseY.basePlate = poleOffsetY;
     tagPart(basePlateGroup, 'base-plate');
     root.add(basePlateGroup);
 
     // 2. DUAL-BEARING HUB & STATIC/SPIN LOCK PINS
     bearingHubGroup = new THREE.Group();
     bearingHubGroup.name = 'BearingHub_Assembly';
-    baseY.bearingHub = poleBaseOffsetY + hubBaseY;
-    bearingHubGroup.position.y = baseY.bearingHub;
+    baseY.bearingHub = hubBaseY;
+    bearingHubGroup.position.y = hubBaseY;
 
     const hubProfile = [
       new THREE.Vector2(r + 0.002, 0),
@@ -513,21 +507,22 @@ export function createPoleAssembly(textures: ProceduralTextureSet): PoleAssembly
     // Rotating assembly contains the pole tubes, X-joints, extensions, and cover sleeve
     root.add(rotatingColumn);
 
-    // Calculate physical segment heights in meters so they stay strictly within poleSpanM (<= 2.50m)
+    // Calculate physical segment heights in meters so they sum cleanly to P (within [poleOffsetY, poleOffsetY + P])
+    // When vaulted + top cushion, the clevis yoke sits above the cushion at y=H, so the pole column seats directly into the bottom of the cushion at y=P
     const topAllowanceM =
-      config.mount === 'stage-podium'
-        ? 0.05
-        : config.mount === 'vaulted-beam'
-          ? 0.145
+      isVaulted && hasCushion && config.cushionPlacement === 'top'
+        ? 0.012
+        : isVaulted
+          ? 0.14
           : 0.105;
-    const poleStartY = poleBaseOffsetY + hubBaseY + 0.056;
-    const poleEndY = poleTopY - topAllowanceM;
-    const totalColumnSpan = Math.max(1.65, poleEndY - poleStartY);
+    const poleStartY = hubBaseY + 0.056;
+    const poleEndY = poleOffsetY + P - topAllowanceM;
+    const totalColumnSpan = Math.max(0.85, poleEndY - poleStartY);
 
     const aLen = Math.min(1.02, totalColumnSpan * 0.44);
     const bLen = Math.min(1.02, totalColumnSpan * 0.44);
     const extTotalLen = Math.max(0.0, totalColumnSpan - aLen - bLen - 0.08);
-    const adjusterLen = Math.max(0.075, totalColumnSpan - aLen - bLen - extTotalLen);
+    const adjusterLen = Math.max(0.065, totalColumnSpan - aLen - bLen - extTotalLen);
 
     // 3. MAIN LOWER COLUMN (A-POLE)
     lowerTubeGroup = new THREE.Group();
@@ -658,9 +653,9 @@ export function createPoleAssembly(textures: ProceduralTextureSet): PoleAssembly
     baseY.adjusterRod = adjusterStartY;
     adjusterRodGroup.position.y = adjusterStartY;
 
-    const rodGeo = new THREE.CylinderGeometry(0.013, 0.013, adjusterLen + 0.02, 24);
+    const rodGeo = new THREE.CylinderGeometry(0.013, 0.013, adjusterLen + 0.06, 24);
     const rodMesh = new THREE.Mesh(rodGeo, hardenedSteelMat);
-    rodMesh.position.y = (adjusterLen + 0.02) / 2;
+    rodMesh.position.y = adjusterLen / 2;
     rodMesh.castShadow = true;
     adjusterRodGroup.add(rodMesh);
 
@@ -705,32 +700,77 @@ export function createPoleAssembly(textures: ProceduralTextureSet): PoleAssembly
     baseY.coverSleeve = adjusterStartY;
     coverSleeveGroup.position.y = adjusterStartY;
 
-    if (config.mount !== 'stage-podium') {
-      const sleeveLen = Math.max(0.09, adjusterLen + 0.025);
-      const sleeveGeo = new THREE.CylinderGeometry(r + 0.0028, r + 0.0028, sleeveLen, 36, 1, true);
-      const sleeveMesh = new THREE.Mesh(sleeveGeo, poleMaterial);
-      sleeveMesh.position.y = sleeveLen / 2 - 0.01;
-      sleeveMesh.castShadow = true;
+    const sleeveLen = Math.max(0.09, adjusterLen + 0.025);
+    const sleeveGeo = new THREE.CylinderGeometry(r + 0.0028, r + 0.0028, sleeveLen, 36, 1, true);
+    const sleeveMesh = new THREE.Mesh(sleeveGeo, poleMaterial);
+    sleeveMesh.position.y = sleeveLen / 2 - 0.01;
+    sleeveMesh.castShadow = true;
 
-      const sleeveTrimTop = new THREE.Mesh(
-        new THREE.TorusGeometry(r + 0.0028, 0.0018, 8, 36),
-        machinedAlumMat
-      );
-      sleeveTrimTop.rotation.x = Math.PI / 2;
-      sleeveTrimTop.position.y = sleeveLen - 0.01;
+    const sleeveTrimTop = new THREE.Mesh(
+      new THREE.TorusGeometry(r + 0.0028, 0.0018, 8, 36),
+      machinedAlumMat
+    );
+    sleeveTrimTop.rotation.x = Math.PI / 2;
+    sleeveTrimTop.position.y = sleeveLen - 0.01;
 
-      coverSleeveGroup.add(sleeveMesh, sleeveTrimTop);
-    }
+    coverSleeveGroup.add(sleeveMesh, sleeveTrimTop);
     tagPart(coverSleeveGroup, 'adjuster-rod');
     rotatingColumn.add(coverSleeveGroup);
 
-    // 8. TOP MOUNT SYSTEM (Varies cleanly by mount type; seats at poleTopY <= 2.50m + offset)
+    // 8. TOP MOUNT SYSTEM (Follows global room ceiling shape: Vaulted Clevis vs Flat Tension/Fixed)
     topMountGroup = new THREE.Group();
     topMountGroup.name = 'TopMount_Assembly';
-    baseY.topMount = poleTopY;
-    topMountGroup.position.y = poleTopY;
+    const topMountYPos =
+      isVaulted && hasCushion && config.cushionPlacement === 'top' ? H : poleOffsetY + P;
+    baseY.topMount = topMountYPos;
+    topMountGroup.position.y = topMountYPos;
 
-    if (config.mount === 'tension') {
+    if (isVaulted) {
+      // Articulating clevis yoke tilted to match the exact rendered room ceiling slope
+      const tiltGroup = new THREE.Group();
+      tiltGroup.rotation.z = vaultRad;
+
+      const ceilingPlate = new THREE.Mesh(
+        new THREE.BoxGeometry(0.19, 0.012, 0.14),
+        darkAnodizedMat
+      );
+      ceilingPlate.position.y = -0.006;
+      ceilingPlate.castShadow = true;
+
+      // Two clevis ears
+      const earGeo = new THREE.BoxGeometry(0.014, 0.068, 0.056);
+      const earL = new THREE.Mesh(earGeo, hardenedSteelMat);
+      earL.position.set(-0.032, -0.044, 0);
+      const earR = new THREE.Mesh(earGeo, hardenedSteelMat);
+      earR.position.set(0.032, -0.044, 0);
+
+      for (const ox of [-0.072, 0.072]) {
+        for (const oz of [-0.046, 0.046]) {
+          const bolt = createHexBoltMesh(0.01, 0.009, 0.01, blackOxideBoltMat);
+          bolt.rotation.x = Math.PI;
+          bolt.position.set(ox, -0.012, oz);
+          tiltGroup.add(bolt);
+        }
+      }
+      tiltGroup.add(ceilingPlate, earL, earR);
+
+      // Horizontal M16 hardened pivot clevis pin + vertical coupler
+      const clevisPin = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.01, 0.01, 0.095, 20),
+        machinedAlumMat
+      );
+      clevisPin.rotation.z = Math.PI / 2;
+      clevisPin.position.y = -0.062;
+
+      const verticalYoke = new THREE.Mesh(
+        new THREE.CylinderGeometry(r + 0.01, r + 0.007, 0.08, 28),
+        darkAnodizedMat
+      );
+      verticalYoke.position.y = -0.095;
+
+      topMountGroup.add(tiltGroup, clevisPin, verticalYoke);
+      addHitProxy(topMountGroup, 'top-mount', 0.15, 0.15, -0.07);
+    } else if (config.mount === 'tension') {
       // Articulating 380mm ceiling dome + elastomer pad + top bearing cup
       const padGeo = new THREE.CylinderGeometry(0.19, 0.19, 0.008, 44);
       const pad = new THREE.Mesh(padGeo, elastomerMat);
@@ -755,7 +795,7 @@ export function createPoleAssembly(textures: ProceduralTextureSet): PoleAssembly
 
       topMountGroup.add(pad, dome, cup);
       addHitProxy(topMountGroup, 'top-mount', 0.2, 0.12, -0.055);
-    } else if (config.mount === 'permanent-ceiling') {
+    } else {
       // Bolted heavy steel ceiling flange + 4× M10 anchor bolts + ball-bearing spindle
       const plateGeo = new THREE.BoxGeometry(0.175, 0.012, 0.175);
       const plate = new THREE.Mesh(plateGeo, darkAnodizedMat);
@@ -778,70 +818,6 @@ export function createPoleAssembly(textures: ProceduralTextureSet): PoleAssembly
       }
       topMountGroup.add(plate, spindle);
       addHitProxy(topMountGroup, 'top-mount', 0.14, 0.12, -0.055);
-    } else if (config.mount === 'vaulted-beam') {
-      // Articulating clevis yoke: ONLY upper ceiling saddle tilts to match sloped ceiling; vertical shaft stays strictly below ceiling!
-      const plateTiltRad = gapM > 0.01 && cushionPos === 'above' ? 0 : vaultRad;
-      const tiltGroup = new THREE.Group();
-      tiltGroup.position.y = -0.012;
-      tiltGroup.rotation.z = plateTiltRad;
-
-      const ceilingPlate = new THREE.Mesh(
-        new THREE.BoxGeometry(0.19, 0.012, 0.14),
-        darkAnodizedMat
-      );
-      ceilingPlate.position.y = 0;
-      ceilingPlate.castShadow = true;
-
-      // Two clevis ears hanging downward below ceiling plate
-      const earGeo = new THREE.BoxGeometry(0.014, 0.064, 0.054);
-      const earL = new THREE.Mesh(earGeo, hardenedSteelMat);
-      earL.position.set(-0.032, -0.032, 0);
-      const earR = new THREE.Mesh(earGeo, hardenedSteelMat);
-      earR.position.set(0.032, -0.032, 0);
-
-      for (const ox of [-0.072, 0.072]) {
-        for (const oz of [-0.046, 0.046]) {
-          const bolt = createHexBoltMesh(0.01, 0.009, 0.01, blackOxideBoltMat);
-          bolt.rotation.x = Math.PI;
-          bolt.position.set(ox, 0, oz);
-          tiltGroup.add(bolt);
-        }
-      }
-      tiltGroup.add(ceilingPlate, earL, earR);
-
-      // Horizontal M16 hardened pivot clevis pin + strictly vertical pole coupler below pin
-      const clevisPin = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.01, 0.01, 0.095, 20),
-        machinedAlumMat
-      );
-      clevisPin.rotation.z = Math.PI / 2;
-      clevisPin.position.y = -0.062;
-
-      const verticalYoke = new THREE.Mesh(
-        new THREE.CylinderGeometry(r + 0.01, r + 0.007, 0.078, 28),
-        darkAnodizedMat
-      );
-      verticalYoke.position.y = -0.102;
-
-      topMountGroup.add(tiltGroup, clevisPin, verticalYoke);
-      addHitProxy(topMountGroup, 'top-mount', 0.15, 0.15, -0.075);
-    } else {
-      // Open-Ceiling Circular Base freestanding chamfered anodized finial cap
-      const capY = -(poleTopY - poleEndY) + 0.025;
-      const capGeo = new THREE.CylinderGeometry(r * 0.85, r + 0.002, 0.032, 32);
-      const cap = new THREE.Mesh(capGeo, machinedAlumMat);
-      cap.position.y = capY;
-      cap.castShadow = true;
-
-      const capRing = new THREE.Mesh(
-        new THREE.TorusGeometry(r + 0.001, 0.002, 8, 32),
-        darkAnodizedMat
-      );
-      capRing.rotation.x = Math.PI / 2;
-      capRing.position.y = capY - 0.014;
-
-      topMountGroup.add(cap, capRing);
-      addHitProxy(topMountGroup, 'top-mount', r + 0.04, 0.08, capY);
     }
     tagPart(topMountGroup, 'top-mount');
     root.add(topMountGroup);
@@ -915,6 +891,13 @@ export function createPoleAssembly(textures: ProceduralTextureSet): PoleAssembly
     adjusterRodGroup.position.y = baseY.adjusterRod + offsets.adjusterRodY;
     topMountGroup.position.y = baseY.topMount + offsets.topMountY;
     coverSleeveGroup.position.y = baseY.coverSleeve + offsets.coverSleeveY;
+    if (currentCushionHeightM > 0) {
+      heightCushionGroup.position.y =
+        baseY.heightCushion +
+        (currentCushionPlacement === 'below'
+          ? offsets.basePlateY * 0.45
+          : offsets.topMountY * 1.12);
+    }
 
     // Rotate the pole column smoothly
     rotatingColumn.rotation.y = spinAngleRad;
@@ -965,6 +948,12 @@ export function createPoleAssembly(textures: ProceduralTextureSet): PoleAssembly
         return new THREE.Vector3(0, adjusterRodGroup.position.y + 0.06, 0);
       case 'top-mount':
         return new THREE.Vector3(0, topMountGroup.position.y - 0.06, 0);
+      case 'height-cushion':
+        return new THREE.Vector3(
+          0,
+          heightCushionGroup.position.y + Math.max(0.05, currentCushionHeightM / 2),
+          0
+        );
     }
   }
 
@@ -983,11 +972,11 @@ export function createPoleAssembly(textures: ProceduralTextureSet): PoleAssembly
       hardenedSteelMat.dispose();
       blackOxideBoltMat.dispose();
       elastomerMat.dispose();
-      stageDeckMat.dispose();
       safetyRedMat.dispose();
+      cushionCoreMat.dispose();
+      cushionRibMat.dispose();
+      cushionTrimMat.dispose();
       highlightRingMat.dispose();
-      cushionMat.dispose();
-      gapGuideMat.dispose();
       hexKeyMat.dispose();
     },
   };

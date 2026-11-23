@@ -1,19 +1,19 @@
 export type PoleFinishId = 'brass' | 'stainless' | 'powder-black' | 'silicone';
 
-export type BaseMountId = 'tension' | 'permanent-ceiling' | 'vaulted-beam' | 'stage-podium';
+export type BaseMountId = 'tension' | 'permanent-ceiling';
+
+export type CeilingType = 'flat' | 'vaulted';
 
 export type PoleDiameterMm = 40 | 45 | 50;
 
-export type EnvironmentPreset =
-  | 'studio'
-  | 'home'
-  | 'penthouse'
-  | 'industrial'
-  | 'velvet-club';
+export type EnvironmentPreset = 'studio' | 'home' | 'replica';
 
-export type CushionPosition = 'none' | 'above' | 'below';
-
-export type LightingPreset = 'studio-daylight' | 'mood-neon' | 'pro-spotlight';
+export type LightingPreset =
+  | 'studio-daylight'
+  | 'mood-neon'
+  | 'pro-spotlight'
+  | 'sunset-flow'
+  | 'cyber-pulse';
 
 export type CameraFocusId =
   | 'full-rig'
@@ -24,6 +24,8 @@ export type CameraFocusId =
 
 export type CameraMotionMode = 'manual' | 'orbit' | 'crane';
 
+export type CushionPlacement = 'top' | 'below';
+
 export type HardwarePartId =
   | 'base-plate'
   | 'bearing-hub'
@@ -32,7 +34,8 @@ export type HardwarePartId =
   | 'upper-tube'
   | 'extension-tube'
   | 'adjuster-rod'
-  | 'top-mount';
+  | 'top-mount'
+  | 'height-cushion';
 
 export type DockTabId = 'configure' | 'assembly' | 'space';
 
@@ -43,7 +46,8 @@ export interface PoleInstance {
   label: string;
   finish: PoleFinishId;
   diameterMm: PoleDiameterMm;
-  mount: BaseMountId;
+  heightCm: number;
+  cushionPlacement: CushionPlacement;
   isSpinning: boolean;
   spinRpm: number;
   x: number;
@@ -111,6 +115,11 @@ export interface ExtensionPiece {
 
 export interface HeightSolution {
   targetHeightCm: number;
+  poleHeightCm: number;
+  ceilingHeightCm: number;
+  cushionHeightCm: number;
+  cushionPlacement: CushionPlacement;
+  cappedAtMaxPoleHeight: boolean;
   baseStackMm: number;
   aPoleMm: number;
   bPoleMm: number;
@@ -181,7 +190,10 @@ export interface PoleRigConfig {
   finish: PoleFinishId;
   diameterMm: PoleDiameterMm;
   mount: BaseMountId;
+  ceilingType: CeilingType;
   ceilingHeightCm: number;
+  poleHeightCm: number;
+  cushionPlacement: CushionPlacement;
   isSpinning: boolean;
   spinRpm: number;
   environment: EnvironmentPreset;
@@ -189,8 +201,8 @@ export interface PoleRigConfig {
   roomWidthM: number;
   roomDepthM: number;
   showClearanceRing: boolean;
+  enforceMinClearance: boolean;
   vaultAngleDeg: number;
-  cushionPosition?: CushionPosition;
 }
 
 export interface AssemblyPartOffsets {
@@ -208,3 +220,72 @@ export interface AssemblyPartOffsets {
   wrenchAngleRad: number;
   activeJointNormalizedY: number;
 }
+
+export type RoomReplicaObjectType =
+  | 'desk'
+  | 'chair'
+  | 'office-chair'
+  | 'table'
+  | 'sofa'
+  | 'bed'
+  | 'bookshelf'
+  | 'cabinet'
+  | 'wardrobe'
+  | 'tv-stand'
+  | 'rug'
+  | 'plant'
+  | 'lamp'
+  | 'window'
+  | 'door'
+  | 'mirror'
+  | 'wall-art'
+  | 'fitness-mat';
+
+export type RoomReplicaFloorMaterial =
+  | 'wood-light'
+  | 'wood-dark'
+  | 'tile'
+  | 'carpet'
+  | 'concrete';
+
+export type RoomReplicaLightingMood = 'warm' | 'neutral' | 'cool' | 'dim';
+
+export interface RoomReplicaObject {
+  id: string;
+  type: RoomReplicaObjectType;
+  label: string;
+  x: number;
+  z: number;
+  widthM: number;
+  depthM: number;
+  heightM: number;
+  rotationDeg: number;
+  primaryColor: string;
+  secondaryColor: string;
+  inferred: boolean;
+  confidence: number;
+}
+
+export interface RoomReplicaScene {
+  roomType: string;
+  summary: string;
+  capturedAt: string;
+  roomWidthM: number;
+  roomDepthM: number;
+  ceilingHeightCm: number;
+  floorMaterial: RoomReplicaFloorMaterial;
+  floorColor: string;
+  wallColor: string;
+  accentWallColor: string;
+  ceilingColor: string;
+  trimColor: string;
+  lightingMood: RoomReplicaLightingMood;
+  objects: RoomReplicaObject[];
+  visibleObjectCount: number;
+  inferredObjectCount: number;
+  floorAccuracyPct: number;
+  ceilingAccuracyPct: number;
+  overallAccuracyPct: number;
+  previewDataUrl?: string;
+}
+

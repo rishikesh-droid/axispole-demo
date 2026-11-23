@@ -5,26 +5,33 @@ import {
   ChevronUp,
   Columns2,
   Lamp,
+  Maximize2,
   Move,
   Orbit,
   Pause,
   Play,
   Plus,
   RotateCcw,
+  ShieldCheck,
+  ShieldOff,
   Sparkles,
   StepBack,
   StepForward,
   Sun,
+  Sunset,
   Trash2,
   Video,
   Volume2,
   VolumeX,
+  Zap,
 } from 'lucide-react';
 import type {
   BaseMountId,
   CameraFocusId,
   CameraMotionMode,
+  CeilingType,
   DockTabId,
+  EnvironmentPreset,
   LightingPreset,
   PoleFinishId,
   PoleInstance,
@@ -34,13 +41,16 @@ import {
   ASSEMBLY_STEPS,
   BASE_MOUNTS,
   DIAMETER_OPTIONS,
-  ENVIRONMENT_PRESETS,
+  getCushionHeightCm,
+  getMinRoomSizeM,
   isDarkLighting,
   LIGHTING_PRESETS,
-  MAX_POLE_LENGTH_CM,
+  MAX_CEILING_HEIGHT_CM,
+  MAX_POLE_HEIGHT_CM,
   MAX_POLES_IN_STUDIO,
   MAX_ROOM_SIZE_M,
-  MIN_ROOM_SIZE_M,
+  MIN_CEILING_HEIGHT_CM,
+  MIN_POLE_HEIGHT_CM,
   POLE_FINISHES,
 } from '../utils/poleConfig';
 import { getPoleMaterialAvatars } from '../utils/materialThumbnails';
@@ -80,19 +90,23 @@ interface ControlDockProps {
   onToggleSound: () => void;
   arCameraActive: boolean;
   onStartArCamera: () => void;
+  hasRoomReplica: boolean;
+  showInferredObjects: boolean;
+  onToggleInferredObjects: () => void;
 }
 
 const FINISH_ORDER: PoleFinishId[] = ['brass', 'stainless', 'powder-black', 'silicone'];
-const MOUNT_ORDER: BaseMountId[] = [
-  'tension',
-  'permanent-ceiling',
-  'vaulted-beam',
-  'stage-podium',
+const MOUNT_ORDER: BaseMountId[] = ['tension', 'permanent-ceiling'];
+const CEILING_TYPE_OPTIONS: { id: CeilingType; label: string; title: string }[] = [
+  { id: 'flat', label: 'Flat', title: 'Flat level room ceiling' },
+  { id: 'vaulted', label: 'Tilted', title: 'Tilted / vaulted sloped room ceiling' },
 ];
 
 function LightingIcon({ preset }: { preset: LightingPreset }) {
   if (preset === 'studio-daylight') return <Sun className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />;
   if (preset === 'mood-neon') return <Sparkles className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />;
+  if (preset === 'sunset-flow') return <Sunset className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />;
+  if (preset === 'cyber-pulse') return <Zap className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />;
   return <Lamp className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />;
 }
 
@@ -131,6 +145,9 @@ export function ControlDock({
   onToggleSound,
   arCameraActive,
   onStartArCamera,
+  hasRoomReplica,
+  showInferredObjects,
+  onToggleInferredObjects,
 }: ControlDockProps) {
   const [mobileConfigPane, setMobileConfigPane] = useState<'finish' | 'rig'>('finish');
   const materialAvatars = useMemo(() => getPoleMaterialAvatars(), []);
@@ -140,6 +157,20 @@ export function ControlDock({
 
   const isDark = isDarkLighting(config.lighting);
   const isNeon = config.lighting === 'mood-neon';
+  const isSunset = config.lighting === 'sunset-flow';
+  const isPulse = config.lighting === 'cyber-pulse';
+  const minRoomSizeM = getMinRoomSizeM(config.enforceMinClearance);
+  const activePoleIndex = Math.max(
+    0,
+    poles.findIndex((p) => p.id === activePole.id)
+  );
+  const activePoleTag = poles.length > 1 ? `P${activePoleIndex + 1}` : 'Pole';
+  const maxActivePoleCm = Math.max(
+    MIN_POLE_HEIGHT_CM,
+    Math.min(config.ceilingHeightCm, MAX_POLE_HEIGHT_CM)
+  );
+  const activeCushionCm = getCushionHeightCm(config.ceilingHeightCm, activePole.heightCm);
+  const hasCushion = activeCushionCm > 0;
 
   const activeStepIdx = Math.min(
     ASSEMBLY_STEPS.length - 1,
@@ -159,11 +190,15 @@ export function ControlDock({
   // Studio-adaptive card styling (zero backdrop-blur over WebGL)
   const dockSurface = isNeon
     ? 'bg-[#11131d]/93 border-violet-400/25 text-zinc-100 shadow-[0_12px_36px_rgba(0,0,0,0.6)]'
-    : isDark
-      ? 'bg-[#161412]/93 border-amber-500/25 text-stone-100 shadow-[0_12px_36px_rgba(0,0,0,0.6)]'
-      : 'bg-[#f8f7f4]/94 border-stone-300/90 text-stone-900 shadow-md';
+    : isSunset
+      ? 'bg-[#1c1317]/93 border-rose-400/28 text-rose-50 shadow-[0_12px_36px_rgba(0,0,0,0.6)]'
+      : isPulse
+        ? 'bg-[#0e161b]/93 border-emerald-400/28 text-emerald-50 shadow-[0_12px_36px_rgba(0,0,0,0.6)]'
+        : isDark
+          ? 'bg-[#161412]/93 border-amber-500/25 text-stone-100 shadow-[0_12px_36px_rgba(0,0,0,0.6)]'
+          : 'bg-[#f8f7f4]/94 border-stone-300/90 text-stone-900 shadow-md';
 
-  const dividerClass = isNeon
+  const dividerClass = isNeon || isSunset || isPulse
     ? 'border-white/10'
     : isDark
       ? 'border-stone-800'
@@ -171,15 +206,23 @@ export function ControlDock({
 
   const segBg = isNeon
     ? 'bg-[#0a0c12]/90'
-    : isDark
-      ? 'bg-stone-900/90'
-      : 'bg-stone-200/80';
+    : isSunset
+      ? 'bg-[#130c10]/90'
+      : isPulse
+        ? 'bg-[#081014]/90'
+        : isDark
+          ? 'bg-stone-900/90'
+          : 'bg-stone-200/80';
 
   const segActive = isNeon
     ? 'bg-violet-500/25 text-white ring-1 ring-violet-400/50'
-    : isDark
-      ? 'bg-amber-500/20 text-amber-200 ring-1 ring-amber-400/50'
-      : 'bg-white text-stone-950 shadow-xs';
+    : isSunset
+      ? 'bg-rose-500/25 text-white ring-1 ring-orange-400/55'
+      : isPulse
+        ? 'bg-emerald-500/25 text-white ring-1 ring-emerald-400/55'
+        : isDark
+          ? 'bg-amber-500/20 text-amber-200 ring-1 ring-amber-400/50'
+          : 'bg-white text-stone-950 shadow-xs';
 
   const segIdle = isDark
     ? 'text-zinc-400 hover:text-zinc-100'
@@ -189,27 +232,43 @@ export function ControlDock({
 
   const cardBtnIdle = isNeon
     ? 'border-white/10 bg-[#171a27]/90 text-zinc-200 hover:border-violet-400/40'
-    : isDark
-      ? 'border-stone-700/80 bg-stone-900/80 text-stone-200 hover:border-amber-500/40'
-      : 'border-stone-300/85 bg-white text-stone-800 hover:bg-stone-50';
+    : isSunset
+      ? 'border-white/10 bg-[#25181e]/90 text-rose-100 hover:border-rose-400/40'
+      : isPulse
+        ? 'border-white/10 bg-[#132027]/90 text-emerald-50 hover:border-emerald-400/40'
+        : isDark
+          ? 'border-stone-700/80 bg-stone-900/80 text-stone-200 hover:border-amber-500/40'
+          : 'border-stone-300/85 bg-white text-stone-800 hover:bg-stone-50';
 
   const cardBtnActive = isNeon
     ? 'border-cyan-400/75 bg-violet-500/18 text-white'
-    : isDark
-      ? 'border-amber-400/80 bg-amber-500/16 text-amber-100'
-      : 'border-amber-700 bg-amber-600/10 text-stone-950';
+    : isSunset
+      ? 'border-orange-400/75 bg-rose-500/20 text-white'
+      : isPulse
+        ? 'border-emerald-400/75 bg-emerald-500/20 text-white'
+        : isDark
+          ? 'border-amber-400/80 bg-amber-500/16 text-amber-100'
+          : 'border-amber-700 bg-amber-600/10 text-stone-950';
 
   const primaryActionBtn = isNeon
     ? 'bg-zinc-100 text-zinc-950 hover:bg-white'
-    : isDark
-      ? 'bg-amber-500 text-stone-950 hover:bg-amber-400'
-      : 'bg-stone-900 text-white hover:bg-stone-800';
+    : isSunset
+      ? 'bg-rose-400 text-stone-950 hover:bg-rose-300'
+      : isPulse
+        ? 'bg-emerald-400 text-slate-950 hover:bg-emerald-300'
+        : isDark
+          ? 'bg-amber-500 text-stone-950 hover:bg-amber-400'
+          : 'bg-stone-900 text-white hover:bg-stone-800';
 
   const accentToggleActive = isNeon
     ? 'border-cyan-400/70 bg-cyan-400/15 text-cyan-200'
-    : isDark
-      ? 'border-amber-400/70 bg-amber-500/18 text-amber-200'
-      : 'border-amber-700 bg-amber-600/15 text-amber-800';
+    : isSunset
+      ? 'border-orange-400/70 bg-rose-500/20 text-orange-200'
+      : isPulse
+        ? 'border-emerald-400/70 bg-emerald-500/18 text-emerald-200'
+        : isDark
+          ? 'border-amber-400/70 bg-amber-500/18 text-amber-200'
+          : 'border-amber-700 bg-amber-600/15 text-amber-800';
 
   if (dockCollapsed) {
     return (
@@ -239,7 +298,7 @@ export function ControlDock({
   return (
     <section
       aria-label="3D Rig Control Dock"
-      className="fixed bottom-2 sm:bottom-3 left-1/2 -translate-x-1/2 z-30 w-[min(980px,96vw)] sm:w-[min(980px,95vw)]"
+      className="fixed bottom-2.5 sm:bottom-3 left-1/2 -translate-x-1/2 z-30 w-[min(1090px,96vw)]"
       data-testid="control-dock"
     >
       {/* ===================== MOBILE LUXURY COMPACT DOCK (< md) ===================== */}
@@ -248,7 +307,7 @@ export function ControlDock({
         data-testid="mobile-control-dock"
       >
         {/* Mobile Row 1: Thumb Navigation Tabs + Compact Mode Icons */}
-        <div className={`px-2 py-1 border-b flex items-center justify-between gap-1 ${dividerClass}`}>
+        <div className={`px-2.5 py-1.5 border-b flex items-center justify-between gap-1.5 ${dividerClass}`}>
           <div
             role="tablist"
             aria-label="Mobile configuration sections"
@@ -262,7 +321,7 @@ export function ControlDock({
                 onChangeTab('configure');
                 setMobileConfigPane('finish');
               }}
-              className={`px-2.5 py-1 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap ${
+              className={`px-2.5 py-1.5 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap ${
                 activeTab === 'configure' && mobileConfigPane === 'finish' ? segActive : segIdle
               }`}
             >
@@ -276,7 +335,7 @@ export function ControlDock({
                 onChangeTab('configure');
                 setMobileConfigPane('rig');
               }}
-              className={`px-2.5 py-1 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap ${
+              className={`px-2.5 py-1.5 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap ${
                 activeTab === 'configure' && mobileConfigPane === 'rig' ? segActive : segIdle
               }`}
             >
@@ -287,7 +346,7 @@ export function ControlDock({
               type="button"
               aria-selected={activeTab === 'assembly'}
               onClick={() => onChangeTab('assembly')}
-              className={`px-2.5 py-1 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap ${
+              className={`px-2.5 py-1.5 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap ${
                 activeTab === 'assembly' ? segActive : segIdle
               }`}
             >
@@ -298,7 +357,7 @@ export function ControlDock({
               type="button"
               aria-selected={activeTab === 'space'}
               onClick={() => onChangeTab('space')}
-              className={`px-2.5 py-1 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap ${
+              className={`px-2.5 py-1.5 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap ${
                 activeTab === 'space' ? segActive : segIdle
               }`}
             >
@@ -313,7 +372,7 @@ export function ControlDock({
               onClick={onToggleCompareMode}
               aria-pressed={compareMode}
               aria-label="Compare pole finishes"
-              className={`min-h-[30px] min-w-[30px] rounded-lg border flex items-center justify-center transition-colors ${
+              className={`min-h-[32px] min-w-[32px] rounded-lg border flex items-center justify-center transition-colors ${
                 compareMode ? accentToggleActive : cardBtnIdle
               }`}
             >
@@ -325,7 +384,7 @@ export function ControlDock({
               aria-pressed={moveMode && !compareMode}
               disabled={compareMode}
               aria-label="Move pole position"
-              className={`min-h-[30px] min-w-[30px] rounded-lg border flex items-center justify-center transition-colors ${
+              className={`min-h-[32px] min-w-[32px] rounded-lg border flex items-center justify-center transition-colors ${
                 compareMode
                   ? 'opacity-40 cursor-not-allowed ' + cardBtnIdle
                   : moveMode
@@ -340,15 +399,15 @@ export function ControlDock({
               onClick={onToggleCollapse}
               aria-expanded={true}
               aria-label="Hide controls"
-              className={`min-h-[30px] min-w-[30px] rounded-lg border flex items-center justify-center transition-colors ${cardBtnIdle}`}
+              className={`min-h-[32px] min-w-[32px] rounded-lg border flex items-center justify-center transition-colors ${cardBtnIdle}`}
             >
               <ChevronDown className="w-3.5 h-3.5" aria-hidden="true" />
             </button>
           </div>
         </div>
 
-        {/* Mobile Body: Focused single compact pane (~64px–88px tall) */}
-        <div className="px-2 py-1.5">
+        {/* Mobile Body: Focused single compact pane (~72px–104px tall) */}
+        <div className="px-2.5 py-2">
           {activeTab === 'configure' && compareMode && (
             <div className="space-y-2">
               <div className="grid grid-cols-2 gap-2">
@@ -401,19 +460,20 @@ export function ControlDock({
                   </div>
                 </div>
               </div>
-              <div className={`grid grid-cols-3 gap-1 p-0.5 rounded-lg ${segBg}`}>
+              <div className={`grid grid-cols-5 gap-0.5 p-0.5 rounded-lg ${segBg}`}>
                 {LIGHTING_PRESETS.map((preset) => (
                   <button
                     key={`mc-${preset.id}`}
                     type="button"
                     onClick={() => onChangeConfig({ lighting: preset.id })}
                     aria-pressed={config.lighting === preset.id}
-                    className={`py-1.5 px-1.5 rounded-md text-[11px] font-medium inline-flex items-center justify-center gap-1 whitespace-nowrap ${
+                    title={preset.label}
+                    className={`py-1 px-0.5 rounded-md text-[10px] font-medium flex flex-col items-center justify-center gap-0.5 whitespace-nowrap ${
                       config.lighting === preset.id ? segActive : segIdle
                     }`}
                   >
                     <LightingIcon preset={preset.id} />
-                    <span>{preset.shortLabel}</span>
+                    <span>{preset.mobileLabel}</span>
                   </button>
                 ))}
               </div>
@@ -421,8 +481,8 @@ export function ControlDock({
           )}
 
           {activeTab === 'configure' && !compareMode && mobileConfigPane === 'finish' && (
-            <div className="space-y-1.5">
-              {/* 4 Sleek Low-Profile Material Pill Tiles */}
+            <div className="space-y-2">
+              {/* 4 Rounded Material PFP Tiles */}
               <div className="grid grid-cols-4 gap-1.5" role="group" aria-label="Pole finishes">
                 {FINISH_ORDER.map((fid) => {
                   const spec = POLE_FINISHES[fid];
@@ -433,7 +493,7 @@ export function ControlDock({
                       type="button"
                       onClick={() => onChangeActivePole({ finish: fid })}
                       aria-pressed={selected}
-                      className={`flex items-center justify-center gap-1.5 py-1.5 px-1.5 rounded-xl border transition-colors ${
+                      className={`flex flex-col items-center justify-center gap-1 py-1.5 px-1 rounded-xl border transition-colors ${
                         selected ? cardBtnActive : cardBtnIdle
                       }`}
                     >
@@ -441,7 +501,7 @@ export function ControlDock({
                         src={materialAvatars[fid]}
                         alt=""
                         aria-hidden="true"
-                        className={`w-5 h-5 rounded-full object-cover shrink-0 ring-1 ${
+                        className={`w-7 h-7 rounded-full object-cover ring-1 ${
                           selected
                             ? isNeon
                               ? 'ring-cyan-400'
@@ -451,21 +511,17 @@ export function ControlDock({
                               : 'ring-black/15'
                         }`}
                       />
-                      <span className="text-[10.5px] font-semibold leading-none truncate">
-                        {fid === 'powder-black'
-                          ? 'Black'
-                          : fid === 'stainless'
-                            ? 'Steel'
-                            : spec.shortName.split(' ')[0]}
+                      <span className="text-[10px] font-semibold leading-none truncate max-w-full">
+                        {fid === 'powder-black' ? 'Black' : spec.shortName.split(' ')[0]}
                       </span>
                     </button>
                   );
                 })}
               </div>
 
-              {/* Compact 3-Preset Lighting Manager */}
+              {/* Compact 5-Preset Fitness Studio Lighting Manager */}
               <div
-                className={`grid grid-cols-3 gap-0.5 p-0.5 rounded-lg ${segBg}`}
+                className={`grid grid-cols-5 gap-0.5 p-0.5 rounded-lg ${segBg}`}
                 role="group"
                 aria-label="Lighting Manager"
               >
@@ -477,12 +533,13 @@ export function ControlDock({
                       type="button"
                       onClick={() => onChangeConfig({ lighting: preset.id })}
                       aria-pressed={active}
-                      className={`py-1 px-1.5 rounded-md text-[11px] font-medium inline-flex items-center justify-center gap-1 transition-colors whitespace-nowrap ${
+                      title={preset.label}
+                      className={`py-1 px-0.5 rounded-md text-[10px] font-medium flex flex-col items-center justify-center gap-0.5 transition-colors whitespace-nowrap ${
                         active ? segActive : segIdle
                       }`}
                     >
                       <LightingIcon preset={preset.id} />
-                      <span>{preset.shortLabel}</span>
+                      <span>{preset.mobileLabel}</span>
                     </button>
                   );
                 })}
@@ -535,15 +592,19 @@ export function ControlDock({
                   )}
                 </div>
 
-                <div className={`flex items-center gap-0.5 p-0.5 rounded-md shrink-0 ${segBg}`}>
+                <div
+                  className={`flex items-center gap-0.5 p-0.5 rounded-md shrink-0 ${segBg}`}
+                  role="group"
+                  aria-label="Room mount type"
+                >
                   {MOUNT_ORDER.map((mid) => (
                     <button
                       key={`mm-${mid}`}
                       type="button"
-                      onClick={() => onChangeActivePole({ mount: mid })}
-                      aria-pressed={activePole.mount === mid}
+                      onClick={() => onChangeConfig({ mount: mid })}
+                      aria-pressed={config.mount === mid}
                       className={`px-2 py-1 text-[10px] font-medium rounded-xs whitespace-nowrap ${
-                        activePole.mount === mid ? segActive : segIdle
+                        config.mount === mid ? segActive : segIdle
                       }`}
                     >
                       {mid === 'permanent-ceiling' ? 'Fixed' : BASE_MOUNTS[mid].shortName}
@@ -552,22 +613,25 @@ export function ControlDock({
                 </div>
               </div>
 
-              {/* Row B: Height Slider + Diameter + Spin */}
+              {/* Row B: Active Pole Height Slider + Width (Diameter) + Spin */}
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-1.5 flex-1 min-w-0">
-                  <span className={`text-[10px] font-medium ${mutedText}`}>H</span>
+                  <span className={`text-[10px] font-medium whitespace-nowrap ${mutedText}`}>
+                    {activePoleTag} H
+                  </span>
                   <input
-                    aria-label="Ceiling height"
+                    aria-label={`${activePole.label} height`}
+                    data-testid="mobile-pole-height-slider"
                     type="range"
-                    min={225}
-                    max={350}
+                    min={MIN_POLE_HEIGHT_CM}
+                    max={maxActivePoleCm}
                     step={1}
-                    value={config.ceilingHeightCm}
-                    onChange={(e) => onChangeConfig({ ceilingHeightCm: Number(e.target.value) })}
+                    value={activePole.heightCm}
+                    onChange={(e) => onChangeActivePole({ heightCm: Number(e.target.value) })}
                     className="axis-slider flex-1"
                   />
                   <span className="font-mono text-[11px] font-semibold tabular-nums w-10 text-right shrink-0">
-                    {(config.ceilingHeightCm / 100).toFixed(2)}m
+                    {(activePole.heightCm / 100).toFixed(2)}m
                   </span>
                 </div>
 
@@ -597,64 +661,116 @@ export function ControlDock({
                 </button>
               </div>
 
-              {activePole.mount === 'vaulted-beam' && (
-                <div className="flex items-center gap-1.5 pt-0.5">
+              {/* Row C: Global Room Ceiling Height (2–5m) + Global Ceiling Type (Flat / Tilted) */}
+              <div className="flex items-center justify-between gap-2 pt-0.5">
+                <div className="flex items-center gap-1.5 flex-1 min-w-0">
                   <span className={`text-[10px] font-medium whitespace-nowrap ${mutedText}`}>
-                    Roof Pitch
+                    Ceil
                   </span>
                   <input
-                    aria-label="Vaulted roof pitch angle"
+                    aria-label="Room ceiling height"
+                    data-testid="mobile-ceiling-height-slider"
                     type="range"
-                    min={6}
-                    max={28}
+                    min={MIN_CEILING_HEIGHT_CM}
+                    max={MAX_CEILING_HEIGHT_CM}
                     step={1}
-                    value={config.vaultAngleDeg}
-                    onChange={(e) => onChangeConfig({ vaultAngleDeg: Number(e.target.value) })}
+                    value={config.ceilingHeightCm}
+                    onChange={(e) => onChangeConfig({ ceilingHeightCm: Number(e.target.value) })}
                     className="axis-slider flex-1"
                   />
-                  <span className="font-mono text-[11px] font-semibold tabular-nums w-8 text-right shrink-0">
-                    {config.vaultAngleDeg}°
+                  <span className="font-mono text-[11px] font-semibold tabular-nums w-10 text-right shrink-0">
+                    {(config.ceilingHeightCm / 100).toFixed(2)}m
                   </span>
                 </div>
-              )}
 
-              {config.ceilingHeightCm > MAX_POLE_LENGTH_CM && activePole.mount !== 'stage-podium' && (
-                <div className="flex items-center justify-between gap-1.5 pt-0.5">
-                  <span className={`text-[10px] font-medium whitespace-nowrap ${mutedText}`}>
-                    &gt;2.5m (+{config.ceilingHeightCm - MAX_POLE_LENGTH_CM}cm)
+                <div
+                  className={`flex items-center gap-0.5 p-0.5 rounded-md shrink-0 ${segBg}`}
+                  role="group"
+                  aria-label="Room ceiling type"
+                >
+                  {CEILING_TYPE_OPTIONS.map((opt) => (
+                    <button
+                      key={`m-ct-${opt.id}`}
+                      type="button"
+                      data-testid={`mobile-ceiling-${opt.id}-button`}
+                      onClick={() => onChangeConfig({ ceilingType: opt.id })}
+                      aria-pressed={config.ceilingType === opt.id}
+                      title={opt.title}
+                      className={`px-2 py-0.5 text-[10px] font-semibold rounded-xs whitespace-nowrap ${
+                        config.ceilingType === opt.id ? segActive : segIdle
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Row D: Per-Pole Cushion Placement (Top / Below) + Optional Global Roof Pitch */}
+              <div className="flex items-center justify-between gap-2">
+                <div
+                  className="flex items-center gap-1.5 shrink-0"
+                  role="group"
+                  aria-label={`${activePole.label} cushion placement`}
+                >
+                  <span
+                    className={`font-mono text-[10px] tabular-nums ${
+                      hasCushion
+                        ? isNeon
+                          ? 'text-cyan-300 font-semibold'
+                          : 'text-amber-400 font-semibold'
+                        : mutedText
+                    }`}
+                  >
+                    {hasCushion ? `Pad +${(activeCushionCm / 100).toFixed(2)}m` : 'Cushion'}
                   </span>
                   <div className={`flex items-center gap-0.5 p-0.5 rounded-md ${segBg}`}>
                     <button
                       type="button"
-                      onClick={() => onChangeConfig({ cushionPosition: 'above' })}
-                      className={`px-2 py-0.5 text-[10px] font-medium rounded-xs whitespace-nowrap ${
-                        config.cushionPosition === 'above' ? segActive : segIdle
+                      data-testid="mobile-cushion-top-button"
+                      onClick={() => onChangeActivePole({ cushionPlacement: 'top' })}
+                      aria-pressed={activePole.cushionPlacement === 'top'}
+                      className={`px-2 py-0.5 text-[10px] font-semibold rounded-xs whitespace-nowrap ${
+                        activePole.cushionPlacement === 'top' ? segActive : segIdle
                       }`}
                     >
-                      Cushion Top
+                      Top
                     </button>
                     <button
                       type="button"
-                      onClick={() => onChangeConfig({ cushionPosition: 'below' })}
-                      className={`px-2 py-0.5 text-[10px] font-medium rounded-xs whitespace-nowrap ${
-                        config.cushionPosition === 'below' ? segActive : segIdle
+                      data-testid="mobile-cushion-below-button"
+                      onClick={() => onChangeActivePole({ cushionPlacement: 'below' })}
+                      aria-pressed={activePole.cushionPlacement === 'below'}
+                      className={`px-2 py-0.5 text-[10px] font-semibold rounded-xs whitespace-nowrap ${
+                        activePole.cushionPlacement === 'below' ? segActive : segIdle
                       }`}
                     >
-                      Cushion Base
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onChangeConfig({ cushionPosition: 'none' });
-                        onChangeActivePole({ mount: 'stage-podium' });
-                      }}
-                      className={`px-2 py-0.5 text-[10px] font-medium rounded-xs whitespace-nowrap ${segIdle}`}
-                    >
-                      Open Base
+                      Below
                     </button>
                   </div>
                 </div>
-              )}
+
+                {config.ceilingType === 'vaulted' && (
+                  <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                    <span className={`text-[10px] font-medium whitespace-nowrap ${mutedText}`}>
+                      Pitch
+                    </span>
+                    <input
+                      aria-label="Vaulted roof pitch angle"
+                      type="range"
+                      min={6}
+                      max={28}
+                      step={1}
+                      value={config.vaultAngleDeg}
+                      onChange={(e) => onChangeConfig({ vaultAngleDeg: Number(e.target.value) })}
+                      className="axis-slider flex-1"
+                    />
+                    <span className="font-mono text-[11px] font-semibold tabular-nums w-7 text-right shrink-0">
+                      {config.vaultAngleDeg}°
+                    </span>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -737,19 +853,25 @@ export function ControlDock({
 
           {activeTab === 'space' && (
             <div className="space-y-2">
-              <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+              <div className="flex items-center justify-between gap-2">
                 <div className={`flex items-center gap-0.5 p-0.5 rounded-md shrink-0 ${segBg}`}>
-                  {ENVIRONMENT_PRESETS.map((envSpec) => (
+                  {(
+                    [
+                      ...(hasRoomReplica ? ([['replica', 'My Room']] as [EnvironmentPreset, string][]) : []),
+                      ['studio', 'Studio'],
+                      ['home', 'Home'],
+                    ] as [EnvironmentPreset, string][]
+                  ).map(([envId, label]) => (
                     <button
-                      key={`me-${envSpec.id}`}
+                      key={`me-${envId}`}
                       type="button"
-                      onClick={() => onChangeConfig({ environment: envSpec.id })}
-                      aria-pressed={config.environment === envSpec.id}
-                      className={`px-2 py-1 text-[10.5px] font-medium rounded-xs whitespace-nowrap ${
-                        config.environment === envSpec.id ? segActive : segIdle
+                      data-testid={`mobile-env-${envId}-button`}
+                      onClick={() => onChangeConfig({ environment: envId })}
+                      className={`px-2 py-1 text-[10px] font-medium rounded-xs whitespace-nowrap ${
+                        config.environment === envId ? segActive : segIdle
                       }`}
                     >
-                      {envSpec.shortLabel}
+                      {label}
                     </button>
                   ))}
                 </div>
@@ -757,68 +879,57 @@ export function ControlDock({
                 <button
                   type="button"
                   onClick={() =>
-                    onChangeActivePole({
-                      mount: activePole.mount === 'vaulted-beam' ? 'tension' : 'vaulted-beam',
-                    })
+                    onChangeConfig({ enforceMinClearance: !config.enforceMinClearance })
                   }
-                  aria-pressed={activePole.mount === 'vaulted-beam'}
-                  className={`px-2 py-1 text-[10.5px] font-semibold rounded-md border shrink-0 whitespace-nowrap ${
-                    activePole.mount === 'vaulted-beam' ? accentToggleActive : cardBtnIdle
+                  aria-pressed={config.enforceMinClearance}
+                  data-testid="mobile-min-clearance-toggle"
+                  className={`px-2.5 py-1 text-[10px] font-semibold rounded-md border inline-flex items-center gap-1 whitespace-nowrap ${
+                    config.enforceMinClearance
+                      ? accentToggleActive
+                      : 'border-amber-400/70 bg-amber-500/18 text-amber-300'
                   }`}
                 >
-                  Tilted Ceiling
+                  {config.enforceMinClearance ? (
+                    <ShieldCheck className="w-3 h-3" />
+                  ) : (
+                    <ShieldOff className="w-3 h-3" />
+                  )}
+                  <span>1.25m Min: {config.enforceMinClearance ? 'On' : 'Off'}</span>
                 </button>
               </div>
 
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => onChangeCameraMotion(cameraMotion === 'orbit' ? 'manual' : 'orbit')}
-                    className={`px-2 py-1 text-[11px] font-medium rounded-md border inline-flex items-center gap-1 ${
-                      cameraMotion === 'orbit' ? accentToggleActive : cardBtnIdle
-                    }`}
-                  >
-                    <Orbit className="w-3 h-3" />
-                    <span>Orbit</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onChangeCameraMotion(cameraMotion === 'crane' ? 'manual' : 'crane')}
-                    className={`px-2 py-1 text-[11px] font-medium rounded-md border inline-flex items-center gap-1 ${
-                      cameraMotion === 'crane' ? accentToggleActive : cardBtnIdle
-                    }`}
-                  >
-                    <Video className="w-3 h-3" />
-                    <span>Crane</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={onCenterActivePole}
-                    className={`px-2 py-1 text-[11px] font-medium rounded-md border ${cardBtnIdle}`}
-                  >
-                    Center
-                  </button>
-                </div>
-
-                {activePole.mount === 'vaulted-beam' && (
-                  <div className="flex items-center gap-1 flex-1 max-w-[140px]">
-                    <span className={`text-[10px] ${mutedText}`}>Tilt</span>
-                    <input
-                      aria-label="Ceiling tilt angle"
-                      type="range"
-                      min={6}
-                      max={28}
-                      step={1}
-                      value={config.vaultAngleDeg}
-                      onChange={(e) => onChangeConfig({ vaultAngleDeg: Number(e.target.value) })}
-                      className="axis-slider flex-1"
-                    />
-                    <span className="font-mono text-[10px] tabular-nums w-6 text-right">
-                      {config.vaultAngleDeg}°
-                    </span>
-                  </div>
-                )}
+              <div className="grid grid-cols-3 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onChangeCameraMotion('manual');
+                    onFocusCamera('full-rig');
+                  }}
+                  className={`py-1 text-[10px] font-medium rounded-md border inline-flex items-center justify-center gap-1 ${cardBtnIdle}`}
+                >
+                  <Maximize2 className="w-3 h-3" />
+                  <span>Full Room</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onChangeCameraMotion(cameraMotion === 'orbit' ? 'manual' : 'orbit')}
+                  className={`py-1 text-[10px] font-medium rounded-md border inline-flex items-center justify-center gap-1 ${
+                    cameraMotion === 'orbit' ? accentToggleActive : cardBtnIdle
+                  }`}
+                >
+                  <Orbit className="w-3 h-3" />
+                  <span>Orbit</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onChangeCameraMotion(cameraMotion === 'crane' ? 'manual' : 'crane')}
+                  className={`py-1 text-[10px] font-medium rounded-md border inline-flex items-center justify-center gap-1 ${
+                    cameraMotion === 'crane' ? accentToggleActive : cardBtnIdle
+                  }`}
+                >
+                  <Video className="w-3 h-3" />
+                  <span>Crane</span>
+                </button>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -827,7 +938,7 @@ export function ControlDock({
                   <input
                     aria-label="Room width"
                     type="range"
-                    min={MIN_ROOM_SIZE_M}
+                    min={minRoomSizeM}
                     max={MAX_ROOM_SIZE_M}
                     step={0.1}
                     value={config.roomWidthM}
@@ -843,7 +954,7 @@ export function ControlDock({
                   <input
                     aria-label="Room depth"
                     type="range"
-                    min={MIN_ROOM_SIZE_M}
+                    min={minRoomSizeM}
                     max={MAX_ROOM_SIZE_M}
                     step={0.1}
                     value={config.roomDepthM}
@@ -862,7 +973,7 @@ export function ControlDock({
 
       {/* ===================== DESKTOP SLIM HORIZONTAL DOCK (md+) ===================== */}
       <div className={`hidden md:block w-full rounded-xl border overflow-hidden transition-colors duration-200 ${dockSurface}`}>
-        {/* Slim Header Row: Tabs + Compare + Move + Dynamic Camera + Collapse */}
+        {/* Slim Header Row: Tabs + Room Ceiling Height + Compare + Move + Dynamic Camera + Collapse */}
         <div className={`px-3 py-1.5 border-b flex flex-wrap items-center justify-between gap-2 ${dividerClass}`}>
           <div className="flex items-center gap-2">
             <div
@@ -891,6 +1002,80 @@ export function ControlDock({
                 </button>
               ))}
             </div>
+
+            {activeTab !== 'assembly' && (
+              <div className="flex items-center gap-1.5 shrink-0">
+                <div className="flex items-center gap-1.5 w-[156px] shrink-0">
+                  <label
+                    htmlFor="ceiling-height-slider"
+                    className={`text-[11px] font-medium whitespace-nowrap ${mutedText}`}
+                  >
+                    Ceiling
+                  </label>
+                  <input
+                    id="ceiling-height-slider"
+                    data-testid="ceiling-height-slider"
+                    type="range"
+                    min={MIN_CEILING_HEIGHT_CM}
+                    max={MAX_CEILING_HEIGHT_CM}
+                    step={1}
+                    value={config.ceilingHeightCm}
+                    onChange={(e) => onChangeConfig({ ceilingHeightCm: Number(e.target.value) })}
+                    className="axis-slider flex-1 min-w-[54px]"
+                  />
+                  <span className="font-mono text-[11px] font-semibold tabular-nums w-10 text-right shrink-0">
+                    {(config.ceilingHeightCm / 100).toFixed(2)}m
+                  </span>
+                </div>
+
+                <div
+                  className={`flex items-center gap-0.5 p-0.5 rounded-md shrink-0 ${segBg}`}
+                  role="group"
+                  aria-label="Room ceiling type"
+                >
+                  {CEILING_TYPE_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      data-testid={`ceiling-${opt.id}-button`}
+                      onClick={() => onChangeConfig({ ceilingType: opt.id })}
+                      aria-pressed={config.ceilingType === opt.id}
+                      title={opt.title}
+                      className={`px-2 py-0.5 text-[11px] font-medium rounded-xs transition-colors whitespace-nowrap ${
+                        config.ceilingType === opt.id ? segActive : segIdle
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+
+                {config.ceilingType === 'vaulted' && (
+                  <div className="flex items-center gap-1 shrink-0">
+                    <label
+                      htmlFor="vault-angle-slider"
+                      className={`text-[11px] font-medium whitespace-nowrap ${mutedText}`}
+                    >
+                      Pitch
+                    </label>
+                    <input
+                      id="vault-angle-slider"
+                      data-testid="vault-angle-slider"
+                      type="range"
+                      min={6}
+                      max={28}
+                      step={1}
+                      value={config.vaultAngleDeg}
+                      onChange={(e) => onChangeConfig({ vaultAngleDeg: Number(e.target.value) })}
+                      className="axis-slider w-12 shrink-0"
+                    />
+                    <span className="font-mono text-[11px] font-semibold tabular-nums w-6 text-right shrink-0">
+                      {config.vaultAngleDeg}°
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Right Header Controls: Compare + Move + Dynamic Perspective Modes + Sound + Collapse */}
@@ -930,10 +1115,12 @@ export function ControlDock({
 
             <button
               type="button"
+              data-testid="full-camera-button"
               onClick={() => {
                 onChangeCameraMotion('manual');
                 onFocusCamera(compareMode ? 'compare-pair' : 'full-rig');
               }}
+              title="Frame full studio room model"
               className={`px-2 py-1 text-[11px] font-medium rounded-md border transition-colors whitespace-nowrap shrink-0 ${cardBtnIdle}`}
             >
               Full
@@ -941,9 +1128,10 @@ export function ControlDock({
 
             <button
               type="button"
+              data-testid="orbit-camera-button"
               onClick={() => onChangeCameraMotion(cameraMotion === 'orbit' ? 'manual' : 'orbit')}
               aria-pressed={cameraMotion === 'orbit'}
-              title="360° Dynamic Studio Orbit"
+              title="360° Interior Studio Orbit"
               className={`px-2 py-1 text-[11px] font-medium rounded-md border inline-flex items-center gap-1 transition-colors whitespace-nowrap shrink-0 ${
                 cameraMotion === 'orbit' ? accentToggleActive : cardBtnIdle
               }`}
@@ -1075,12 +1263,13 @@ export function ControlDock({
                         type="button"
                         onClick={() => onChangeConfig({ lighting: preset.id })}
                         aria-pressed={active}
-                        className={`px-2.5 py-1 rounded-md text-[11px] font-medium inline-flex items-center gap-1.5 transition-colors whitespace-nowrap ${
+                        title={preset.label}
+                        className={`px-2 py-1 rounded-md text-[11px] font-medium inline-flex items-center gap-1 transition-colors whitespace-nowrap ${
                           active ? segActive : segIdle
                         }`}
                       >
                         <LightingIcon preset={preset.id} />
-                        <span>{preset.label}</span>
+                        <span>{preset.shortLabel}</span>
                       </button>
                     );
                   })}
@@ -1168,8 +1357,7 @@ export function ControlDock({
                         }`}
                       >
                         <LightingIcon preset={preset.id} />
-                        <span className="hidden xl:inline">{preset.label}</span>
-                        <span className="xl:hidden">{preset.shortLabel}</span>
+                        <span>{preset.shortLabel}</span>
                       </button>
                     );
                   })}
@@ -1186,6 +1374,7 @@ export function ControlDock({
                         type="button"
                         onClick={() => onSelectPole(p.id)}
                         aria-pressed={isSel}
+                        title={`${p.label}: ${(p.heightCm / 100).toFixed(2)}m · ${p.diameterMm}mm · ${POLE_FINISHES[p.finish].shortName}`}
                         className={`px-2 py-1 text-[11px] font-semibold rounded-md border inline-flex items-center gap-1.5 transition-colors whitespace-nowrap ${
                           isSel ? cardBtnActive : cardBtnIdle
                         }`}
@@ -1196,6 +1385,11 @@ export function ControlDock({
                           aria-hidden="true"
                         />
                         <span>P{idx + 1}</span>
+                        {poles.length > 1 && (
+                          <span className={`font-mono text-[10px] tabular-nums ${mutedText}`}>
+                            {(p.heightCm / 100).toFixed(1)}m
+                          </span>
+                        )}
                       </button>
                     );
                   })}
@@ -1205,7 +1399,7 @@ export function ControlDock({
                       type="button"
                       onClick={onAddPole}
                       data-testid="add-pole-button"
-                      title="Add another pole to the studio"
+                      title="Add another independently configurable pole"
                       className={`px-2 py-1 text-[11px] font-semibold rounded-md border inline-flex items-center gap-1 transition-colors whitespace-nowrap ${cardBtnIdle}`}
                     >
                       <Plus className="w-3 h-3" aria-hidden="true" />
@@ -1226,80 +1420,116 @@ export function ControlDock({
                   )}
                 </div>
 
-                <div className={`flex items-center gap-0.5 p-0.5 rounded-md ${segBg}`}>
+                <div
+                  className={`flex items-center gap-0.5 p-0.5 rounded-md ${segBg}`}
+                  role="group"
+                  aria-label="Room mount type"
+                >
                   {MOUNT_ORDER.map((mid) => {
                     const m = BASE_MOUNTS[mid];
-                    const selected = activePole.mount === mid;
+                    const selected = config.mount === mid;
                     return (
                       <button
                         key={mid}
                         type="button"
-                        onClick={() => onChangeActivePole({ mount: mid })}
+                        data-testid={`mount-${mid}-button`}
+                        onClick={() => onChangeConfig({ mount: mid })}
                         aria-pressed={selected}
+                        title={m.name}
                         className={`px-2 py-1 text-[11px] font-medium rounded-xs transition-colors whitespace-nowrap ${
                           selected ? segActive : segIdle
                         }`}
                       >
-                        {m.shortName}
+                        {mid === 'permanent-ceiling' ? 'Fixed' : m.shortName}
                       </button>
                     );
                   })}
                 </div>
 
-                <div
-                  className={`flex items-center gap-1.5 flex-1 ${
-                    activePole.mount === 'vaulted-beam'
-                      ? 'min-w-[115px] max-w-[155px]'
-                      : 'min-w-[130px] max-w-[190px]'
-                  }`}
-                >
+                {/* Per-Pole Individual Height Slider (Max 3.00m) */}
+                <div className="flex items-center gap-1.5 flex-1 min-w-[140px] max-w-[205px]">
                   <label
-                    htmlFor="ceiling-height-slider"
+                    htmlFor="pole-height-slider"
                     className={`text-[11px] font-medium whitespace-nowrap ${mutedText}`}
+                    title={`Individual height for ${activePole.label} (max 3.00m)`}
                   >
-                    Height
+                    {activePoleTag} H
                   </label>
                   <input
-                    id="ceiling-height-slider"
+                    id="pole-height-slider"
+                    data-testid="pole-height-slider"
                     type="range"
-                    min={225}
-                    max={350}
+                    min={MIN_POLE_HEIGHT_CM}
+                    max={maxActivePoleCm}
                     step={1}
-                    value={config.ceilingHeightCm}
-                    onChange={(e) => onChangeConfig({ ceilingHeightCm: Number(e.target.value) })}
+                    value={activePole.heightCm}
+                    onChange={(e) => onChangeActivePole({ heightCm: Number(e.target.value) })}
                     className="axis-slider flex-1 min-w-[44px]"
                   />
                   <span className="font-mono text-[11px] font-semibold tabular-nums w-10 text-right shrink-0">
-                    {(config.ceilingHeightCm / 100).toFixed(2)}m
+                    {(activePole.heightCm / 100).toFixed(2)}m
                   </span>
                 </div>
 
-                {activePole.mount === 'vaulted-beam' && (
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <label
-                      htmlFor="vault-angle-slider"
-                      className={`text-[11px] font-medium whitespace-nowrap ${mutedText}`}
+                {/* Per-Pole Cushion Placement (Top vs Below) */}
+                <div
+                  className="flex items-center gap-1.5 shrink-0"
+                  role="group"
+                  aria-label={`${activePole.label} cushion placement`}
+                  data-testid="cushion-controls"
+                >
+                  <span
+                    className={`text-[11px] font-medium whitespace-nowrap ${
+                      hasCushion
+                        ? isNeon
+                          ? 'text-cyan-300 font-semibold'
+                          : isPulse
+                            ? 'text-emerald-300 font-semibold'
+                            : isSunset
+                              ? 'text-orange-300 font-semibold'
+                              : isDark
+                                ? 'text-amber-300 font-semibold'
+                                : 'text-amber-800 font-semibold'
+                        : mutedText
+                    }`}
+                    title={
+                      hasCushion
+                        ? `Bridges ${(activeCushionCm / 100).toFixed(2)}m gap between ${activePole.label} and ${(config.ceilingHeightCm / 100).toFixed(2)}m ceiling`
+                        : 'Engages automatically when ceiling exceeds pole height or 3.00m max'
+                    }
+                  >
+                    Cushion{hasCushion ? ` ${(activeCushionCm / 100).toFixed(2)}m` : ''}
+                  </span>
+                  <div className={`flex items-center gap-0.5 p-0.5 rounded-md ${segBg}`}>
+                    <button
+                      type="button"
+                      data-testid="cushion-top-button"
+                      onClick={() => onChangeActivePole({ cushionPlacement: 'top' })}
+                      aria-pressed={activePole.cushionPlacement === 'top'}
+                      title="Place height cushion at top (against ceiling)"
+                      className={`px-2 py-0.5 text-[11px] font-medium rounded-xs transition-colors whitespace-nowrap ${
+                        activePole.cushionPlacement === 'top' ? segActive : segIdle
+                      }`}
                     >
-                      Pitch
-                    </label>
-                    <input
-                      id="vault-angle-slider"
-                      type="range"
-                      min={6}
-                      max={28}
-                      step={1}
-                      value={config.vaultAngleDeg}
-                      onChange={(e) => onChangeConfig({ vaultAngleDeg: Number(e.target.value) })}
-                      className="axis-slider w-16 shrink-0"
-                    />
-                    <span className="font-mono text-[11px] font-semibold tabular-nums w-7 text-right shrink-0">
-                      {config.vaultAngleDeg}°
-                    </span>
+                      Top
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="cushion-below-button"
+                      onClick={() => onChangeActivePole({ cushionPlacement: 'below' })}
+                      aria-pressed={activePole.cushionPlacement === 'below'}
+                      title="Place height cushion below pole (under floor base)"
+                      className={`px-2 py-0.5 text-[11px] font-medium rounded-xs transition-colors whitespace-nowrap ${
+                        activePole.cushionPlacement === 'below' ? segActive : segIdle
+                      }`}
+                    >
+                      Below
+                    </button>
                   </div>
-                )}
+                </div>
 
                 <div className="flex items-center gap-1.5">
-                  <div className={`flex items-center gap-0.5 p-0.5 rounded-md ${segBg}`}>
+                  <div className={`flex items-center gap-0.5 p-0.5 rounded-md ${segBg}`} role="group" aria-label="Pole width diameter">
                     {DIAMETER_OPTIONS.map((d) => (
                       <button
                         key={d.mm}
@@ -1327,48 +1557,6 @@ export function ControlDock({
                   </button>
                 </div>
               </div>
-
-              {config.ceilingHeightCm > MAX_POLE_LENGTH_CM && activePole.mount !== 'stage-podium' && (
-                <div className={`flex items-center justify-between gap-2 pt-1.5 border-t ${dividerClass}`}>
-                  <span className={`text-[11px] font-medium ${mutedText}`}>
-                    Max 2.50m Pole (+{config.ceilingHeightCm - MAX_POLE_LENGTH_CM}cm ceiling gap):
-                  </span>
-                  <div className="flex items-center gap-1.5">
-                    <div className={`flex items-center gap-0.5 p-0.5 rounded-md ${segBg}`}>
-                      <button
-                        type="button"
-                        onClick={() => onChangeConfig({ cushionPosition: 'above' })}
-                        aria-pressed={config.cushionPosition === 'above'}
-                        className={`px-2 py-0.5 text-[11px] font-medium rounded-xs whitespace-nowrap ${
-                          config.cushionPosition === 'above' ? segActive : segIdle
-                        }`}
-                      >
-                        Cushion Above
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onChangeConfig({ cushionPosition: 'below' })}
-                        aria-pressed={config.cushionPosition === 'below'}
-                        className={`px-2 py-0.5 text-[11px] font-medium rounded-xs whitespace-nowrap ${
-                          config.cushionPosition === 'below' ? segActive : segIdle
-                        }`}
-                      >
-                        Cushion Below
-                      </button>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onChangeConfig({ cushionPosition: 'none' });
-                        onChangeActivePole({ mount: 'stage-podium' });
-                      }}
-                      className={`px-2 py-0.5 text-[11px] font-semibold rounded-md border whitespace-nowrap ${cardBtnIdle}`}
-                    >
-                      Open-Ceiling Circular Base
-                    </button>
-                  </div>
-                </div>
-              )}
             </div>
           )}
 
@@ -1536,117 +1724,122 @@ export function ControlDock({
           )}
 
           {activeTab === 'space' && (
-            <div className="space-y-2">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className={`flex items-center gap-0.5 p-0.5 rounded-md ${segBg}`} role="group" aria-label="3D Room Styles">
-                  {ENVIRONMENT_PRESETS.map((envSpec) => (
-                    <button
-                      key={envSpec.id}
-                      type="button"
-                      onClick={() => onChangeConfig({ environment: envSpec.id })}
-                      aria-pressed={config.environment === envSpec.id}
-                      className={`px-2.5 py-1 text-[11px] font-medium rounded-xs transition-colors whitespace-nowrap ${
-                        config.environment === envSpec.id ? segActive : segIdle
-                      }`}
-                    >
-                      {envSpec.shortLabel}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className={`flex items-center gap-0.5 p-0.5 rounded-md ${segBg}`}>
+                {(
+                  [
+                    ...(hasRoomReplica ? ([['replica', 'My Room']] as [EnvironmentPreset, string][]) : []),
+                    ['studio', 'Studio'],
+                    ['home', 'Home'],
+                  ] as [EnvironmentPreset, string][]
+                ).map(([envId, label]) => (
                   <button
+                    key={envId}
                     type="button"
-                    onClick={() =>
-                      onChangeActivePole({
-                        mount: activePole.mount === 'vaulted-beam' ? 'tension' : 'vaulted-beam',
-                      })
-                    }
-                    aria-pressed={activePole.mount === 'vaulted-beam'}
-                    className={`px-2.5 py-1 text-[11px] font-semibold rounded-md border whitespace-nowrap transition-colors ${
-                      activePole.mount === 'vaulted-beam' ? accentToggleActive : cardBtnIdle
+                    data-testid={`env-${envId}-button`}
+                    onClick={() => onChangeConfig({ environment: envId })}
+                    aria-pressed={config.environment === envId}
+                    className={`px-2.5 py-1 text-[11px] font-medium rounded-xs transition-colors whitespace-nowrap ${
+                      config.environment === envId ? segActive : segIdle
                     }`}
                   >
-                    Tilted Ceiling
+                    {label}
                   </button>
-                  {activePole.mount === 'vaulted-beam' && (
-                    <div className="flex items-center gap-1.5">
-                      <input
-                        aria-label="Tilted ceiling pitch"
-                        type="range"
-                        min={6}
-                        max={28}
-                        step={1}
-                        value={config.vaultAngleDeg}
-                        onChange={(e) => onChangeConfig({ vaultAngleDeg: Number(e.target.value) })}
-                        className="axis-slider w-16"
-                      />
-                      <span className="font-mono text-[11px] font-semibold tabular-nums w-7 text-right">
-                        {config.vaultAngleDeg}°
-                      </span>
-                    </div>
-                  )}
-                </div>
+                ))}
               </div>
 
-              <div className={`flex flex-wrap items-center justify-between gap-2.5 pt-1.5 border-t ${dividerClass}`}>
-                <div className="flex items-center gap-1.5 flex-1 min-w-[135px] max-w-[215px]">
-                  <label htmlFor="room-width-slider" className={`text-[11px] font-medium ${mutedText}`}>
-                    Width
-                  </label>
-                  <input
-                    id="room-width-slider"
-                    type="range"
-                    min={MIN_ROOM_SIZE_M}
-                    max={MAX_ROOM_SIZE_M}
-                    step={0.1}
-                    value={config.roomWidthM}
-                    onChange={(e) => onChangeConfig({ roomWidthM: Number(e.target.value) })}
-                    className="axis-slider flex-1"
-                  />
-                  <span className="font-mono text-[11px] font-semibold tabular-nums w-9 text-right">
-                    {config.roomWidthM.toFixed(1)}m
-                  </span>
-                </div>
+              {hasRoomReplica && config.environment === 'replica' && (
+                <button
+                  type="button"
+                  data-testid="toggle-inferred-objects"
+                  onClick={onToggleInferredObjects}
+                  aria-pressed={showInferredObjects}
+                  title="Show or hide AI-estimated unseen room areas"
+                  className={`px-2 py-1 text-[11px] font-semibold rounded-md border whitespace-nowrap transition-colors ${
+                    showInferredObjects ? accentToggleActive : cardBtnIdle
+                  }`}
+                >
+                  Unseen: {showInferredObjects ? 'On' : 'Off'}
+                </button>
+              )}
 
-                <div className="flex items-center gap-1.5 flex-1 min-w-[135px] max-w-[215px]">
-                  <label htmlFor="room-depth-slider" className={`text-[11px] font-medium ${mutedText}`}>
-                    Depth
-                  </label>
-                  <input
-                    id="room-depth-slider"
-                    type="range"
-                    min={MIN_ROOM_SIZE_M}
-                    max={MAX_ROOM_SIZE_M}
-                    step={0.1}
-                    value={config.roomDepthM}
-                    onChange={(e) => onChangeConfig({ roomDepthM: Number(e.target.value) })}
-                    className="axis-slider flex-1"
-                  />
-                  <span className="font-mono text-[11px] font-semibold tabular-nums w-9 text-right">
-                    {config.roomDepthM.toFixed(1)}m
-                  </span>
-                </div>
+              <div className="flex items-center gap-1.5 flex-1 min-w-[125px] max-w-[195px]">
+                <label htmlFor="room-width-slider" className={`text-[11px] font-medium ${mutedText}`}>
+                  Width
+                </label>
+                <input
+                  id="room-width-slider"
+                  type="range"
+                  min={minRoomSizeM}
+                  max={MAX_ROOM_SIZE_M}
+                  step={0.1}
+                  value={config.roomWidthM}
+                  onChange={(e) => onChangeConfig({ roomWidthM: Number(e.target.value) })}
+                  className="axis-slider flex-1"
+                />
+                <span className="font-mono text-[11px] font-semibold tabular-nums w-9 text-right">
+                  {config.roomWidthM.toFixed(1)}m
+                </span>
+              </div>
 
-                <div className="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={onCenterActivePole}
-                    className={`px-2 py-1 text-[11px] font-medium rounded-md border whitespace-nowrap transition-colors ${cardBtnIdle}`}
-                  >
-                    Center Pole
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onChangeConfig({ showClearanceRing: !config.showClearanceRing })}
-                    aria-pressed={config.showClearanceRing}
-                    className={`px-2.5 py-1 text-[11px] font-semibold rounded-md border whitespace-nowrap transition-colors ${
-                      config.showClearanceRing ? accentToggleActive : cardBtnIdle
-                    }`}
-                  >
-                    Floor Ring
-                  </button>
-                </div>
+              <div className="flex items-center gap-1.5 flex-1 min-w-[125px] max-w-[195px]">
+                <label htmlFor="room-depth-slider" className={`text-[11px] font-medium ${mutedText}`}>
+                  Depth
+                </label>
+                <input
+                  id="room-depth-slider"
+                  type="range"
+                  min={minRoomSizeM}
+                  max={MAX_ROOM_SIZE_M}
+                  step={0.1}
+                  value={config.roomDepthM}
+                  onChange={(e) => onChangeConfig({ roomDepthM: Number(e.target.value) })}
+                  className="axis-slider flex-1"
+                />
+                <span className="font-mono text-[11px] font-semibold tabular-nums w-9 text-right">
+                  {config.roomDepthM.toFixed(1)}m
+                </span>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  data-testid="min-clearance-toggle"
+                  onClick={() =>
+                    onChangeConfig({ enforceMinClearance: !config.enforceMinClearance })
+                  }
+                  aria-pressed={config.enforceMinClearance}
+                  title="Toggle 1.25m minimum radius requirement (turn off for compact office testing)"
+                  className={`px-2.5 py-1 text-[11px] font-semibold rounded-md border inline-flex items-center gap-1 whitespace-nowrap transition-colors ${
+                    config.enforceMinClearance
+                      ? accentToggleActive
+                      : 'border-amber-400/75 bg-amber-500/18 text-amber-300'
+                  }`}
+                >
+                  {config.enforceMinClearance ? (
+                    <ShieldCheck className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                  ) : (
+                    <ShieldOff className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                  )}
+                  <span>1.25m Min: {config.enforceMinClearance ? 'On' : 'Off'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={onCenterActivePole}
+                  className={`px-2 py-1 text-[11px] font-medium rounded-md border whitespace-nowrap transition-colors ${cardBtnIdle}`}
+                >
+                  Center Pole
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onChangeConfig({ showClearanceRing: !config.showClearanceRing })}
+                  aria-pressed={config.showClearanceRing}
+                  className={`px-2.5 py-1 text-[11px] font-semibold rounded-md border whitespace-nowrap transition-colors ${
+                    config.showClearanceRing ? accentToggleActive : cardBtnIdle
+                  }`}
+                >
+                  Floor Ring
+                </button>
               </div>
             </div>
           )}

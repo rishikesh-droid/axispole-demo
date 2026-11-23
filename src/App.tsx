@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   CameraFocusId,
   CameraMotionMode,
-  CushionPosition,
   DockTabId,
   HardwarePartId,
   ModalId,
@@ -10,19 +9,23 @@ import type {
   PoleFinishId,
   PoleInstance,
   PoleRigConfig,
+  RoomReplicaScene,
 } from './types/pole';
 import {
   analyzeFloorClearance,
   ASSEMBLY_STEPS,
+  clampPoleHeightCm,
   clampPolePosition,
   createInitialPoles,
   createNextPoleInstance,
   DEFAULT_CONFIG,
   generateMultiPoleBOM,
+  getMinRoomSizeM,
   isDarkLighting,
-  MAX_POLE_LENGTH_CM,
+  MAX_CEILING_HEIGHT_CM,
   MAX_POLES_IN_STUDIO,
-  MIN_ROOM_SIZE_M,
+  MIN_CEILING_HEIGHT_CM,
+  reconcilePolesForCeilingHeight,
 } from './utils/poleConfig';
 import { soundFx } from './utils/soundFx';
 import {
@@ -81,7 +84,9 @@ export default function App() {
   const [arFloorTaps, setArFloorTaps] = useState<FloorTapPoint2D[]>([]);
   const [arPointCloud, setArPointCloud] = useState<ARPoint3D[]>([]);
   const [arShowPointCloud, setArShowPointCloud] = useState(false);
-  const [arOpenCeilingMode, setArOpenCeilingMode] = useState(false);
+  const [arUploadedPhotoUrl, setArUploadedPhotoUrl] = useState<string | null>(null);
+  const [roomReplica, setRoomReplica] = useState<RoomReplicaScene | null>(null);
+  const [showInferredObjects, setShowInferredObjects] = useState(true);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const viewportRef = useRef<PoleViewportHandle | null>(null);
@@ -122,7 +127,8 @@ export default function App() {
       ...config,
       finish: activePole.finish,
       diameterMm: activePole.diameterMm,
-      mount: activePole.mount,
+      poleHeightCm: activePole.heightCm,
+      cushionPlacement: activePole.cushionPlacement,
       isSpinning: activePole.isSpinning,
       spinRpm: activePole.spinRpm,
     }),
@@ -131,8 +137,14 @@ export default function App() {
 
   const bom = useMemo(() => generateMultiPoleBOM(poles, config), [poles, config]);
   const clearance = useMemo(
-    () => analyzeFloorClearance(config.roomWidthM, config.roomDepthM, activePole.mount),
-    [config.roomWidthM, config.roomDepthM, activePole.mount]
+    () =>
+      analyzeFloorClearance(
+        config.roomWidthM,
+        config.roomDepthM,
+        config.mount,
+        config.enforceMinClearance
+      ),
+    [config.roomWidthM, config.roomDepthM, config.mount, config.enforceMinClearance]
   );
 
   const activeStepIndex = Math.min(
@@ -145,28 +157,52 @@ export default function App() {
   const handleChangeConfig = useCallback((patch: Partial<PoleRigConfig>) => {
     soundFx.playDetent();
     setConfig((prev) => {
+      const nextEnforce = patch.enforceMinClearance ?? prev.enforceMinClearance;
+      const minRoom = getMinRoomSizeM(nextEnforce);
+      const nextCeilingCm =
+        patch.ceilingHeightCm !== undefined
+          ? Math.max(MIN_CEILING_HEIGHT_CM, Math.min(MAX_CEILING_HEIGHT_CM, Math.round(patch.ceilingHeightCm)))
+          : prev.ceilingHeightCm;
       const next = {
         ...prev,
         ...patch,
-        roomWidthM: Math.max(MIN_ROOM_SIZE_M, patch.roomWidthM ?? prev.roomWidthM),
-        roomDepthM: Math.max(MIN_ROOM_SIZE_M, patch.roomDepthM ?? prev.roomDepthM),
+        ceilingHeightCm: nextCeilingCm,
+        enforceMinClearance: nextEnforce,
+        roomWidthM: Math.max(minRoom, patch.roomWidthM ?? prev.roomWidthM),
+        roomDepthM: Math.max(minRoom, patch.roomDepthM ?? prev.roomDepthM),
       };
-      // Automatically re-clamp all poles safely inside updated room dimensions!
-      if (patch.roomWidthM !== undefined || patch.roomDepthM !== undefined) {
+
+      const needsRoomClamp =
+        patch.roomWidthM !== undefined ||
+        patch.roomDepthM !== undefined ||
+        patch.enforceMinClearance !== undefined ||
+        patch.mount !== undefined;
+      const needsCeilingSync =
+        patch.ceilingHeightCm !== undefined && nextCeilingCm !== prev.ceilingHeightCm;
+
+      if (needsRoomClamp || needsCeilingSync) {
         setPoles((prevPoles) => {
-          const placed: PoleInstance[] = [];
-          for (const p of prevPoles) {
-            const c = clampPolePosition(
-              p.x,
-              p.z,
-              next.roomWidthM,
-              next.roomDepthM,
-              p.mount,
-              placed
-            );
-            placed.push({ ...p, x: c.x, z: c.z });
+          let updatedPoles = needsCeilingSync
+            ? reconcilePolesForCeilingHeight(prevPoles, prev.ceilingHeightCm, nextCeilingCm)
+            : prevPoles;
+
+          if (needsRoomClamp) {
+            const placed: PoleInstance[] = [];
+            for (const p of updatedPoles) {
+              const c = clampPolePosition(
+                p.x,
+                p.z,
+                next.roomWidthM,
+                next.roomDepthM,
+                next.mount,
+                placed,
+                next.enforceMinClearance
+              );
+              placed.push({ ...p, x: c.x, z: c.z });
+            }
+            updatedPoles = placed;
           }
-          return placed;
+          return updatedPoles;
         });
       }
       return next;
@@ -179,42 +215,53 @@ export default function App() {
       setPoles((prev) =>
         prev.map((p) => {
           if (p.id !== activePole.id) return p;
-          const updated = { ...p, ...patch };
-          if (patch.mount) {
-            const others = prev.filter((o) => o.id !== p.id);
-            const c = clampPolePosition(
-              updated.x,
-              updated.z,
-              config.roomWidthM,
-              config.roomDepthM,
-              updated.mount,
-              others
-            );
-            updated.x = c.x;
-            updated.z = c.z;
-          }
+          const updated: PoleInstance = {
+            ...p,
+            ...patch,
+            heightCm:
+              patch.heightCm !== undefined
+                ? clampPoleHeightCm(patch.heightCm, config.ceilingHeightCm)
+                : p.heightCm,
+          };
           return updated;
         })
       );
     },
-    [activePole.id, config.roomWidthM, config.roomDepthM]
+    [activePole.id, config.ceilingHeightCm]
   );
 
   const handleAddPole = useCallback(() => {
     if (poles.length >= MAX_POLES_IN_STUDIO) return;
     soundFx.playMetalSeat();
     setCompareMode(false);
-    // Ensure room has comfortable width when adding multiple poles
-    const targetW = Math.max(config.roomWidthM, poles.length === 1 ? 5.6 : 6.2);
+    // Ensure room has comfortable width when adding multiple poles (respecting dev clearance bypass)
+    const minMultiW = config.enforceMinClearance
+      ? poles.length === 1
+        ? 5.6
+        : 6.2
+      : Math.max(2.2, config.roomWidthM);
+    const targetW = Math.max(config.roomWidthM, minMultiW);
     if (targetW !== config.roomWidthM) {
       setConfig((prev) => ({ ...prev, roomWidthM: targetW }));
     }
-    const newPole = createNextPoleInstance(poles, targetW, config.roomDepthM);
+    const newPole = createNextPoleInstance(
+      poles,
+      targetW,
+      config.roomDepthM,
+      config.enforceMinClearance,
+      config.ceilingHeightCm
+    );
     setPoles((prev) => [...prev, newPole]);
     setActivePoleId(newPole.id);
     setMoveMode(true);
     viewportRef.current?.focusCamera('full-rig');
-  }, [poles, config.roomWidthM, config.roomDepthM]);
+  }, [
+    poles,
+    config.roomWidthM,
+    config.roomDepthM,
+    config.enforceMinClearance,
+    config.ceilingHeightCm,
+  ]);
 
   const handleRemoveActivePole = useCallback(() => {
     if (poles.length <= 1) return;
@@ -244,13 +291,20 @@ export default function App() {
         0,
         config.roomWidthM,
         config.roomDepthM,
-        activePole.mount,
-        others
+        config.mount,
+        others,
+        config.enforceMinClearance
       );
       setLastClamp(c);
       return prev.map((p) => (p.id === activePole.id ? { ...p, x: c.x, z: c.z } : p));
     });
-  }, [activePole.id, activePole.mount, config.roomWidthM, config.roomDepthM]);
+  }, [
+    activePole.id,
+    config.mount,
+    config.roomWidthM,
+    config.roomDepthM,
+    config.enforceMinClearance,
+  ]);
 
   const handleToggleCompareMode = useCallback(() => {
     soundFx.playDetent();
@@ -327,48 +381,54 @@ export default function App() {
 
   const handleAutoSyncARRoom = useCallback(
     (result: ARMeasurementResult, silent = false) => {
-      if (!result.canPlacePole && !silent) return;
       if (!silent) soundFx.playMetalSeat();
-      const clampedHeightCm = Math.max(225, Math.min(350, result.ceilingHeightCm));
-      const targetMount = arOpenCeilingMode ? 'stage-podium' : result.recommendedMount;
-      setConfig((prev) => {
-        const nextCushion: CushionPosition =
-          targetMount === 'stage-podium'
-            ? 'none'
-            : clampedHeightCm > MAX_POLE_LENGTH_CM && (prev.cushionPosition ?? 'none') === 'none'
-              ? 'above'
-              : (prev.cushionPosition ?? 'none');
-        return {
-          ...prev,
-          ceilingHeightCm: clampedHeightCm,
-          roomWidthM: result.roomWidthM,
-          roomDepthM: result.roomDepthM,
-          cushionPosition: nextCushion,
-        };
-      });
-      setPoles((prev) =>
-        prev.map((p) => {
-          if (p.id !== activePole.id) return p;
-          const others = prev.filter((o) => o.id !== p.id);
-          const clampedPos = clampPolePosition(
-            result.poleOffsetXM,
-            0,
-            result.roomWidthM,
-            result.roomDepthM,
-            targetMount,
-            others
-          );
-          return {
-            ...p,
-            mount: targetMount,
-            diameterMm: result.recommendedDiameterMm,
-            x: clampedPos.x,
-            z: clampedPos.z,
-          };
-        })
+      const clampedHeightCm = Math.max(
+        MIN_CEILING_HEIGHT_CM,
+        Math.min(MAX_CEILING_HEIGHT_CM, result.ceilingHeightCm)
       );
+      handleChangeConfig({
+        ceilingHeightCm: clampedHeightCm,
+        roomWidthM: result.roomWidthM,
+        roomDepthM: result.roomDepthM,
+        mount: result.recommendedMount,
+      });
+      handleChangeActivePole({
+        diameterMm: result.recommendedDiameterMm,
+      });
     },
-    [activePole.id, arOpenCeilingMode]
+    [handleChangeConfig, handleChangeActivePole]
+  );
+
+  const handleApplyRoomReplica = useCallback(
+    (result: ARMeasurementResult, replica: RoomReplicaScene) => {
+      soundFx.playMetalSeat();
+      setRoomReplica(replica);
+      setShowInferredObjects(true);
+
+      const clampedHeightCm = Math.max(
+        MIN_CEILING_HEIGHT_CM,
+        Math.min(MAX_CEILING_HEIGHT_CM, replica.ceilingHeightCm)
+      );
+      const nextLighting =
+        replica.lightingMood === 'dim' ? 'mood-neon' : 'studio-daylight';
+
+      handleChangeConfig({
+        ceilingHeightCm: clampedHeightCm,
+        roomWidthM: replica.roomWidthM,
+        roomDepthM: replica.roomDepthM,
+        mount: result.recommendedMount,
+        environment: 'replica',
+        lighting: nextLighting,
+      });
+      handleChangeActivePole({
+        diameterMm: result.recommendedDiameterMm,
+        heightCm: clampPoleHeightCm(clampedHeightCm, clampedHeightCm),
+      });
+
+      stopArCamera();
+      window.setTimeout(() => viewportRef.current?.focusCamera('full-rig'), 90);
+    },
+    [handleChangeConfig, handleChangeActivePole, stopArCamera]
   );
 
   const startArCamera = useCallback(async () => {
@@ -386,7 +446,6 @@ export default function App() {
     setArFloorTaps([]);
     setArPointCloud([]);
     setArShowPointCloud(false);
-    setArOpenCeilingMode(false);
     setArCameraActive(true);
     setArCameraError(null);
 
@@ -474,10 +533,17 @@ export default function App() {
       }`}
       data-state={playbackMode !== 'idle' ? `animating-${playbackMode}` : 'ready'}
       data-finish={activePole.finish}
-      data-mount={activePole.mount}
+      data-mount={config.mount}
+      data-ceiling-type={config.ceilingType}
       data-lighting={config.lighting}
       data-compare={compareMode ? 'true' : 'false'}
       data-poles={String(poles.length)}
+      data-min-clearance={config.enforceMinClearance ? 'on' : 'off'}
+      data-ceiling-cm={String(config.ceilingHeightCm)}
+      data-pole-cm={String(activePole.heightCm)}
+      data-cushion-placement={activePole.cushionPlacement}
+      data-environment={config.environment}
+      data-replica-objects={String(roomReplica?.objects.length ?? 0)}
     >
       {/* Top 3-zone navigation header */}
       <TopBar
@@ -495,21 +561,33 @@ export default function App() {
       {/* Live AR Camera Pass-Through Layer behind transparent 3D WebGL Canvas */}
       {arCameraActive && (
         <div className="fixed inset-0 z-0 bg-black">
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            muted
-            className="w-full h-full object-cover"
-          />
-          {arCameraError && (
-            <div className="absolute inset-0 bg-gradient-to-b from-[#131620] via-[#0d1018] to-[#090b11] pointer-events-none" />
+          {arUploadedPhotoUrl ? (
+            <img
+              src={arUploadedPhotoUrl}
+              alt="Uploaded room view for AR pole fitting"
+              className="w-full h-full object-cover"
+            />
+          ) : (
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted
+              className="w-full h-full object-cover"
+            />
+          )}
+          {arCameraError && !arUploadedPhotoUrl && (
+            <div className="absolute inset-0 bg-gradient-to-b from-[#131620] via-[#0d1018] to-[#090b11] pointer-events-none flex items-end justify-center pb-36 px-4">
+              <div className="px-3 py-1.5 rounded-lg bg-black/80 border border-white/15 text-zinc-300 text-[11px] text-center max-w-sm">
+                {arCameraError} Tap the photo button above to scan a room picture.
+              </div>
+            </div>
           )}
         </div>
       )}
 
       {/* Full-Bleed Unobstructed 3D Interactive Studio Viewport */}
-      <main className={`relative z-10 w-full h-full ${arCameraActive ? 'pt-0' : 'pt-11 sm:pt-12'}`}>
+      <main className={`relative z-10 w-full h-full ${arCameraActive ? 'pt-0' : 'pt-12'}`}>
         <PoleViewport3D
           ref={viewportRef}
           config={activeRigConfig}
@@ -543,7 +621,8 @@ export default function App() {
           arShowPointCloud={arShowPointCloud}
           arSurfaceCalibration={arSurfaceCalibration}
           arPartialFloorPoints={arPartialFloorPoints}
-          arOpenCeilingMode={arOpenCeilingMode}
+          roomReplica={roomReplica}
+          showInferredObjects={showInferredObjects}
         />
       </main>
 
@@ -552,6 +631,8 @@ export default function App() {
         <ARMeasurementOverlay
           videoRef={videoRef}
           arCameraError={arCameraError}
+          uploadedPhotoUrl={arUploadedPhotoUrl}
+          onUploadRoomPhoto={setArUploadedPhotoUrl}
           markers={arMarkers}
           onChangeMarkers={setArMarkers}
           scanPhase={arScanPhase}
@@ -566,21 +647,10 @@ export default function App() {
           onToggleShowPointCloud={() => setArShowPointCloud((v) => !v)}
           activeFinish={activePole.finish}
           isSpinning={activePole.isSpinning}
-          cushionPosition={config.cushionPosition ?? 'none'}
-          arOpenCeilingMode={arOpenCeilingMode}
           onChangeFinish={(finish) => handleChangeActivePole({ finish })}
           onToggleSpin={() => handleChangeActivePole({ isSpinning: !activePole.isSpinning })}
-          onChangeCushionPosition={(pos) => {
-            setArOpenCeilingMode(false);
-            handleChangeConfig({ cushionPosition: pos });
-          }}
-          onSwitchToOpenCeiling={() => {
-            setArOpenCeilingMode(true);
-            handleChangeConfig({ cushionPosition: 'none' });
-            handleChangeActivePole({ mount: 'stage-podium' });
-          }}
-          onRetryCamera={startArCamera}
           onAutoSyncRoom={handleAutoSyncARRoom}
+          onApplyRoomReplica={handleApplyRoomReplica}
           onExit={stopArCamera}
         />
       )}
@@ -606,7 +676,16 @@ export default function App() {
           if (activeTab !== 'assembly') setHighlightFasteners(false);
           viewportRef.current?.focusCamera('full-rig');
         }}
+        onToggleMinClearance={() =>
+          handleChangeConfig({ enforceMinClearance: !config.enforceMinClearance })
+        }
         arCameraActive={arCameraActive}
+        roomReplica={roomReplica}
+        showInferredObjects={showInferredObjects}
+        onToggleInferredObjects={() => {
+          soundFx.playDetent();
+          setShowInferredObjects((v) => !v);
+        }}
       />
 
       {/* Sleek Low-Profile Bottom Control Dock */}
@@ -684,6 +763,12 @@ export default function App() {
         onToggleSound={handleToggleSound}
         arCameraActive={arCameraActive}
         onStartArCamera={startArCamera}
+        hasRoomReplica={Boolean(roomReplica)}
+        showInferredObjects={showInferredObjects}
+        onToggleInferredObjects={() => {
+          soundFx.playDetent();
+          setShowInferredObjects((v) => !v);
+        }}
       />
 
       {/* Documentation, BOM, CAD Export & AR Preview Modals */}
