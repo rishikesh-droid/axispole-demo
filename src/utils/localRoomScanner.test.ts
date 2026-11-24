@@ -6,6 +6,10 @@ import {
   sampleRoomPaletteAndMaterials,
   type RawObjectDetection,
 } from './localRoomScanner';
+import {
+  normalizeOpenVocabResults,
+  OPEN_VOCAB_PROMPTS,
+} from './openVocabDetector';
 import { DEFAULT_AR_MARKERS } from './arMeasure';
 
 function createSyntheticRoomRgba(width: number, height: number): Uint8ClampedArray {
@@ -96,7 +100,7 @@ test('reconstructRoomLocallyFromPixels works 100% offline with pure pixel CV (ze
 
   assert.equal(result.detectorEngine, 'pixel-cv');
   assert.ok(result.scene.visibleObjectCount >= 2, 'Should detect window + desk silhouette from raw pixels');
-  assert.ok(result.scene.inferredObjectCount >= 2, 'Should extrapolate unseen room elements');
+  assert.equal(result.scene.inferredObjectCount, 0, 'Must not invent furniture that was not seen');
   assert.ok(result.scene.objects.some((o) => o.type === 'window' && !o.inferred), 'Should detect daylight window');
   assert.equal(result.scene.floorMaterial, 'wood-light');
 });
@@ -132,7 +136,7 @@ test('reconstructRoomLocallyFromPixels maps COCO-SSD furniture detections into 3
   assert.ok(result.scene.objects.some((o) => o.type === 'desk' && !o.inferred), 'Table + laptop should upgrade to Work Desk');
   assert.ok(result.scene.objects.some((o) => o.type === 'office-chair' && !o.inferred), 'Chair near desk should upgrade to Office Chair');
   assert.ok(result.scene.objects.some((o) => o.type === 'plant' && !o.inferred), 'Potted plant should be placed');
-  assert.ok(result.scene.inferredObjectCount >= 3, 'Unseen zones should be completed');
+  assert.equal(result.scene.inferredObjectCount, 0, 'Unseen zones are not filled unless opted in');
 
   // Verify every freestanding non-floor object respects room bounds & stays off pole axis
   for (const obj of result.scene.objects) {
@@ -152,64 +156,98 @@ test('mergeTiledDetectionsWithNMS merges overlapping duplicate detections and bo
   assert.ok(merged[0].score > 0.72, 'Multi-tile consensus should boost confidence score');
 });
 
-test('hybrid detector recovers uncovered furniture, multiple desk clusters, and doors/mirrors even when COCO finds >=2 objects', () => {
+test('replica stays faithful: detected sofa + 2 plants, no hallucinated doors/cupboards/mirrors', () => {
   const w = 160;
   const h = 120;
   const rgba = createSyntheticRoomRgba(w, h);
-  const ceilPx = Math.floor(h * 0.2);
-  const floorPx = Math.floor(h * 0.74);
-
-  // Paint a vertical dark-wood door on the left wall (x: 8%..20%, y: 24%..74%)
-  for (let y = ceilPx + 5; y < floorPx; y++) {
-    for (let x = Math.floor(w * 0.08); x <= Math.floor(w * 0.2); x++) {
-      const idx = (y * w + x) * 4;
-      rgba[idx] = 64;
-      rgba[idx + 1] = 48;
-      rgba[idx + 2] = 36;
-    }
-  }
-
-  // Paint a tall uncovered wardrobe silhouette on far right (x: 78%..93%, y: 25%..76%)
-  for (let y = ceilPx + 6; y <= floorPx + 2; y++) {
-    for (let x = Math.floor(w * 0.78); x <= Math.floor(w * 0.93); x++) {
-      const idx = (y * w + x) * 4;
-      rgba[idx] = 52;
-      rgba[idx + 1] = 56;
-      rgba[idx + 2] = 66;
-    }
-  }
-
   const markers = { ...DEFAULT_AR_MARKERS, ceilingY: 0.2, floorY: 0.74 };
-  const detections: RawObjectDetection[] = [
-    // Two separate laptop clusters + 2 chairs -> COCO already has >= 2 objects
-    { className: 'laptop', score: 0.85, x: 0.24, y: 0.48, w: 0.09, h: 0.07 },
-    { className: 'laptop', score: 0.82, x: 0.56, y: 0.48, w: 0.09, h: 0.07 },
-    { className: 'chair', score: 0.76, x: 0.25, y: 0.56, w: 0.1, h: 0.22 },
-    { className: 'chair', score: 0.74, x: 0.57, y: 0.56, w: 0.1, h: 0.22 },
-  ];
-
-  const result = reconstructRoomLocallyFromPixels(rgba, w, h, {
+  const base = {
     markers,
-    roomWidthM: 4.6,
+    roomWidthM: 4.2,
     roomDepthM: 4.0,
-    ceilingHeightCm: 280,
-    distanceM: 3.0,
+    ceilingHeightCm: 285,
+    distanceM: 3,
     poleOffsetXM: 0,
-    floorAccuracyPct: 95,
-    ceilingAccuracyPct: 94,
-    overallAccuracyPct: 95,
-    externalDetections: detections,
-  });
+    floorAccuracyPct: 90,
+    ceilingAccuracyPct: 90,
+    overallAccuracyPct: 90,
+    externalDetections: [
+      { className: 'couch', score: 0.8, x: 0, y: 0.69, w: 0.32, h: 0.31 },
+      { className: 'potted plant', score: 0.7, x: 0.22, y: 0.39, w: 0.19, h: 0.4 },
+      { className: 'potted plant', score: 0.7, x: 0.59, y: 0.41, w: 0.18, h: 0.38 },
+    ] as RawObjectDetection[],
+  };
 
-  const visibleDesks = result.scene.objects.filter((o) => !o.inferred && o.type === 'desk');
-  assert.ok(visibleDesks.length >= 2, `Expected >=2 synthesized desks from distinct laptop clusters, got ${visibleDesks.length}`);
-  assert.ok(
-    result.scene.objects.some((o) => !o.inferred && o.type === 'door'),
-    'Should detect left-wall door from raw pixels even when COCO-SSD has >=2 objects'
+  const result = reconstructRoomLocallyFromPixels(rgba, w, h, base);
+  const types = result.scene.objects.map((o) => o.type).sort();
+  assert.deepEqual(
+    types.filter((t) => ['sofa', 'plant'].includes(t)),
+    ['plant', 'plant', 'sofa']
   );
-  assert.ok(
-    result.scene.visibleObjectCount >= 6,
-    `Expected hybrid detector to find >=6 visible objects, got ${result.scene.visibleObjectCount}`
-  );
+  assert.equal(result.scene.inferredObjectCount, 0);
+  for (const bad of ['door', 'mirror', 'cabinet', 'wardrobe', 'bookshelf']) {
+    assert.ok(!types.includes(bad as never), `Must not invent ${bad}`);
+  }
+
+  const withCompletions = reconstructRoomLocallyFromPixels(rgba, w, h, {
+    ...base,
+    includeUnseenCompletions: true,
+  });
+  assert.ok(withCompletions.scene.inferredObjectCount >= 1, 'Opt-in completions still available');
 });
 
+test('open-vocabulary OWL-ViT normalization calibrates scores, filters background boxes, and accepts custom prompts', () => {
+  const customPrompts = [
+    ...OPEN_VOCAB_PROMPTS,
+    { prompt: 'a custom reception counter', className: 'desk', minScore: 0.14 },
+  ];
+  const dets = normalizeOpenVocabResults(
+    [
+      { label: 'a wall cabinet or overhead cupboard', score: 0.24, box: { xmin: 0.02, ymin: 0.3, xmax: 0.44, ymax: 0.48 } },
+      { label: 'a doorway or open door', score: 0.22, box: { xmin: 0.48, ymin: 0.31, xmax: 0.65, ymax: 0.82 } },
+      { label: 'a closed door', score: 0.19, box: { xmin: 0.49, ymin: 0.32, xmax: 0.65, ymax: 0.81 } }, // cross-class duplicate on same doorway
+      { label: 'a custom reception counter', score: 0.26, box: { xmin: 0.12, ymin: 0.62, xmax: 0.44, ymax: 0.78 } },
+      { label: 'a window', score: 0.25, box: { xmin: 0.01, ymin: 0.02, xmax: 0.98, ymax: 0.95 } }, // giant whole-frame false positive -> rejected
+      { label: 'a wall mirror', score: 0.09, box: { xmin: 0.72, ymin: 0.3, xmax: 0.88, ymax: 0.7 } }, // below minScore -> rejected
+    ],
+    640,
+    480,
+    customPrompts
+  );
+
+  assert.equal(dets.length, 3, 'Should keep cupboard, doorway (deduped), and custom counter while rejecting whole-frame and low-score boxes');
+  assert.deepEqual(
+    dets.map((d) => d.className).sort(),
+    ['cabinet', 'desk', 'door']
+  );
+
+  const w = 160;
+  const h = 120;
+  const rgba = createSyntheticRoomRgba(w, h);
+  const markers = { ...DEFAULT_AR_MARKERS, ceilingY: 0.28, floorY: 0.8 };
+  const result = reconstructRoomLocallyFromPixels(rgba, w, h, {
+    markers,
+    roomWidthM: 4.4,
+    roomDepthM: 4.0,
+    ceilingHeightCm: 285,
+    distanceM: 3.0,
+    poleOffsetXM: 0,
+    floorAccuracyPct: 93,
+    ceilingAccuracyPct: 92,
+    overallAccuracyPct: 93,
+    externalDetections: [
+      ...dets,
+      { className: 'chair', score: 0.74, x: 0.02, y: 0.62, w: 0.14, h: 0.18 },
+      { className: 'rug', score: 0.66, x: 0.36, y: 0.79, w: 0.38, h: 0.13 },
+    ],
+    openVocabUsed: true,
+  });
+
+  assert.equal(result.detectorEngine, 'owlvit+coco+cv');
+  const placedTypes = new Set(result.scene.objects.map((o) => o.type));
+  assert.ok(placedTypes.has('cabinet'), 'Overhead cupboard from OWL-ViT should be placed');
+  assert.ok(placedTypes.has('door'), 'Doorway from OWL-ViT should be placed and snapped to wall');
+  assert.ok(placedTypes.has('desk'), 'Custom prompt desk should be placed');
+  assert.ok(placedTypes.has('office-chair'), 'Chair beside OWL-ViT desk should upgrade to office-chair');
+  assert.equal(result.scene.inferredObjectCount, 0);
+});

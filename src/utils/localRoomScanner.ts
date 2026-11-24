@@ -6,6 +6,13 @@ import type {
 } from '../types/pole';
 import type { ARMarkerState } from './arMeasure';
 import { screenToFloorPoint3D } from './arSurfaceCalibration';
+import {
+  detectOpenVocabObjects,
+  OPEN_VOCAB_CLASS_NAMES,
+  preloadOpenVocabDetector,
+  suppressCrossClassDuplicates,
+  type OpenVocabPrompt,
+} from './openVocabDetector';
 import { sanitizeRoomReplicaScene } from './roomReplica';
 
 export interface RawObjectDetection {
@@ -33,11 +40,17 @@ export interface LocalRoomScanInput {
   overallAccuracyPct: number;
   previewDataUrl?: string;
   externalDetections?: RawObjectDetection[];
+  /** Opt-in: add plausible furniture for unseen areas (off by default to keep the replica faithful). */
+  includeUnseenCompletions?: boolean;
+  /** Optional custom open-vocabulary prompts to detect user-defined room objects. */
+  customPrompts?: readonly OpenVocabPrompt[];
+  /** Internal flag indicating whether OWL-ViT open-vocabulary detections contributed. */
+  openVocabUsed?: boolean;
 }
 
 export interface LocalRoomScanResult {
   scene: RoomReplicaScene;
-  detectorEngine: 'coco-ssd+cv' | 'pixel-cv';
+  detectorEngine: 'owlvit+coco+cv' | 'coco-ssd+cv' | 'pixel-cv';
   rawDetectionCount: number;
 }
 
@@ -550,7 +563,7 @@ function detectArchitecturalAndFallbackObjects(
       const rgb = sampleTrimmedMedianRgb(rgba, w, h, cx0, cy0, cx1, cy1, { stride: 1 });
       const lum = rgbLuminance(rgb);
       const sat = rgbSaturation(rgb);
-      if (lum >= Math.max(202, wallLum + 32) && sat <= 0.34) {
+      if (lum >= Math.max(226, wallLum + 30) && sat <= 0.3) {
         brightGrid[r][c] = true;
       }
     }
@@ -595,6 +608,28 @@ function detectArchitecturalAndFallbackObjects(
         const bw = ((maxC - minC + 1) / cols) * 0.9;
         const by = winTop + (minR / rows) * (winBot - winTop);
         const bh = ((maxR - minR + 1) / rows) * (winBot - winTop);
+
+        // A real window is a bright pane framed by darker wall on (almost) all sides.
+        // Large bright wall planes touching the image edge/ceiling are NOT windows.
+        const innerLum = rgbLuminance(
+          sampleTrimmedMedianRgb(rgba, w, h, bx, by, bx + bw, by + bh, { stride: 1 })
+        );
+        const ring = 0.035;
+        const gap = 0.025; // skip the coarse grid-edge uncertainty before sampling the frame
+        const sides: Array<[number, number, number, number]> = [
+          [bx - gap - ring, by, bx - gap, by + bh],
+          [bx + bw + gap, by, bx + bw + gap + ring, by + bh],
+          [bx, by - gap - ring, bx + bw, by - gap],
+          [bx, by + bh + gap, bx + bw, by + bh + gap + ring],
+        ];
+        let framedSides = 0;
+        for (const [sx0, sy0, sx1, sy1] of sides) {
+          if (sx0 < 0.01 || sy0 < 0.01 || sx1 > 0.99 || sy1 > 0.99) continue;
+          const sideLum = rgbLuminance(sampleTrimmedMedianRgb(rgba, w, h, sx0, sy0, sx1, sy1, { stride: 1 }));
+          if (sideLum <= innerLum - 24) framedSides += 1;
+        }
+        if (framedSides < 3 || bw > 0.42) continue;
+
         const proj = projectBoxToRoomCoords({ x: bx, y: by, w: bw, h: bh }, input);
         const isLeft = bx + bw / 2 < markers.leftCornerX;
         found.push({
@@ -617,124 +652,8 @@ function detectArchitecturalAndFallbackObjects(
     }
   }
 
-  // 2. VERTICAL DOOR & FULL-LENGTH MIRROR DETECTION (tall floor-anchored wall silhouettes)
-  {
-    const doorMinH = wallSpan * 0.54;
-    const scanY0 = Math.floor(clamp(ceilY + wallSpan * 0.06, 0.1, floorY - doorMinH) * h);
-    const scanY1 = Math.min(
-      h - 1,
-      Math.max(scanY0 + 8, Math.floor(clamp(floorY + 0.02, 0.4, 0.92) * h))
-    );
-    const intY0 = scanY0 + Math.floor((scanY1 - scanY0) * 0.2);
-    const intY1 = scanY1 - Math.floor((scanY1 - scanY0) * 0.16);
-    const colBgDist = new Float32Array(w);
-    const colMeanLum = new Float32Array(w);
-    const colIntStdDev = new Float32Array(w);
-
-    for (let x = 2; x < w - 2; x++) {
-      const xNorm = x / w;
-      const rawSide =
-        xNorm < markers.leftCornerX
-          ? palette.leftWallRgb
-          : xNorm > markers.rightCornerX
-            ? palette.rightWallRgb
-            : palette.wallRgb;
-      const localWall =
-        rgbDistance(rawSide, palette.wallRgb) > 65 ? palette.wallRgb : rawSide;
-      let diffSum = 0;
-      let lumSum = 0;
-      let cnt = 0;
-      let intLumSum = 0;
-      let intLumSqSum = 0;
-      let intCnt = 0;
-      for (let y = scanY0; y < scanY1; y += 2) {
-        const idx = (y * w + x) * 4;
-        const px: RGB = { r: rgba[idx], g: rgba[idx + 1], b: rgba[idx + 2] };
-        diffSum += rgbDistance(px, localWall);
-        const l = rgbLuminance(px);
-        lumSum += l;
-        cnt += 1;
-        if (y >= intY0 && y < intY1) {
-          intLumSum += l;
-          intLumSqSum += l * l;
-          intCnt += 1;
-        }
-      }
-      colBgDist[x] = cnt > 0 ? diffSum / cnt : 0;
-      colMeanLum[x] = cnt > 0 ? lumSum / cnt : 0;
-      const intMean = intCnt > 0 ? intLumSum / intCnt : 0;
-      colIntStdDev[x] =
-        intCnt > 0 ? Math.sqrt(Math.max(0, intLumSqSum / intCnt - intMean * intMean)) : 0;
-    }
-
-    let dStart = -1;
-    let doorAdded = 0;
-    const tryEmitDoorOrMirror = (startCol: number, endCol: number) => {
-      if (doorAdded >= 2) return;
-      const bw = (endCol - startCol) / w;
-      if (bw < 0.09 || bw > 0.3) return;
-      const bx = startCol / w;
-      const by = scanY0 / h;
-      const bh = (scanY1 - scanY0) / h;
-      const candBox = { x: bx, y: by, w: bw, h: bh };
-      const candArea = Math.max(1e-5, bw * bh);
-      const isCovered = coveredBoxes.some((b) => {
-        const ix = Math.max(0, Math.min(bx + bw, b.x + b.w) - Math.max(bx, b.x));
-        const iy = Math.max(0, Math.min(by + bh, b.y + b.h) - Math.max(by, b.y));
-        return (ix * iy) / candArea > 0.28;
-      });
-      if (isCovered) return;
-
-      let avgIntStd = 0;
-      for (let k = startCol; k < endCol; k++) avgIntStd += colIntStdDev[k];
-      avgIntStd /= Math.max(1, endCol - startCol);
-      const isMirror = avgIntStd >= 26;
-      const proj = projectBoxToRoomCoords(candBox, input);
-      const colors = sampleBoxColors(
-        rgba,
-        w,
-        h,
-        bx,
-        by,
-        bw,
-        bh,
-        isMirror ? '#272a30' : palette.trimColor,
-        isMirror ? '#cbd5e1' : '#8c8378'
-      );
-      const isLeft = bx + bw / 2 < markers.leftCornerX;
-      found.push({
-        type: isMirror ? 'mirror' : 'door',
-        label: isMirror ? 'Full-Length Mirror' : 'Room Door',
-        x: isLeft ? -input.roomWidthM / 2 + 0.05 : proj.roomX,
-        z: isLeft ? proj.roomZ : -input.roomDepthM / 2 + 0.05,
-        widthM: clamp(proj.estWidthM, 0.72, 1.15),
-        depthM: isMirror ? 0.05 : 0.08,
-        heightM: clamp(proj.estHeightM, 1.65, 2.15),
-        rotationDeg: isLeft ? 90 : 0,
-        primaryColor: colors.primaryColor,
-        secondaryColor: colors.secondaryColor,
-        inferred: false,
-        confidence: 0.79,
-      });
-      coveredBoxes.push(candBox);
-      doorAdded += 1;
-    };
-
-    for (let x = 2; x <= w - 2 && doorAdded < 2; x++) {
-      const active = x < w - 2 && colBgDist[x] >= 30;
-      const sharpBoundary =
-        active && dStart !== -1 && Math.abs(colMeanLum[x] - colMeanLum[x - 1]) >= 42;
-      if (sharpBoundary) {
-        tryEmitDoorOrMirror(dStart, x);
-        dStart = x;
-      } else if (active && dStart === -1) {
-        dStart = x;
-      } else if (!active && dStart !== -1) {
-        tryEmitDoorOrMirror(dStart, x);
-        dStart = -1;
-      }
-    }
-  }
+  // 2. (Removed) Pixel-only door/mirror synthesis: plain wall panels and shading were misread as doors.
+  //    Doors/mirrors now come only from semantic detections, never from raw colour blobs.
 
   // 3. 2D CONNECTED-COMPONENT FOREGROUND FURNITURE DETECTOR (per-wall adaptive background + edge energy)
   if (needFurnitureFallback) {
@@ -1037,11 +956,17 @@ function detectArchitecturalAndFallbackObjects(
       }
     }
   }
-  if (rugCells >= 4 && rugCells <= 26 && rugMaxC >= rugMinC) {
+  if (rugCells >= 4 && rugCells <= 22 && rugMaxC >= rugMinC) {
     const bx = 0.1 + (rugMinC / rugCols) * 0.8;
     const bw = ((rugMaxC - rugMinC + 1) / rugCols) * 0.8;
     const by = rugTop + (rugMinR / rugRows) * (rugBot - rugTop);
     const bh = ((rugMaxR - rugMinR + 1) / rugRows) * (rugBot - rugTop);
+
+    // A rug is a compact patch that is clearly different from the plain floor around it.
+    const rugRgb = sampleTrimmedMedianRgb(rgba, w, h, bx, by, bx + bw, by + bh, { stride: 1 });
+    const rugDist = rgbDistance(rugRgb, palette.floorRgb);
+    const compact = bw < 0.62 && rugCells / ((rugMaxC - rugMinC + 1) * (rugMaxR - rugMinR + 1)) >= 0.6;
+    if (rugDist < 48 || !compact) return found;
     const proj = projectBoxToRoomCoords({ x: bx, y: by, w: bw, h: bh }, input);
     const colors = sampleBoxColors(rgba, w, h, bx, by, bw, bh, '#b7ab9a', '#6d655c');
     const isMat = bw / Math.max(0.05, bh) >= 3.2 && proj.estWidthM < 1.95;
@@ -1083,6 +1008,16 @@ const COCO_FURNITURE_CLASSES = new Set([
   'clock',
   'vase',
   'bench',
+  // Open-vocabulary OWL-ViT indoor classes
+  'desk',
+  'wardrobe',
+  'cabinet',
+  'bookshelf',
+  'door',
+  'window',
+  'mirror',
+  'rug',
+  'wall art',
 ]);
 
 const DESK_CUE_CLASSES = new Set(['laptop', 'keyboard', 'mouse', 'bottle', 'cup']);
@@ -1167,16 +1102,20 @@ function mapDetectionsToRoomObjects(
   const valid = mergeTiledDetectionsWithNMS(
     detections.filter((d) => {
       const cls = d.className.toLowerCase();
-      if (!COCO_FURNITURE_CLASSES.has(cls)) return false;
-      const minGate = DESK_CUE_CLASSES.has(cls) || cls === 'book' || cls === 'clock' || cls === 'vase'
-        ? 0.18
-        : 0.22;
+      if (!COCO_FURNITURE_CLASSES.has(cls) && !OPEN_VOCAB_CLASS_NAMES.has(cls)) return false;
+      const minGate =
+        DESK_CUE_CLASSES.has(cls) || cls === 'book' || cls === 'clock' || cls === 'vase'
+          ? 0.14
+          : 0.18;
       return d.score >= minGate;
     })
-  ).slice(0, 18);
+  ).slice(0, 22).map((d) =>
+    // A small "tv" low in frame is almost always a desk monitor -> model the workstation, not a TV console.
+    d.className === 'tv' && d.w < 0.2 && d.y + d.h > 0.5 ? { ...d, className: 'laptop' } : d
+  );
 
   const deskCueBoxes = valid.filter((d) => DESK_CUE_CLASSES.has(d.className));
-  const tableBoxes = valid.filter((d) => d.className === 'dining table');
+  const tableBoxes = valid.filter((d) => d.className === 'dining table' || d.className === 'desk');
   const bookBoxes = valid.filter((d) => d.className === 'book');
 
   const objects: DraftReplicaObject[] = [];
@@ -1323,6 +1262,103 @@ function mapDetectionsToRoomObjects(
         fallbackSecondary = '#f4e6cc';
         break;
       }
+      case 'desk': {
+        deskCueBoxes.forEach((cue, idx) => {
+          if (Math.abs(cue.x + cue.w / 2 - (det.x + det.w / 2)) < 0.24) {
+            consumedDeskCueIdx.add(idx);
+          }
+        });
+        type = 'desk';
+        label = 'Work Desk';
+        widthM = clamp(proj.estWidthM, 1.0, 1.85);
+        depthM = 0.65;
+        heightM = clamp(proj.estHeightM, 0.7, 0.82);
+        fallbackPrimary = '#8b6547';
+        fallbackSecondary = '#2c3038';
+        break;
+      }
+      case 'wardrobe': {
+        type = 'wardrobe';
+        label = 'Wardrobe / Cupboard';
+        widthM = clamp(proj.estWidthM, 0.75, 1.85);
+        depthM = 0.56;
+        heightM = clamp(proj.estHeightM, 1.55, 2.25);
+        fallbackPrimary = '#7a6855';
+        fallbackSecondary = '#2f333b';
+        break;
+      }
+      case 'cabinet': {
+        const isOverhead = det.y + det.h < input.markers.floorY - 0.12;
+        type = 'cabinet';
+        label = isOverhead ? 'Wall Cupboard' : 'Storage Cabinet';
+        widthM = clamp(proj.estWidthM, 0.7, 2.1);
+        depthM = 0.45;
+        heightM = clamp(proj.estHeightM, 0.65, 1.35);
+        fallbackPrimary = '#76787d';
+        fallbackSecondary = '#32363f';
+        break;
+      }
+      case 'bookshelf': {
+        type = 'bookshelf';
+        label = 'Bookshelf / Shelving';
+        widthM = clamp(proj.estWidthM, 0.75, 1.8);
+        depthM = 0.36;
+        heightM = clamp(proj.estHeightM, 1.1, 2.05);
+        fallbackPrimary = '#8a6b4e';
+        fallbackSecondary = '#343842';
+        break;
+      }
+      case 'door': {
+        type = 'door';
+        label = 'Room Door';
+        widthM = clamp(proj.estWidthM, 0.75, 1.2);
+        depthM = 0.08;
+        heightM = clamp(proj.estHeightM, 1.75, 2.2);
+        fallbackPrimary = '#5c4d42';
+        fallbackSecondary = '#8c8378';
+        break;
+      }
+      case 'window': {
+        type = 'window';
+        label = 'Window';
+        widthM = clamp(proj.estWidthM, 0.75, 2.2);
+        depthM = 0.1;
+        heightM = clamp(proj.estHeightM, 0.8, 1.8);
+        fallbackPrimary = '#d8d4cc';
+        fallbackSecondary = '#b9d6f2';
+        break;
+      }
+      case 'mirror': {
+        type = 'mirror';
+        label = 'Wall Mirror';
+        widthM = clamp(proj.estWidthM, 0.55, 1.35);
+        depthM = 0.05;
+        heightM = clamp(proj.estHeightM, 0.9, 1.95);
+        fallbackPrimary = '#272a30';
+        fallbackSecondary = '#cbd5e1';
+        break;
+      }
+      case 'rug': {
+        const isMat = det.w / Math.max(0.05, det.h) >= 2.8 && proj.estWidthM < 1.85;
+        type = isMat ? 'fitness-mat' : 'rug';
+        label = isMat ? 'Floor Mat' : 'Area Rug';
+        widthM = isMat ? clamp(proj.estWidthM, 1.1, 1.8) : clamp(proj.estWidthM, 1.1, 2.4);
+        depthM = isMat ? 0.68 : clamp(proj.estWidthM * 0.7, 0.8, 1.8);
+        heightM = 0.02;
+        fallbackPrimary = '#9e856d';
+        fallbackSecondary = '#6d655c';
+        break;
+      }
+      case 'wall art': {
+        type = 'wall-art';
+        label = 'Wall Art / Sign';
+        widthM = clamp(proj.estWidthM, 0.45, 1.45);
+        depthM = 0.04;
+        heightM = clamp(proj.estHeightM, 0.4, 1.15);
+        fallbackPrimary = '#2b2d34';
+        fallbackSecondary = '#d8cfc0';
+        break;
+      }
       default:
         break;
     }
@@ -1339,15 +1375,32 @@ function mapDetectionsToRoomObjects(
       fallbackSecondary
     );
 
+    const isWallFixture =
+      type === 'door' || type === 'window' || type === 'mirror' || type === 'wall-art';
+    const isLeftWall = det.x + det.w / 2 < input.markers.leftCornerX;
+    const objX = isWallFixture
+      ? isLeftWall
+        ? -input.roomWidthM / 2 + 0.05
+        : proj.roomX
+      : proj.roomX;
+    const objZ = isWallFixture
+      ? isLeftWall
+        ? proj.roomZ
+        : -input.roomDepthM / 2 + 0.05
+      : type === 'rug' || type === 'fitness-mat'
+        ? clamp(proj.roomZ, -input.roomDepthM * 0.34, input.roomDepthM * 0.34)
+        : proj.roomZ;
+    const objRot = isWallFixture ? (isLeftWall ? 90 : 0) : proj.rotationDeg;
+
     objects.push({
       type,
       label,
-      x: proj.roomX,
-      z: proj.roomZ,
+      x: objX,
+      z: objZ,
       widthM,
       depthM,
       heightM,
-      rotationDeg: proj.rotationDeg,
+      rotationDeg: objRot,
       primaryColor: colors.primaryColor,
       secondaryColor: colors.secondaryColor,
       inferred: false,
@@ -1680,8 +1733,8 @@ export function reconstructRoomLocallyFromPixels(
     input
   );
 
-  // Always run pure-CV architectural + uncovered-region furniture detectors
-  // so non-COCO fixtures (wardrobes, bookshelves, doors, mirrors, side cabinets) are never skipped!
+  // Pixel-CV furniture silhouettes are only a fallback for when the semantic detector found
+  // (almost) nothing; otherwise they add false objects (wall panels, shading, reflections).
   const cvObjects = detectArchitecturalAndFallbackObjects(
     rgba,
     width,
@@ -1689,15 +1742,23 @@ export function reconstructRoomLocallyFromPixels(
     palette,
     input,
     coveredBoxes,
-    true
+    cocoObjects.length < 2
   );
 
   const visibleObjects = [...cocoObjects, ...cvObjects];
   const roomType = inferRoomType(visibleObjects);
-  const unseenCompletions = buildUnseenAreaCompletions(visibleObjects, roomType, palette, input);
+  // Invented "unseen area" furniture is opt-in only: the replica must match what was actually seen.
+  const unseenCompletions = input.includeUnseenCompletions
+    ? buildUnseenAreaCompletions(visibleObjects, roomType, palette, input)
+    : [];
 
   const allObjects = [...visibleObjects, ...unseenCompletions];
-  const engine: 'coco-ssd+cv' | 'pixel-cv' = rawDetections.length > 0 ? 'coco-ssd+cv' : 'pixel-cv';
+  const engine: LocalRoomScanResult['detectorEngine'] =
+    rawDetections.length > 0
+      ? input.openVocabUsed
+        ? 'owlvit+coco+cv'
+        : 'coco-ssd+cv'
+      : 'pixel-cv';
 
   const summary =
     visibleObjects.length > 0
@@ -1786,22 +1847,23 @@ async function getLocalCocoSsdModel(timeoutMs = 9000): Promise<CocoSsdModelLike 
 }
 
 /**
- * Silently warms up TensorFlow.js + MobileNetV2 COCO-SSD in the background as soon
- * as AR opens so object detection completes instantaneously on "Use This Fit".
+ * Silently warms up both on-device OWL-ViT (open-vocabulary) and MobileNetV2 COCO-SSD
+ * in the background as soon as AR opens so object detection is ready on "Use This Fit".
  */
 export function preloadLocalCocoSsdModel(): void {
   if (typeof window === 'undefined') return;
   void getLocalCocoSsdModel(15000);
+  preloadOpenVocabDetector();
 }
 
 /**
  * Full client-side browser scanner: decodes the captured camera frame or uploaded room photo,
- * runs multi-scale tiled on-device TensorFlow.js COCO-SSD object detection (with instant pixel-CV),
- * samples true room colors/materials, and builds the complete 3D RoomReplicaScene with zero API calls.
+ * runs open-vocabulary OWL-ViT + multi-scale tiled COCO-SSD object detection in parallel,
+ * samples true room colors/materials, and builds the complete 3D RoomReplicaScene with zero API keys.
  */
 export async function scanRoomLocallyFromDataUrl(
   imageDataUrl: string,
-  input: Omit<LocalRoomScanInput, 'externalDetections' | 'previewDataUrl'>,
+  input: Omit<LocalRoomScanInput, 'externalDetections' | 'previewDataUrl' | 'openVocabUsed'>,
   onStage?: (stageIndex: number) => void
 ): Promise<LocalRoomScanResult> {
   onStage?.(0);
@@ -1816,7 +1878,7 @@ export async function scanRoomLocallyFromDataUrl(
   const natW = Math.max(64, img.naturalWidth || 640);
   const natH = Math.max(64, img.naturalHeight || 480);
 
-  // Canvas 1: Crisp 640px canvas for multi-scale on-device COCO-SSD object detection
+  // Canvas 1: Crisp 640px canvas for OWL-ViT + multi-scale tiled COCO-SSD object detection
   const detScale = Math.min(1, 640 / Math.max(natW, natH));
   const detW = Math.max(64, Math.round(natW * detScale));
   const detH = Math.max(64, Math.round(natH * detScale));
@@ -1828,6 +1890,7 @@ export async function scanRoomLocallyFromDataUrl(
     throw new Error('Browser canvas unavailable to analyze room frame.');
   }
   detCtx.drawImage(img, 0, 0, detW, detH);
+  const detDataUrl = detCanvas.toDataURL('image/jpeg', 0.88);
 
   // Canvas 2: Fast 160x120 pixel buffer for deterministic surface, color, and architectural CV
   const cvW = 160;
@@ -1844,13 +1907,13 @@ export async function scanRoomLocallyFromDataUrl(
 
   onStage?.(1);
 
-  // Run multi-scale tiled COCO-SSD (full frame + left/right overlapping tiles) merged with class-aware NMS
-  let externalDetections: RawObjectDetection[] = [];
-  try {
-    const model = await getLocalCocoSsdModel(9000);
-    if (model) {
+  // Run open-vocabulary OWL-ViT + multi-scale tiled COCO-SSD in parallel on-device
+  const runCocoTiled = async (): Promise<RawObjectDetection[]> => {
+    try {
+      const model = await getLocalCocoSsdModel(9000);
+      if (!model) return [];
       const collected: RawObjectDetection[] = [];
-      const fullPreds = await model.detect(detCanvas, 24, 0.2);
+      const fullPreds = await model.detect(detCanvas, 24, 0.22);
       for (const p of fullPreds) {
         collected.push({
           className: p.class,
@@ -1877,7 +1940,7 @@ export async function scanRoomLocallyFromDataUrl(
           tileCanvas.width = sw;
           tileCanvas.height = sh;
           tileCtx.drawImage(detCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
-          const tilePreds = await model.detect(tileCanvas, 16, 0.2);
+          const tilePreds = await model.detect(tileCanvas, 16, 0.22);
           for (const p of tilePreds) {
             collected.push({
               className: p.class,
@@ -1890,12 +1953,24 @@ export async function scanRoomLocallyFromDataUrl(
           }
         }
       }
-
-      externalDetections = mergeTiledDetectionsWithNMS(collected);
+      return mergeTiledDetectionsWithNMS(collected);
+    } catch {
+      return [];
     }
-  } catch {
-    externalDetections = [];
-  }
+  };
+
+  const [owlDetections, cocoDetections] = await Promise.all([
+    detectOpenVocabObjects(detDataUrl, detW, detH, {
+      timeoutMs: 35000,
+      customPrompts: input.customPrompts,
+    }),
+    runCocoTiled(),
+  ]);
+
+  const externalDetections = suppressCrossClassDuplicates(
+    mergeTiledDetectionsWithNMS([...owlDetections, ...cocoDetections]),
+    0.72
+  );
 
   onStage?.(2);
 
@@ -1903,6 +1978,7 @@ export async function scanRoomLocallyFromDataUrl(
     ...input,
     previewDataUrl: imageDataUrl,
     externalDetections,
+    openVocabUsed: owlDetections.length > 0,
   });
 
   onStage?.(3);
