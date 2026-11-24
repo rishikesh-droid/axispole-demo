@@ -1,4 +1,5 @@
 import type {
+  RoomArchitecturalFeatureType,
   RoomReplicaFloorMaterial,
   RoomReplicaLightingMood,
   RoomReplicaObjectType,
@@ -38,6 +39,10 @@ export interface SpatialDraftObject {
   secondaryColor: string;
   inferred: boolean;
   confidence: number;
+  variant?: string;
+  hasMonitor?: boolean;
+  bayCount?: number;
+  doorCount?: number;
 }
 
 type SemanticCategory =
@@ -586,8 +591,11 @@ function samplePaletteFromMasks(
 ): {
   ceilingColor: string;
   wallColor: string;
+  leftWallColor?: string;
+  upperWallColor?: string;
   accentWallColor: string;
   floorColor: string;
+  groutColor?: string;
   trimColor: string;
   floorMaterial: RoomReplicaFloorMaterial;
   lightingMood: RoomReplicaLightingMood;
@@ -764,13 +772,29 @@ function samplePaletteFromMasks(
           ? 'cool'
           : 'neutral';
 
+  const upperWallRgb = medianRgb(
+    sampleFromMask(
+      wallSeg?.mask,
+      markers.leftCornerX + 0.04,
+      clamp(markers.ceilingY + 0.008, 0.08, 0.38),
+      markers.rightCornerX - 0.04,
+      clamp(markers.ceilingY + 0.085, 0.14, 0.44),
+      centerWallRgb
+    )
+  );
+  const upperDiff = rgbDistance(upperWallRgb, centerWallRgb);
+
   const trimRgb = blendRgb(centerWallRgb, { r: 238, g: 235, b: 228 }, 0.45);
+  const groutRgb = adjustRgb(floorRgb, 0.78);
 
   return {
     ceilingColor: rgbToHex(ceilRgb),
     wallColor: rgbToHex(centerWallRgb),
+    ...(leftDiff >= 18 ? { leftWallColor: rgbToHex(leftWallRgb) } : {}),
+    ...(upperDiff >= 22 ? { upperWallColor: rgbToHex(upperWallRgb) } : {}),
     accentWallColor: rgbToHex(accentWallRgb),
     floorColor: rgbToHex(floorRgb),
+    ...(floorMaterial === 'tile' ? { groutColor: rgbToHex(groutRgb) } : {}),
     trimColor: rgbToHex(trimRgb),
     floorMaterial,
     lightingMood,
@@ -1220,6 +1244,7 @@ export function reconstructRoomFromVisionAnalysis(
         box.z = Number(cz.toFixed(2));
         box.widthM = Number(wM.toFixed(2));
         box.depthM = Number(dM.toFixed(2));
+        box.rotationDeg = 0;
       }
     }
 
@@ -1240,6 +1265,19 @@ export function reconstructRoomFromVisionAnalysis(
 
     const fb = DEFAULT_FALLBACK_COLORS[type];
     const colors = sampleMaskColors(rgba, rgbaW, rgbaH, blob.pixels, fb.p, fb.s);
+    const hasMonitorOverDesk =
+      type === 'desk' &&
+      monitorCues.some(
+        (m) => m.blob.maxU > blob.minU - 0.06 && m.blob.minU < blob.maxU + 0.06
+      );
+    const variant =
+      type === 'desk' && !hasMonitorOverDesk && box.widthM >= 1.45
+        ? 'built-in-bays'
+        : type === 'sofa' && box.widthM <= 1.18
+          ? 'armchair'
+          : type === 'plant' && box.heightM >= 1.35
+            ? 'tall-tree'
+            : undefined;
 
     rawObjects.push({
       blob,
@@ -1256,6 +1294,8 @@ export function reconstructRoomFromVisionAnalysis(
         secondaryColor: colors.secondaryColor,
         inferred: false,
         confidence: clamp(blob.score, 0.55, 0.98),
+        ...(variant ? { variant } : {}),
+        ...(type === 'desk' ? { hasMonitor: hasMonitorOverDesk } : {}),
       },
     });
   }
@@ -1439,14 +1479,20 @@ export function reconstructRoomFromVisionAnalysis(
     }
   }
 
-  // Remove any hallucinated windows that overlap an open doorway, touch the floor, or contain a deep doorway void
+  // Remove any hallucinated windows that overlap/sit next to an open doorway, touch the floor, or contain a deep doorway void
   for (let i = rawObjects.length - 1; i >= 0; i--) {
     const item = rawObjects[i];
     if (item.draft.type !== 'window') continue;
-    const touchesFloor = item.blob.maxV >= markers.floorY - 0.14;
-    const overlapsDoorway = doorwayBoxes.some(
-      (d) => item.blob.maxU > d.minU - 0.08 && item.blob.minU < d.maxU + 0.08
-    );
+    const touchesFloor = item.blob.maxV >= markers.floorY - 0.16;
+    const overlapsDoorway =
+      doorwayBoxes.some(
+        (d) => item.blob.maxU > d.minU - 0.1 && item.blob.minU < d.maxU + 0.1
+      ) ||
+      rawObjects.some(
+        (o) =>
+          o.draft.type === 'door' &&
+          Math.abs(o.draft.x - item.draft.x) <= Math.max(0.82, o.draft.widthM * 0.8)
+      );
     let minWinDisp = Infinity;
     for (let k = 0; k < item.blob.pixels.length; k += Math.max(1, Math.floor(item.blob.pixels.length / 40))) {
       const p = item.blob.pixels[k];
@@ -1585,9 +1631,13 @@ export function reconstructRoomFromVisionAnalysis(
             const px = clamp(Math.floor(u * rgbaW), 0, rgbaW - 1);
             const py = clamp(Math.floor(vTop * rgbaH), 0, rgbaH - 1);
             const i = (py * rgbaW + px) * 4;
-            const lum = 0.299 * rgba[i] + 0.587 * rgba[i + 1] + 0.114 * rgba[i + 2];
-            // Sample sunlit tabletop band (skip dark black chairs / under-desk cavity)
-            if (lum >= 55) {
+            const r = rgba[i];
+            const gr = rgba[i + 1];
+            const b = rgba[i + 2];
+            const lum = 0.299 * r + 0.587 * gr + 0.114 * b;
+            // Sample desk laminate surface (skip dark black chairs & warm cardboard boxes)
+            const isWarmBox = r > gr + 16 && r > b + 32;
+            if (lum >= 55 && !isWarmBox) {
               topSamplePx.push({ u, v: vTop });
             }
             underSamplePx.push({ u, v: Math.min(markers.floorY - 0.02, vTop + 0.08) });
@@ -1638,6 +1688,9 @@ export function reconstructRoomFromVisionAnalysis(
           secondaryColor: deskUnder.primaryColor,
           inferred: false,
           confidence: 0.87,
+          variant: 'built-in-bays',
+          hasMonitor: false,
+          bayCount: deskWidthM >= 1.65 ? 3 : 2,
         },
       });
     }
@@ -1848,8 +1901,160 @@ export function reconstructRoomFromVisionAnalysis(
             secondaryColor: cabColors.secondaryColor,
             inferred: false,
             confidence: 0.82,
+            variant: 'wall-cupboard',
+            doorCount: Math.max(
+              verticalDoorSeams >= 2 ? Math.min(5, verticalDoorSeams + 1) : 2,
+              cabW >= 1.65 ? 4 : cabW >= 1.15 ? 3 : 2
+            ),
           },
         });
+
+        // Inspect rows near overhead cupboard bottom for the brightest horizontal open shelf ledge + small plants
+        const searchV0 = clamp(v1 - 0.035, 0.25, 0.62);
+        const searchV1 = clamp(v1 + 0.085, searchV0 + 0.04, 0.72);
+        let bestShelfV = v1 + 0.025;
+        let bestRowLum = 0;
+        let bestRowBrightFrac = 0;
+        for (let step = 0; step < 8; step++) {
+          const testV = searchV0 + ((step + 0.5) / 8) * (searchV1 - searchV0);
+          const py = clamp(Math.floor(testV * rgbaH), 0, rgbaH - 1);
+          let lumSum = 0;
+          let brightN = 0;
+          let tot = 0;
+          for (let gx = bestCabStart; gx <= bestCabEnd; gx++) {
+            const u = (gx + 0.5) / gW;
+            const px = clamp(Math.floor(u * rgbaW), 0, rgbaW - 1);
+            const idx = (py * rgbaW + px) * 4;
+            const lum = 0.299 * rgba[idx] + 0.587 * rgba[idx + 1] + 0.114 * rgba[idx + 2];
+            lumSum += lum;
+            if (lum >= 158) brightN++;
+            tot++;
+          }
+          const avgL = tot > 0 ? lumSum / tot : 0;
+          if (avgL > bestRowLum && tot > 0) {
+            bestRowLum = avgL;
+            bestRowBrightFrac = brightN / tot;
+            bestShelfV = testV;
+          }
+        }
+        const shelfV0 = clamp(bestShelfV - 0.02, 0.25, 0.64);
+        const shelfV1 = clamp(bestShelfV + 0.025, shelfV0 + 0.03, 0.7);
+        const shelfSamplePx: Array<{ u: number; v: number }> = [];
+        for (let gx = bestCabStart; gx <= bestCabEnd; gx++) {
+          const u = (gx + 0.5) / gW;
+          const px = clamp(Math.floor(u * rgbaW), 0, rgbaW - 1);
+          const py = clamp(Math.floor(bestShelfV * rgbaH), 0, rgbaH - 1);
+          const idx = (py * rgbaW + px) * 4;
+          const lum = 0.299 * rgba[idx] + 0.587 * rgba[idx + 1] + 0.114 * rgba[idx + 2];
+          if (lum >= 152) shelfSamplePx.push({ u, v: bestShelfV });
+        }
+        if (bestRowBrightFrac >= 0.48 && bestRowLum >= 162 && shelfSamplePx.length >= 4) {
+          const shelfCols = sampleMaskColors(rgba, rgbaW, rgbaH, shelfSamplePx, '#ecebe6', '#d6d4ce');
+          const shelfElev = clamp(elevM - 0.28, 0.92, elevM - 0.18);
+          rawObjects.push({
+            blob: {
+              category: 'bookshelf',
+              score: 0.8,
+              pixels: [],
+              minU: u0,
+              maxU: u1,
+              minV: shelfV0,
+              maxV: shelfV1,
+            },
+            draft: {
+              type: 'bookshelf',
+              label: 'Open Wall Shelf',
+              x: Number(cabX.toFixed(2)),
+              z: Number((-roomDepthM / 2 + 0.14).toFixed(2)),
+              widthM: Number(cabW.toFixed(2)),
+              depthM: 0.24,
+              heightM: 0.25,
+              elevationM: Number(shelfElev.toFixed(2)),
+              rotationDeg: 0,
+              primaryColor: shelfCols.primaryColor,
+              secondaryColor: shelfCols.secondaryColor,
+              inferred: false,
+              confidence: 0.8,
+              variant: 'open-wall-ledge',
+              bayCount: cabW >= 1.55 ? 3 : 2,
+            },
+          });
+
+          // High-resolution horizontal pixel scan along the shelf ledge for small potted green plants
+          const sxStart = clamp(Math.floor((u0 + 0.015) * rgbaW), 0, rgbaW - 1);
+          const sxEnd = clamp(Math.ceil((u1 - 0.015) * rgbaW), sxStart + 2, rgbaW);
+          const syStart = clamp(Math.floor((shelfV0 - 0.045) * rgbaH), 0, rgbaH - 1);
+          const syEnd = clamp(Math.ceil((shelfV1 + 0.025) * rgbaH), syStart + 2, rgbaH);
+          const plantClusterUs: number[] = [];
+          let inGreenCluster = false;
+          let clusterSumX = 0;
+          let clusterCols = 0;
+          let clusterGreenTotal = 0;
+          for (let px = sxStart; px <= sxEnd; px += 2) {
+            let greenPx = 0;
+            if (px < sxEnd) {
+              for (let py = syStart; py < syEnd; py++) {
+                const idx = (py * rgbaW + px) * 4;
+                const r = rgba[idx];
+                const gr = rgba[idx + 1];
+                const b = rgba[idx + 2];
+                if (gr > r + 4 && gr > b + 9 && gr >= 40 && gr <= 190) {
+                  greenPx++;
+                }
+              }
+            }
+            if (greenPx >= 1) {
+              inGreenCluster = true;
+              clusterSumX += px;
+              clusterCols++;
+              clusterGreenTotal += greenPx;
+            } else if (inGreenCluster) {
+              if (clusterCols >= 2 && clusterGreenTotal >= 4) {
+                const centerU = (clusterSumX / clusterCols) / rgbaW;
+                if (
+                  plantClusterUs.length === 0 ||
+                  centerU - plantClusterUs[plantClusterUs.length - 1] >= (u1 - u0) * 0.14
+                ) {
+                  plantClusterUs.push(centerU);
+                }
+              }
+              inGreenCluster = false;
+              clusterSumX = 0;
+              clusterCols = 0;
+              clusterGreenTotal = 0;
+            }
+          }
+          for (const pu of plantClusterUs.slice(0, 4)) {
+            const pWorld = unprojectPixelWorld(pu, shelfV0, wallDepthAnchorM, markers);
+            rawObjects.push({
+              blob: {
+                category: 'plant',
+                score: 0.78,
+                pixels: [],
+                minU: pu - 0.02,
+                maxU: pu + 0.02,
+                minV: shelfV0,
+                maxV: shelfV0 + 0.04,
+              },
+              draft: {
+                type: 'plant',
+                label: 'Shelf Plant',
+                x: Number(clamp(pWorld.x - centerXOffset, -roomWidthM / 2 + 0.2, roomWidthM / 2 - 0.2).toFixed(2)),
+                z: Number((-roomDepthM / 2 + 0.14).toFixed(2)),
+                widthM: 0.16,
+                depthM: 0.16,
+                heightM: 0.2,
+                elevationM: Number((shelfElev + 0.24).toFixed(2)),
+                rotationDeg: 0,
+                primaryColor: '#4c7333',
+                secondaryColor: '#23262d',
+                inferred: false,
+                confidence: 0.78,
+                variant: 'small-shelf-pot',
+              },
+            });
+          }
+        }
       }
     }
   }
@@ -1874,6 +2079,7 @@ export function reconstructRoomFromVisionAnalysis(
       if (hasMonitor) {
         item.draft.type = 'desk';
         item.draft.label = 'Work Desk';
+        item.draft.hasMonitor = true;
         item.draft.widthM = Number(
           clamp(item.draft.widthM, 0.85, Math.min(roomWidthM * 0.65, 2.2)).toFixed(2)
         );
@@ -1885,12 +2091,15 @@ export function reconstructRoomFromVisionAnalysis(
 
   monitorCues.forEach((m, idx) => {
     if (consumedMonitors.has(idx)) return;
-    const nearbyDesk = rawObjects.some(
+    const nearbyDesk = rawObjects.find(
       (o) =>
         o.draft.type === 'desk' &&
         Math.hypot(o.draft.x - m.box.x, o.draft.z - m.box.z) <= 1.1
     );
-    if (nearbyDesk) return;
+    if (nearbyDesk) {
+      nearbyDesk.draft.hasMonitor = true;
+      return;
+    }
 
     const fb = DEFAULT_FALLBACK_COLORS.desk;
     const colors = sampleMaskColors(rgba, rgbaW, rgbaH, m.blob.pixels, fb.p, fb.s);
@@ -1909,6 +2118,7 @@ export function reconstructRoomFromVisionAnalysis(
         secondaryColor: colors.secondaryColor,
         inferred: false,
         confidence: clamp(m.blob.score * 0.92, 0.58, 0.94),
+        hasMonitor: true,
       },
     });
   });
@@ -1963,6 +2173,284 @@ export function reconstructRoomFromVisionAnalysis(
     }
   }
 
+  // 7. Pure-CV Architectural Detail Extraction (Zero Cloud AI):
+  //    - door-garland: vivid orange/yellow floral garland hanging on doorway jamb
+  //    - desk-box: protruding cardboard/paper box sitting on desktop
+  //    - ceiling-fan: dark ceiling motor/downrod centered on bright ceiling plane
+  //    - soffit-beam: overhead foreground dropped structural soffit header
+  const architecturalFeatures: Array<{
+    type: RoomArchitecturalFeatureType;
+    x: number;
+    z: number;
+    widthM: number;
+    depthM: number;
+    heightM: number;
+    elevationM: number;
+    rotationDeg: number;
+    primaryColor: string;
+    secondaryColor: string;
+    count?: number;
+  }> = [];
+
+  // 7a) Doorway marigold/floral garland detector
+  for (const dBox of doorwayBoxes) {
+    const doorObj = rawObjects.find(
+      (o) => o.draft.type === 'door' && Math.abs(o.draft.x - dBox.x) < 0.3
+    );
+    if (!doorObj) continue;
+    const sides: Array<{ u0: number; u1: number; sideX: number }> = [
+      {
+        u0: clamp(dBox.minU - 0.035, 0.02, 0.96),
+        u1: clamp(dBox.minU + 0.045, 0.04, 0.98),
+        sideX: dBox.x - dBox.w * 0.48,
+      },
+      {
+        u0: clamp(dBox.maxU - 0.045, 0.02, 0.96),
+        u1: clamp(dBox.maxU + 0.035, 0.04, 0.98),
+        sideX: dBox.x + dBox.w * 0.48,
+      },
+    ];
+    for (const s of sides) {
+      const gx0 = clamp(Math.floor(s.u0 * rgbaW), 0, rgbaW - 1);
+      const gx1 = clamp(Math.ceil(s.u1 * rgbaW), gx0 + 1, rgbaW);
+      const gy0 = clamp(Math.floor((dBox.minV + 0.04) * rgbaH), 0, rgbaH - 1);
+      const gy1 = clamp(Math.ceil((dBox.minV + (dBox.maxV - dBox.minV) * 0.78) * rgbaH), gy0 + 2, rgbaH);
+      let warmHits = 0;
+      let tot = 0;
+      const warmPx: RGB[] = [];
+      for (let py = gy0; py < gy1; py += 2) {
+        for (let px = gx0; px < gx1; px += 2) {
+          tot++;
+          const idx = (py * rgbaW + px) * 4;
+          const r = rgba[idx];
+          const gr = rgba[idx + 1];
+          const b = rgba[idx + 2];
+          if (r >= 150 && r > b + 55 && gr >= 35) {
+            warmHits++;
+            warmPx.push({ r, g: gr, b });
+          }
+        }
+      }
+      if (tot >= 20 && warmHits / tot >= 0.09 && warmPx.length >= 6) {
+        const sortedR = warmPx.map((p) => p.r).sort((a, b) => a - b);
+        const sortedG = warmPx.map((p) => p.g).sort((a, b) => a - b);
+        const sortedB = warmPx.map((p) => p.b).sort((a, b) => a - b);
+        const orangeCol = rgbToHex({
+          r: percentileSorted(sortedR, 0.55),
+          g: percentileSorted(sortedG, 0.35),
+          b: percentileSorted(sortedB, 0.3),
+        });
+        const yellowCol = rgbToHex({
+          r: percentileSorted(sortedR, 0.82),
+          g: percentileSorted(sortedG, 0.82),
+          b: percentileSorted(sortedB, 0.35),
+        });
+        architecturalFeatures.push({
+          type: 'door-garland',
+          x: Number(clamp(s.sideX, -roomWidthM / 2 + 0.08, roomWidthM / 2 - 0.08).toFixed(2)),
+          z: Number((-roomDepthM / 2 + 0.09).toFixed(2)),
+          widthM: 0.08,
+          depthM: 0.08,
+          heightM: Number(clamp(doorObj.draft.heightM * 0.68, 0.9, 1.55).toFixed(2)),
+          elevationM: Number(clamp(doorObj.draft.heightM * 0.28, 0.45, 0.9).toFixed(2)),
+          rotationDeg: 0,
+          primaryColor: orangeCol,
+          secondaryColor: yellowCol,
+        });
+        break;
+      }
+    }
+  }
+
+  // Remove spurious tiny flat "table" blobs that sit on top of a detected floor rug
+  const rugBlobs = rawObjects.filter((o) => o.draft.type === 'rug' || o.draft.type === 'fitness-mat');
+  for (let i = rawObjects.length - 1; i >= 0; i--) {
+    const item = rawObjects[i];
+    if (item.draft.type !== 'table') continue;
+    const isFloorRugOverlap =
+      item.blob.minV >= markers.floorY - 0.02 &&
+      rugBlobs.some(
+        (r) => item.blob.maxU > r.blob.minU - 0.04 && item.blob.minU < r.blob.maxU + 0.04
+      );
+    if (isFloorRugOverlap || (item.draft.widthM <= 0.45 && item.blob.minV >= markers.floorY)) {
+      rawObjects.splice(i, 1);
+    }
+  }
+
+  // 7b) Protruding cardboard/package box sitting on built-in desk
+  const builtInDesk = rawObjects.find((o) => o.draft.type === 'desk');
+  if (builtInDesk && builtInDesk.blob.maxU > builtInDesk.blob.minU + 0.08) {
+    const du0 = builtInDesk.blob.minU + 0.04;
+    const du1 = builtInDesk.blob.maxU - 0.01;
+    const dv0 = clamp(builtInDesk.blob.minV - 0.1, 0.35, 0.72);
+    const dv1 = clamp(builtInDesk.blob.minV + 0.07, dv0 + 0.04, 0.8);
+    const colsN = 18;
+    const warmSpan: number[] = [];
+    for (let c = 0; c < colsN; c++) {
+      const cu = du0 + ((c + 0.5) / colsN) * (du1 - du0);
+      const px = clamp(Math.floor(cu * rgbaW), 0, rgbaW - 1);
+      let hits = 0;
+      let cnt = 0;
+      for (let step = 0; step < 8; step++) {
+        const cv = dv0 + ((step + 0.5) / 8) * (dv1 - dv0);
+        const py = clamp(Math.floor(cv * rgbaH), 0, rgbaH - 1);
+        const idx = (py * rgbaW + px) * 4;
+        const r = rgba[idx];
+        const gr = rgba[idx + 1];
+        const b = rgba[idx + 2];
+        cnt++;
+        if (r >= 70 && gr >= 38 && r > gr + 12 && r > b + 28) {
+          hits++;
+        }
+      }
+      if (cnt > 0 && hits / cnt >= 0.25) {
+        warmSpan.push(cu);
+      }
+    }
+    if (warmSpan.length >= 2 && warmSpan.length <= 9) {
+      const midU = (warmSpan[0] + warmSpan[warmSpan.length - 1]) * 0.5;
+      const spanRatio = clamp((warmSpan.length / colsN) * 1.15, 0.18, 0.48);
+      const boxWorld = unprojectPixelWorld(midU, (dv0 + dv1) * 0.5, wallDepthAnchorM * 0.92, markers);
+      architecturalFeatures.push({
+        type: 'desk-box',
+        x: Number(
+          clamp(
+            boxWorld.x - centerXOffset,
+            builtInDesk.draft.x - builtInDesk.draft.widthM * 0.42,
+            builtInDesk.draft.x + builtInDesk.draft.widthM * 0.42
+          ).toFixed(2)
+        ),
+        z: Number(builtInDesk.draft.z.toFixed(2)),
+        widthM: Number(clamp(builtInDesk.draft.widthM * spanRatio, 0.28, 0.58).toFixed(2)),
+        depthM: 0.28,
+        heightM: 0.26,
+        elevationM: builtInDesk.draft.heightM,
+        rotationDeg: 0,
+        primaryColor: '#8d5b3c',
+        secondaryColor: '#e6e3dd',
+      });
+    }
+  }
+
+  // 7c) Ceiling fan detector: prefer SegFormer 'fan' mask if present, otherwise dark motor hub on bright ceiling
+  const fanSeg = segments.find((s) => s.label.includes('fan'));
+  let fanPlaced = false;
+  if (fanSeg) {
+    let sumU = 0;
+    let sumV = 0;
+    let minU = 1;
+    let maxU = 0;
+    let cnt = 0;
+    for (let y = 0; y < Math.floor(vh * clamp(markers.ceilingY + 0.14, 0.28, 0.5)); y++) {
+      for (let x = 0; x < vw; x++) {
+        if (fanSeg.mask[y * vw + x] >= 128) {
+          const u = (x + 0.5) / vw;
+          const v = (y + 0.5) / vh;
+          sumU += u;
+          sumV += v;
+          minU = Math.min(minU, u);
+          maxU = Math.max(maxU, u);
+          cnt++;
+        }
+      }
+    }
+    if (cnt >= 8) {
+      const fanU = sumU / cnt;
+      const fanV = sumV / cnt;
+      const fanWorld = unprojectPixelWorld(fanU, fanV, wallDepthAnchorM * 0.72, markers);
+      architecturalFeatures.push({
+        type: 'ceiling-fan',
+        x: Number(clamp(fanWorld.x - centerXOffset, -roomWidthM * 0.36, roomWidthM * 0.36).toFixed(2)),
+        z: Number(clamp(-roomDepthM * 0.16, -roomDepthM * 0.35, 0.25).toFixed(2)),
+        widthM: Number(clamp((maxU - minU) * roomWidthM * 1.15, 0.9, 1.32).toFixed(2)),
+        depthM: 1.08,
+        heightM: 0.32,
+        elevationM: ceilingM,
+        rotationDeg: 0,
+        primaryColor: '#eef0f2',
+        secondaryColor: '#22262d',
+      });
+      fanPlaced = true;
+    }
+  }
+  if (!fanPlaced && markers.ceilingY >= 0.16) {
+    const fCols = 14;
+    const fRows = 6;
+    const cy0 = clamp(markers.ceilingY * 0.35, 0.06, 0.18);
+    const cy1 = clamp(markers.ceilingY + 0.06, cy0 + 0.06, 0.36);
+    let bestHubU = -1;
+    let bestHubScore = 0;
+    for (let r = 1; r < fRows - 1; r++) {
+      const v = cy0 + ((r + 0.5) / fRows) * (cy1 - cy0);
+      const py = clamp(Math.floor(v * rgbaH), 0, rgbaH - 1);
+      for (let c = 1; c < fCols - 1; c++) {
+        const u = 0.12 + ((c + 0.5) / fCols) * 0.65;
+        if (doorwayBoxes.some((d) => u >= d.minU - 0.02 && u <= d.maxU + 0.02)) continue;
+        const px = clamp(Math.floor(u * rgbaW), 0, rgbaW - 1);
+        const idx = (py * rgbaW + px) * 4;
+        const lum = 0.299 * rgba[idx] + 0.587 * rgba[idx + 1] + 0.114 * rgba[idx + 2];
+        if (lum >= 65) continue;
+        // Require bright ceiling surrounding this dark motor drop
+        const leftIdx = (py * rgbaW + Math.max(0, px - Math.floor(rgbaW * 0.05))) * 4;
+        const rightIdx = (py * rgbaW + Math.min(rgbaW - 1, px + Math.floor(rgbaW * 0.05))) * 4;
+        const lumL = 0.299 * rgba[leftIdx] + 0.587 * rgba[leftIdx + 1] + 0.114 * rgba[leftIdx + 2];
+        const lumR = 0.299 * rgba[rightIdx] + 0.587 * rgba[rightIdx + 1] + 0.114 * rgba[rightIdx + 2];
+        const surroundBright = (lumL + lumR) * 0.5 - lum;
+        if (surroundBright >= 75 && surroundBright > bestHubScore) {
+          bestHubScore = surroundBright;
+          bestHubU = u;
+        }
+      }
+    }
+    if (bestHubU > 0) {
+      const fanWorld = unprojectPixelWorld(bestHubU, markers.ceilingY * 0.72, wallDepthAnchorM * 0.68, markers);
+      architecturalFeatures.push({
+        type: 'ceiling-fan',
+        x: Number(clamp(fanWorld.x - centerXOffset, -roomWidthM * 0.36, roomWidthM * 0.36).toFixed(2)),
+        z: Number(clamp(-roomDepthM * 0.18, -roomDepthM * 0.35, 0.25).toFixed(2)),
+        widthM: 1.08,
+        depthM: 1.08,
+        heightM: 0.32,
+        elevationM: ceilingM,
+        rotationDeg: 0,
+        primaryColor: '#eef0f2',
+        secondaryColor: '#22262d',
+      });
+    }
+  }
+
+  // 7d) Foreground overhead ceiling soffit beam detector
+  if (wallModalRawDisp >= 0.35) {
+    const beamRowLimit = Math.max(2, Math.floor(clamp(markers.ceilingY * 0.78, 0.08, 0.22) * gH));
+    let beamSpanCols = 0;
+    const beamPx: Array<{ u: number; v: number }> = [];
+    for (let gx = 0; gx < gW; gx++) {
+      let colProtrudes = false;
+      for (let gy = 0; gy < beamRowLimit; gy++) {
+        if (gridRawDisp[gy * gW + gx] >= wallModalRawDisp * 1.24) {
+          colProtrudes = true;
+          beamPx.push({ u: (gx + 0.5) / gW, v: (gy + 0.5) / gH });
+        }
+      }
+      if (colProtrudes) beamSpanCols++;
+    }
+    if (beamSpanCols >= Math.floor(gW * 0.45) && beamPx.length >= 12) {
+      const beamCols = sampleMaskColors(rgba, rgbaW, rgbaH, beamPx, '#b8b9bd', '#2d3138');
+      architecturalFeatures.push({
+        type: 'soffit-beam',
+        x: 0,
+        z: Number((roomDepthM * 0.26).toFixed(2)),
+        widthM: roomWidthM,
+        depthM: 0.34,
+        heightM: 0.36,
+        elevationM: Number(clamp(ceilingM - 0.36, 1.9, ceilingM - 0.2).toFixed(2)),
+        rotationDeg: 0,
+        primaryColor: beamCols.primaryColor,
+        secondaryColor: beamCols.secondaryColor,
+      });
+    }
+  }
+
   const objects = rawObjects.map((r) => r.draft);
   const types = new Set(objects.map((o) => o.type));
   const roomType = types.has('bed')
@@ -1986,12 +2474,16 @@ export function reconstructRoomFromVisionAnalysis(
       summary,
       floorMaterial: palette.floorMaterial,
       floorColor: palette.floorColor,
+      ...(palette.groutColor ? { groutColor: palette.groutColor } : {}),
       wallColor: palette.wallColor,
+      ...(palette.leftWallColor ? { leftWallColor: palette.leftWallColor } : {}),
+      ...(palette.upperWallColor ? { upperWallColor: palette.upperWallColor } : {}),
       accentWallColor: palette.accentWallColor,
       ceilingColor: palette.ceilingColor,
       trimColor: palette.trimColor,
       lightingMood: palette.lightingMood,
       objects,
+      ...(architecturalFeatures.length > 0 ? { architecturalFeatures } : {}),
     },
     {
       roomWidthM,

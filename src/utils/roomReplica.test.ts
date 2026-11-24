@@ -227,3 +227,123 @@ test('sanitizeRoomReplicaScene preserves elevated wall cupboards without pole-ax
   assert.ok(Math.abs(portraitCrop.sw / portraitCrop.sh - 0.46) < 0.01);
 });
 
+test('sanitizeRoomReplicaScene preserves architecturalFeatures, multi-wall colors, and elevated shelf plants', () => {
+  const scene = sanitizeRoomReplicaScene(
+    {
+      roomType: 'Home Office',
+      summary: 'Exact office replica with soffit beam, ceiling fan, open shelf ledge, and built-in bays.',
+      floorMaterial: 'tile',
+      floorColor: '#dcd9d2',
+      groutColor: '#b8b5ad',
+      wallColor: '#e4e2dd',
+      leftWallColor: '#f1f1ee',
+      upperWallColor: '#595d62',
+      accentWallColor: '#595d62',
+      ceilingColor: '#d9d8d4',
+      trimColor: '#484c52',
+      lightingMood: 'neutral',
+      objects: [
+        {
+          type: 'desk',
+          label: 'Workstation Counter',
+          variant: 'built-in-bays',
+          hasMonitor: false,
+          bayCount: 2,
+          x: -0.45,
+          z: -1.6,
+          widthM: 2.2,
+          depthM: 0.65,
+          heightM: 0.76,
+          rotationDeg: 0,
+          primaryColor: '#73a198',
+          secondaryColor: '#252930',
+          inferred: false,
+          confidence: 0.95,
+        },
+        {
+          type: 'bookshelf',
+          label: 'Open Wall Ledge',
+          variant: 'open-wall-ledge',
+          bayCount: 3,
+          x: -0.45,
+          z: -1.78,
+          widthM: 2.2,
+          depthM: 0.24,
+          heightM: 0.24,
+          elevationM: 1.18,
+          rotationDeg: 0,
+          primaryColor: '#f1f1ed',
+          secondaryColor: '#dcdad4',
+          inferred: false,
+          confidence: 0.92,
+        },
+        {
+          type: 'plant',
+          label: 'Shelf Plant',
+          variant: 'small-shelf-pot',
+          x: 0.0,
+          z: -1.78,
+          widthM: 0.16,
+          depthM: 0.16,
+          heightM: 0.2,
+          elevationM: 1.42,
+          rotationDeg: 0,
+          primaryColor: '#4f7736',
+          secondaryColor: '#20242a',
+          inferred: false,
+          confidence: 0.9,
+        },
+      ],
+      architecturalFeatures: [
+        {
+          type: 'soffit-beam',
+          x: 0,
+          z: 0.95,
+          widthM: 3.4,
+          depthM: 0.26,
+          heightM: 0.36,
+          elevationM: 2.19,
+          rotationDeg: 0,
+          primaryColor: '#dcdcd9',
+          secondaryColor: '#1f2329',
+          textLabel: 'DONT QUIT',
+        },
+        {
+          type: 'ceiling-fan',
+          x: -0.4,
+          z: -0.65,
+          widthM: 1.1,
+          depthM: 1.1,
+          heightM: 0.32,
+          elevationM: 2.23,
+          rotationDeg: 0,
+          primaryColor: '#e9e8e4',
+          secondaryColor: '#1e2128',
+        },
+      ],
+    },
+    {
+      roomWidthM: 3.4,
+      roomDepthM: 4.0,
+      ceilingHeightCm: 255,
+      poleOffsetXM: 0,
+    }
+  );
+
+  assert.equal(scene.leftWallColor, '#f1f1ee');
+  assert.equal(scene.upperWallColor, '#595d62');
+  assert.equal(scene.groutColor, '#b8b5ad');
+  assert.equal(scene.architecturalFeatures?.length, 2);
+  assert.equal(scene.architecturalFeatures?.[0].textLabel, 'DONT QUIT');
+
+  const desk = scene.objects.find((o) => o.type === 'desk')!;
+  assert.equal(desk.variant, 'built-in-bays');
+  assert.equal(desk.hasMonitor, false);
+  assert.equal(desk.bayCount, 2);
+
+  const shelfPlant = scene.objects.find((o) => o.type === 'plant')!;
+  assert.equal(shelfPlant.elevationM, 1.42);
+  assert.equal(shelfPlant.x, 0, 'Elevated shelf plant >= 1.25m stays centered over shelf without pole-axis push');
+});
+
+

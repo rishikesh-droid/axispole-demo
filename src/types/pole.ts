@@ -251,6 +251,32 @@ export type RoomReplicaFloorMaterial =
 
 export type RoomReplicaLightingMood = 'warm' | 'neutral' | 'cool' | 'dim';
 
+export type RoomArchitecturalFeatureType =
+  | 'soffit-beam'
+  | 'ceiling-fan'
+  | 'ceiling-spotlights'
+  | 'slatted-panel'
+  | 'wall-logo'
+  | 'wall-mural'
+  | 'door-garland'
+  | 'desk-box';
+
+export interface RoomArchitecturalFeature {
+  id: string;
+  type: RoomArchitecturalFeatureType;
+  x: number;
+  z: number;
+  widthM: number;
+  depthM: number;
+  heightM: number;
+  elevationM: number;
+  rotationDeg: number;
+  primaryColor: string;
+  secondaryColor: string;
+  textLabel?: string;
+  count?: number;
+}
+
 export interface RoomReplicaObject {
   id: string;
   type: RoomReplicaObjectType;
@@ -260,13 +286,23 @@ export interface RoomReplicaObject {
   widthM: number;
   depthM: number;
   heightM: number;
-  /** Optional height above floor in meters for wall-mounted upper cabinets/shelves (default 0) */
+  /** Optional height above floor in meters for wall-mounted upper cabinets/shelves/plants (default 0) */
   elevationM?: number;
   rotationDeg: number;
   primaryColor: string;
   secondaryColor: string;
   inferred: boolean;
   confidence: number;
+  /** Visual sub-type (e.g. 'built-in-bays', 'armchair', 'tall-tree', 'small-shelf-pot', 'open-doorway', 'open-wall-ledge', 'wall-cupboard') */
+  variant?: string;
+  /** Only render desktop monitor on desk when visibly present in the room */
+  hasMonitor?: boolean;
+  /** Number of bays on built-in desk / open shelf */
+  bayCount?: number;
+  /** Explicit door count on wall cupboards/wardrobes */
+  doorCount?: number;
+  /** Optional text graphic label */
+  textLabel?: string;
 }
 
 export interface RoomReplicaScene {
@@ -278,12 +314,16 @@ export interface RoomReplicaScene {
   ceilingHeightCm: number;
   floorMaterial: RoomReplicaFloorMaterial;
   floorColor: string;
+  groutColor?: string;
   wallColor: string;
+  leftWallColor?: string;
+  upperWallColor?: string;
   accentWallColor: string;
   ceilingColor: string;
   trimColor: string;
   lightingMood: RoomReplicaLightingMood;
   objects: RoomReplicaObject[];
+  architecturalFeatures?: RoomArchitecturalFeature[];
   visibleObjectCount: number;
   inferredObjectCount: number;
   floorAccuracyPct: number;
@@ -291,4 +331,5 @@ export interface RoomReplicaScene {
   overallAccuracyPct: number;
   previewDataUrl?: string;
 }
+
 

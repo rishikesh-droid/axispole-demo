@@ -7,6 +7,8 @@ export interface ProceduralTextureSet {
   studioWoodAlbedo: THREE.CanvasTexture;
   homeWoodAlbedo: THREE.CanvasTexture;
   woodBump: THREE.CanvasTexture;
+  tileAlbedo: THREE.CanvasTexture;
+  tileBump: THREE.CanvasTexture;
   stageDeckBump: THREE.CanvasTexture;
   contactShadow: THREE.CanvasTexture;
   clearanceRing: THREE.CanvasTexture;
@@ -178,6 +180,47 @@ function createWoodBumpTexture(maxAnisotropy: number): THREE.CanvasTexture {
   return configureTexture(canvas, false, 4, 4, maxAnisotropy);
 }
 
+function createTileTextures(maxAnisotropy: number): {
+  albedo: THREE.CanvasTexture;
+  bump: THREE.CanvasTexture;
+} {
+  const [aCanvas, aCtx] = makeCanvas(512, 512);
+  const [bCanvas, bCtx] = makeCanvas(512, 512);
+  const rand = mulberry32(9204);
+
+  // Neutral bright base so Three.js material color tints tiles cleanly
+  aCtx.fillStyle = '#f5f5f3';
+  aCtx.fillRect(0, 0, 512, 512);
+  bCtx.fillStyle = 'rgb(165,165,165)';
+  bCtx.fillRect(0, 0, 512, 512);
+
+  // Subtle ceramic mineral micro-veins inside 2x2 tile grid
+  for (let i = 0; i < 420; i++) {
+    const x = rand() * 512;
+    const y = rand() * 512;
+    const w = 12 + rand() * 44;
+    const h = 2 + rand() * 8;
+    aCtx.fillStyle =
+      rand() > 0.5 ? 'rgba(255,255,255,0.22)' : 'rgba(190,188,182,0.14)';
+    aCtx.fillRect(x, y, w, h);
+  }
+
+  // Crisp fine architectural grout seams (2x2 tiles -> 0.60m per tile at 1.2m repeat)
+  aCtx.fillStyle = 'rgba(130, 128, 122, 0.42)';
+  bCtx.fillStyle = 'rgb(75,75,75)';
+  for (const pos of [0, 255]) {
+    aCtx.fillRect(pos, 0, 3, 512);
+    aCtx.fillRect(0, pos, 512, 3);
+    bCtx.fillRect(pos, 0, 3, 512);
+    bCtx.fillRect(0, pos, 512, 3);
+  }
+
+  return {
+    albedo: configureTexture(aCanvas, true, 3, 3, maxAnisotropy),
+    bump: configureTexture(bCanvas, false, 3, 3, maxAnisotropy),
+  };
+}
+
 function createStageDeckBump(maxAnisotropy: number): THREE.CanvasTexture {
   const [canvas, ctx] = makeCanvas(256, 256);
   ctx.fillStyle = 'rgb(112,112,112)';
@@ -282,6 +325,7 @@ export function createProceduralTextures(maxAnisotropy: number): ProceduralTextu
     maxAnisotropy
   );
   const woodBump = createWoodBumpTexture(maxAnisotropy);
+  const tileTex = createTileTextures(maxAnisotropy);
   const stageDeckBump = createStageDeckBump(maxAnisotropy);
   const contactShadow = createContactShadowTexture();
   const clearanceRing = createClearanceRingTexture(maxAnisotropy);
@@ -292,6 +336,8 @@ export function createProceduralTextures(maxAnisotropy: number): ProceduralTextu
     studioWoodAlbedo,
     homeWoodAlbedo,
     woodBump,
+    tileAlbedo: tileTex.albedo,
+    tileBump: tileTex.bump,
     stageDeckBump,
     contactShadow,
     clearanceRing,
@@ -301,6 +347,8 @@ export function createProceduralTextures(maxAnisotropy: number): ProceduralTextu
       studioWoodAlbedo.dispose();
       homeWoodAlbedo.dispose();
       woodBump.dispose();
+      tileTex.albedo.dispose();
+      tileTex.bump.dispose();
       stageDeckBump.dispose();
       contactShadow.dispose();
       clearanceRing.dispose();

@@ -415,17 +415,21 @@ test('reconstructRoomFromVisionAnalysis recovers open doorway (no false window),
   assert.equal(result.scene.objects.some((o) => o.type === 'window'), false, 'Must reject false window overlapping doorway recess');
   const doorway = result.scene.objects.find((o) => o.type === 'door');
   assert.ok(doorway && doorway.label === 'Open Doorway' && doorway.x > 0.2, `Expected Open Doorway on right, got ${JSON.stringify(doorway)}`);
-  // 4. Built-in Work Desk detected & Office Chair kept cleanly IN FRONT of desk
+  // 4. Built-in Work Desk detected with no fake monitor & Office Chair kept cleanly IN FRONT of desk
   const desk = result.scene.objects.find((o) => o.type === 'desk');
   const chair = result.scene.objects.find((o) => o.type === 'office-chair');
   assert.ok(desk && desk.x < 0, `Expected Work Desk on left/center, got ${JSON.stringify(desk)}`);
+  assert.equal(desk.hasMonitor, false, 'Built-in study desk without monitor cue must not render a fake monitor');
+  assert.equal(desk.variant, 'built-in-bays');
   assert.ok(chair, 'Expected Office Chair');
   assert.ok(
     chair.z >= desk.z + desk.depthM * 0.5,
     `Chair (z=${chair.z}) must remain in front of desk front edge (${(desk.z + desk.depthM * 0.5).toFixed(2)})`
   );
-  // 5. Elevated Wall Cupboard detected with elevationM >= 1.25
+  // 5. Elevated Wall Cupboard & Open Wall Shelf beneath it detected with elevationM
   const cupboard = result.scene.objects.find((o) => o.type === 'cabinet');
   assert.ok(cupboard && (cupboard.elevationM ?? 0) >= 1.25, `Expected elevated Wall Cupboard, got ${JSON.stringify(cupboard)}`);
+  const openShelf = result.scene.objects.find((o) => o.type === 'bookshelf' && o.variant === 'open-wall-ledge');
+  assert.ok(openShelf && (openShelf.elevationM ?? 0) >= 0.85, `Expected Open Wall Shelf under cupboard, got ${JSON.stringify(openShelf)}`);
 });
 

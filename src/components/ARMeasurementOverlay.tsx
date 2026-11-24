@@ -95,9 +95,9 @@ const FINISH_ORDER: PoleFinishId[] = ['brass', 'stainless', 'powder-black', 'sil
 type DragHandleId = 'ceiling' | 'floor' | 'pole' | `floor-pin-${number}`;
 
 const REPLICA_STAGES = [
-  'Segmenting walls, floor & furniture on device…',
-  'Estimating 3D room depth map…',
-  'Fitting 3D object positions, sizes & angles…',
+  'Analyzing walls, ceiling, lighting & furniture geometry…',
+  'Estimating 3D room depth & scale…',
+  'Fitting exact furniture, shelves & architectural details…',
   'Constructing 3D Room Replica…',
 ];
 

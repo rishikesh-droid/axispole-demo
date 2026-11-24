@@ -1,4 +1,6 @@
 import type {
+  RoomArchitecturalFeature,
+  RoomArchitecturalFeatureType,
   RoomReplicaFloorMaterial,
   RoomReplicaLightingMood,
   RoomReplicaObject,
@@ -192,7 +194,10 @@ export function sanitizeRoomReplicaScene(
       : `Scanned ${roomWidthM.toFixed(1)}×${roomDepthM.toFixed(1)}m ${roomType.toLowerCase()} with architectural completion.`;
 
   const floorColor = sanitizeHexColor(safeRaw.floorColor, '#b99976');
+  const groutColor = safeRaw.groutColor ? sanitizeHexColor(safeRaw.groutColor, '#c8c4bc') : undefined;
   const wallColor = sanitizeHexColor(safeRaw.wallColor, '#d8d4cc');
+  const leftWallColor = safeRaw.leftWallColor ? sanitizeHexColor(safeRaw.leftWallColor, wallColor) : undefined;
+  const upperWallColor = safeRaw.upperWallColor ? sanitizeHexColor(safeRaw.upperWallColor, wallColor) : undefined;
   const accentWallColor = sanitizeHexColor(safeRaw.accentWallColor, wallColor);
   const ceilingColor = sanitizeHexColor(safeRaw.ceilingColor, '#eceae4');
   const trimColor = sanitizeHexColor(safeRaw.trimColor, '#e2dfd8');
@@ -203,7 +208,7 @@ export function sanitizeRoomReplicaScene(
   const rawObjects = Array.isArray(safeRaw.objects) ? safeRaw.objects : [];
   const objects: RoomReplicaObject[] = [];
 
-  for (let i = 0; i < Math.min(rawObjects.length, 24); i++) {
+  for (let i = 0; i < Math.min(rawObjects.length, 28); i++) {
     const item = rawObjects[i];
     if (!item || typeof item !== 'object') continue;
     const rec = item as Record<string, unknown>;
@@ -212,17 +217,19 @@ export function sanitizeRoomReplicaScene(
     const defs = OBJECT_TYPE_DEFAULTS[type];
     const isWallItem = WALL_MOUNTED_TYPES.has(type);
     const isFloorFlat = FLOOR_FLAT_TYPES.has(type);
+    const maxSpanW =
+      type === 'desk' || type === 'cabinet' || type === 'bookshelf'
+        ? Math.min(roomWidthM * 0.9, 3.2)
+        : Math.min(roomWidthM * 0.72, 2.8);
 
-    const widthM = Number(
-      clampFinite(rec.widthM, 0.2, Math.min(roomWidthM * 0.72, 2.8), defs.w).toFixed(2)
-    );
+    const widthM = Number(clampFinite(rec.widthM, 0.14, maxSpanW, defs.w).toFixed(2));
     const depthM = Number(
-      clampFinite(rec.depthM, isWallItem ? 0.04 : 0.2, Math.min(roomDepthM * 0.65, 2.4), defs.d).toFixed(2)
+      clampFinite(rec.depthM, isWallItem ? 0.04 : 0.14, Math.min(roomDepthM * 0.65, 2.4), defs.d).toFixed(2)
     );
     const heightM = Number(
       clampFinite(
         rec.heightM,
-        isFloorFlat ? 0.012 : 0.25,
+        isFloorFlat ? 0.012 : type === 'plant' || type === 'bookshelf' ? 0.14 : 0.25,
         Math.min(ceilingHeightM - 0.08, 2.55),
         Math.min(defs.h, ceilingHeightM - 0.12)
       ).toFixed(2)
@@ -235,18 +242,18 @@ export function sanitizeRoomReplicaScene(
     const effHalfX = Math.abs(Math.cos(rotRad)) * (widthM / 2) + Math.abs(Math.sin(rotRad)) * (depthM / 2);
     const effHalfZ = Math.abs(Math.sin(rotRad)) * (widthM / 2) + Math.abs(Math.cos(rotRad)) * (depthM / 2);
 
-    const marginX = isWallItem ? 0.04 : Math.min(halfW - 0.12, effHalfX + 0.04);
-    const marginZ = isWallItem ? 0.04 : Math.min(halfD - 0.12, effHalfZ + 0.04);
+    const marginX = isWallItem ? 0.04 : Math.min(halfW - 0.1, effHalfX + 0.03);
+    const marginZ = isWallItem ? 0.04 : Math.min(halfD - 0.1, effHalfZ + 0.03);
 
     let x = clampFinite(rec.x, -halfW + marginX, halfW - marginX, 0);
     let z = clampFinite(rec.z, -halfD + marginZ, halfD - marginZ, -halfD + marginZ);
 
-    const isElevatedWallUnit =
-      (type === 'cabinet' || type === 'bookshelf') &&
+    const isElevatedUnit =
+      (type === 'cabinet' || type === 'bookshelf' || type === 'plant') &&
       typeof rec.elevationM === 'number' &&
       Number.isFinite(rec.elevationM) &&
       rec.elevationM >= 0.45;
-    const elevationM = isElevatedWallUnit
+    const elevationM = isElevatedUnit
       ? Number(
           clampFinite(
             rec.elevationM,
@@ -302,6 +309,15 @@ export function sanitizeRoomReplicaScene(
       clampFinite(rec.confidence, 0.35, 0.99, inferred ? 0.72 : 0.9).toFixed(2)
     );
 
+    const variant =
+      typeof rec.variant === 'string' && rec.variant.trim().length > 0
+        ? rec.variant.trim().slice(0, 32)
+        : undefined;
+    const textLabel =
+      typeof rec.textLabel === 'string' && rec.textLabel.trim().length > 0
+        ? rec.textLabel.trim().slice(0, 48)
+        : undefined;
+
     objects.push({
       id: `replica-obj-${i + 1}`,
       type,
@@ -317,6 +333,15 @@ export function sanitizeRoomReplicaScene(
       secondaryColor: sanitizeHexColor(rec.secondaryColor, defs.secondary),
       inferred,
       confidence,
+      ...(variant ? { variant } : {}),
+      ...(typeof rec.hasMonitor === 'boolean' ? { hasMonitor: rec.hasMonitor } : {}),
+      ...(typeof rec.bayCount === 'number' && Number.isFinite(rec.bayCount)
+        ? { bayCount: Math.max(1, Math.min(4, Math.round(rec.bayCount))) }
+        : {}),
+      ...(typeof rec.doorCount === 'number' && Number.isFinite(rec.doorCount)
+        ? { doorCount: Math.max(2, Math.min(6, Math.round(rec.doorCount))) }
+        : {}),
+      ...(textLabel ? { textLabel } : {}),
     });
   }
 
@@ -365,6 +390,55 @@ export function sanitizeRoomReplicaScene(
     }
   }
 
+  const validFeatureTypes = new Set<RoomArchitecturalFeatureType>([
+    'soffit-beam',
+    'ceiling-fan',
+    'ceiling-spotlights',
+    'slatted-panel',
+    'wall-logo',
+    'wall-mural',
+    'door-garland',
+    'desk-box',
+  ]);
+  const architecturalFeatures: RoomArchitecturalFeature[] = [];
+  const rawFeatures = Array.isArray(safeRaw.architecturalFeatures) ? safeRaw.architecturalFeatures : [];
+  for (let i = 0; i < Math.min(rawFeatures.length, 16); i++) {
+    const f = rawFeatures[i];
+    if (!f || typeof f !== 'object') continue;
+    const rec = f as Record<string, unknown>;
+    const rawFType = typeof rec.type === 'string' ? rec.type.trim().toLowerCase() : '';
+    if (!validFeatureTypes.has(rawFType as RoomArchitecturalFeatureType)) continue;
+    const fType = rawFType as RoomArchitecturalFeatureType;
+    const widthM = Number(clampFinite(rec.widthM, 0.06, roomWidthM + 0.05, 1.0).toFixed(2));
+    const depthM = Number(clampFinite(rec.depthM, 0.02, roomDepthM * 0.9, 0.2).toFixed(2));
+    const heightM = Number(clampFinite(rec.heightM, 0.05, ceilingHeightM, 0.35).toFixed(2));
+    const elevationM = Number(clampFinite(rec.elevationM, 0, Math.max(0.1, ceilingHeightM - 0.02), 0).toFixed(2));
+    const x = Number(clampFinite(rec.x, -halfW - 0.04, halfW + 0.04, 0).toFixed(2));
+    const z = Number(clampFinite(rec.z, -halfD - 0.04, halfD + 0.04, 0).toFixed(2));
+    const rotationDeg = Math.round(clampFinite(rec.rotationDeg, -180, 180, 0));
+    const textLabel =
+      typeof rec.textLabel === 'string' && rec.textLabel.trim().length > 0
+        ? rec.textLabel.trim().slice(0, 64)
+        : undefined;
+    architecturalFeatures.push({
+      id: `replica-feat-${i + 1}`,
+      type: fType,
+      x,
+      z,
+      widthM,
+      depthM,
+      heightM,
+      elevationM,
+      rotationDeg,
+      primaryColor: sanitizeHexColor(rec.primaryColor, '#5a5d62'),
+      secondaryColor: sanitizeHexColor(rec.secondaryColor, '#d8d8d5'),
+      ...(textLabel ? { textLabel } : {}),
+      ...(typeof rec.count === 'number' && Number.isFinite(rec.count)
+        ? { count: Math.max(1, Math.min(48, Math.round(rec.count))) }
+        : {}),
+    });
+  }
+
   const visibleObjectCount = objects.filter((o) => !o.inferred).length;
   const inferredObjectCount = objects.filter((o) => o.inferred).length;
 
@@ -377,12 +451,16 @@ export function sanitizeRoomReplicaScene(
     ceilingHeightCm,
     floorMaterial,
     floorColor,
+    ...(groutColor ? { groutColor } : {}),
     wallColor,
+    ...(leftWallColor ? { leftWallColor } : {}),
+    ...(upperWallColor ? { upperWallColor } : {}),
     accentWallColor,
     ceilingColor,
     trimColor,
     lightingMood,
     objects,
+    ...(architecturalFeatures.length > 0 ? { architecturalFeatures } : {}),
     visibleObjectCount,
     inferredObjectCount,
     floorAccuracyPct: Math.round(clampFinite(hints.floorAccuracyPct, 50, 99, 93)),

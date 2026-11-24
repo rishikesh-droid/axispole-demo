@@ -116,6 +116,18 @@ export function createEnvironmentRig(
     metalness: 0.02,
   });
 
+  const leftWallMat = new THREE.MeshStandardMaterial({
+    color: 0x24262e,
+    roughness: 0.85,
+    metalness: 0.02,
+  });
+
+  const upperWallMat = new THREE.MeshStandardMaterial({
+    color: 0x54585e,
+    roughness: 0.86,
+    metalness: 0.02,
+  });
+
   const ceilingSoffitMat = new THREE.MeshStandardMaterial({
     color: 0x1d1f26,
     roughness: 0.88,
@@ -275,11 +287,14 @@ export function createEnvironmentRig(
   );
   const backWall = new THREE.Mesh(backWallGeo, wallMat);
   backWall.receiveShadow = true;
-  const leftWall = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1, 1), wallMat);
+  const upperWallBand = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 0.014), upperWallMat);
+  upperWallBand.receiveShadow = true;
+  upperWallBand.visible = false;
+  const leftWall = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1, 1), leftWallMat);
   leftWall.receiveShadow = true;
   const backBaseboard = new THREE.Mesh(new THREE.BoxGeometry(1, 0.085, 0.025), baseboardMat);
   const leftBaseboard = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.085, 1), baseboardMat);
-  group.add(backWall, leftWall, backBaseboard, leftBaseboard);
+  group.add(backWall, upperWallBand, leftWall, backBaseboard, leftBaseboard);
 
   // Recessed Architectural Ceiling Soffit + Structural Joist Header (cleanly integrated, pitches cleanly for vaulted mounts!)
   const ceilingSlab = new THREE.Mesh(new THREE.BoxGeometry(1, 0.08, 1), ceilingSoffitMat);
@@ -772,7 +787,7 @@ export function createEnvironmentRig(
     group.visible = true;
     applyLightingPreset(config.environment, config.lighting, H, W, D, renderer);
 
-    // Floor scale & material/plank tiling (respects scanned replica material & color!)
+    // Floor scale & material/plank/tile tiling (respects scanned replica material & color!)
     floorMesh.scale.set(W, D, 1);
     if (isReplica && roomReplica) {
       const matKind = roomReplica.floorMaterial;
@@ -781,22 +796,39 @@ export function createEnvironmentRig(
           matKind === 'wood-dark' ? textures.homeWoodAlbedo : textures.studioWoodAlbedo;
         floorMat.map = activeWood;
         floorMat.bumpMap = textures.woodBump;
+        floorMat.bumpScale = 0.0045;
         floorMat.color.set(roomReplica.floorColor).lerp(new THREE.Color(0xffffff), 0.45);
         floorMat.roughness = 0.48;
+        floorMat.metalness = 0.04;
         activeWood.repeat.set(Math.max(2, W * 0.95), Math.max(2, D * 0.95));
         textures.woodBump.repeat.set(Math.max(2, W * 0.95), Math.max(2, D * 0.95));
+      } else if (matKind === 'tile') {
+        floorMat.map = textures.tileAlbedo;
+        floorMat.bumpMap = textures.tileBump;
+        floorMat.bumpScale = 0.003;
+        floorMat.color.set(roomReplica.floorColor);
+        floorMat.roughness = 0.24;
+        floorMat.metalness = 0.05;
+        textures.tileAlbedo.repeat.set(Math.max(1.5, W / 1.2), Math.max(1.5, D / 1.2));
+        textures.tileBump.repeat.set(Math.max(1.5, W / 1.2), Math.max(1.5, D / 1.2));
       } else {
         floorMat.map = null;
         floorMat.bumpMap = null;
         floorMat.color.set(roomReplica.floorColor);
-        floorMat.roughness =
-          matKind === 'tile' ? 0.28 : matKind === 'carpet' ? 0.94 : 0.78;
+        floorMat.roughness = matKind === 'carpet' ? 0.94 : 0.78;
+        floorMat.metalness = 0.02;
       }
 
-      // Apply authentic scanned room colors (blended subtly under dark mood presets so lighting still pops)
+      // Apply authentic scanned room colors per wall (blended subtly under dark mood presets so lighting still pops)
       const darkFactor = config.lighting === 'studio-daylight' ? 0 : 0.42;
       const darkTint = new THREE.Color(0x1a1c24);
       wallMat.color.set(roomReplica.wallColor).lerp(darkTint, darkFactor);
+      leftWallMat.color
+        .set(roomReplica.leftWallColor ?? roomReplica.wallColor)
+        .lerp(darkTint, darkFactor);
+      upperWallMat.color
+        .set(roomReplica.upperWallColor ?? roomReplica.wallColor)
+        .lerp(darkTint, darkFactor);
       ceilingSoffitMat.color.set(roomReplica.ceilingColor).lerp(darkTint, darkFactor);
       baseboardMat.color.set(roomReplica.trimColor).lerp(darkTint, darkFactor * 0.85);
     } else {
@@ -804,9 +836,12 @@ export function createEnvironmentRig(
         config.environment === 'home' ? textures.homeWoodAlbedo : textures.studioWoodAlbedo;
       floorMat.map = activeWood;
       floorMat.bumpMap = textures.woodBump;
+      floorMat.bumpScale = 0.0045;
       floorMat.color.setHex(0xffffff);
       floorMat.roughness =
         config.lighting === 'mood-neon' || config.lighting === 'cyber-pulse' ? 0.34 : 0.46;
+      floorMat.metalness = 0.04;
+      leftWallMat.color.copy(wallMat.color);
       activeWood.repeat.set(Math.max(2, W * 0.95), Math.max(2, D * 0.95));
       textures.woodBump.repeat.set(Math.max(2, W * 0.95), Math.max(2, D * 0.95));
     }
@@ -836,6 +871,19 @@ export function createEnvironmentRig(
     backPos.needsUpdate = true;
     backWallGeo.computeVertexNormals();
     backWall.position.set(0, 0, -D / 2 - 0.06);
+
+    const hasDistinctUpperWall =
+      isReplica &&
+      Boolean(roomReplica?.upperWallColor) &&
+      roomReplica!.upperWallColor !== roomReplica!.wallColor &&
+      !isVaulted;
+    upperWallBand.visible = hasDistinctUpperWall;
+    if (hasDistinctUpperWall) {
+      const bandBaseY = Math.min(H * 0.62, 1.48);
+      const bandH = Math.max(0.35, H - bandBaseY);
+      upperWallBand.scale.set(W, bandH, 1);
+      upperWallBand.position.set(0, bandBaseY + bandH / 2, -D / 2 + 0.005);
+    }
 
     // Left wall terminates cleanly at exact left eave height under sloped ceiling
     const leftWallH = Math.max(1.5, leftEaveH + (isVaulted ? 0.13 / cosV : 0.08));
@@ -1012,6 +1060,8 @@ export function createEnvironmentRig(
       });
       floorMat.dispose();
       wallMat.dispose();
+      leftWallMat.dispose();
+      upperWallMat.dispose();
       ceilingSoffitMat.dispose();
       baseboardMat.dispose();
       woodSlatMat.dispose();

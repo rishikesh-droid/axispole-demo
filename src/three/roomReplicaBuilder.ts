@@ -1,5 +1,9 @@
 import * as THREE from 'three';
-import type { RoomReplicaObject, RoomReplicaScene } from '../types/pole';
+import type {
+  RoomArchitecturalFeature,
+  RoomReplicaObject,
+  RoomReplicaScene,
+} from '../types/pole';
 
 export interface RoomReplicaRigHandle {
   group: THREE.Group;
@@ -20,12 +24,14 @@ function makeMat(
     emissiveIntensity?: number;
     transparent?: boolean;
     opacity?: number;
+    map?: THREE.Texture;
   }
 ): THREE.MeshStandardMaterial {
   return new THREE.MeshStandardMaterial({
-    color: new THREE.Color(hex),
+    color: opts?.map ? new THREE.Color(0xffffff) : new THREE.Color(hex),
     roughness,
     metalness,
+    map: opts?.map ?? null,
     emissive: opts?.emissive ? new THREE.Color(opts.emissive) : new THREE.Color(0x000000),
     emissiveIntensity: opts?.emissiveIntensity ?? 0,
     transparent: opts?.transparent ?? false,
@@ -45,69 +51,117 @@ function enableShadows(root: THREE.Object3D, cast = true, receive = true): void 
 function buildDesk(obj: RoomReplicaObject): THREE.Group {
   const g = new THREE.Group();
   const { widthM: W, depthM: D, heightM: H } = obj;
-  const topThick = 0.042;
-  const topMat = makeMat(obj.primaryColor, 0.56, 0.06);
-  const frameMat = makeMat(obj.secondaryColor, 0.35, 0.65);
-  const screenMat = makeMat('#11151e', 0.14, 0.3, {
-    emissive: '#38bdf8',
-    emissiveIntensity: 0.22,
-  });
+  const topThick = 0.038;
+  const isBuiltInBays =
+    obj.variant === 'built-in-bays' || (W >= 1.45 && obj.hasMonitor !== true);
 
-  // Tabletop with subtle under-apron
-  const top = new THREE.Mesh(new THREE.BoxGeometry(W, topThick, D), topMat);
-  top.position.y = H - topThick / 2;
-  g.add(top);
+  if (isBuiltInBays) {
+    const deskMat = makeMat(obj.primaryColor, 0.52, 0.05);
+    const backMat = makeMat(obj.secondaryColor, 0.72, 0.04);
+    const towerMat = makeMat('#1f232b', 0.48, 0.25);
 
-  const apron = new THREE.Mesh(new THREE.BoxGeometry(W - 0.1, 0.045, D - 0.12), frameMat);
-  apron.position.y = H - topThick - 0.022;
-  g.add(apron);
+    // Continuous workstation counter surface
+    const top = new THREE.Mesh(new THREE.BoxGeometry(W, topThick, D), deskMat);
+    top.position.y = H - topThick / 2;
+    g.add(top);
 
-  // 4 sleek steel legs + back modesty crossbar
-  const legH = H - topThick;
-  const legGeo = new THREE.BoxGeometry(0.042, legH, 0.042);
-  const lx = W / 2 - 0.06;
-  const lz = D / 2 - 0.06;
-  for (const sx of [-1, 1]) {
-    for (const sz of [-1, 1]) {
-      const leg = new THREE.Mesh(legGeo, frameMat);
-      leg.position.set(sx * lx, legH / 2, sz * lz);
-      g.add(leg);
-    }
-  }
+    // Subtle raised rear backsplash + under-desk front apron rail
+    const riserH = 0.14;
+    const riser = new THREE.Mesh(new THREE.BoxGeometry(W, riserH, 0.026), deskMat);
+    riser.position.set(0, H + riserH / 2, -D / 2 + 0.015);
+    g.add(riser);
 
-  // Right-side 3-drawer pedestal cabinet
-  if (W >= 0.95) {
-    const pedW = Math.min(0.42, W * 0.3);
-    const pedH = legH - 0.06;
-    const ped = new THREE.Mesh(new THREE.BoxGeometry(pedW, pedH, D - 0.08), topMat);
-    ped.position.set(W / 2 - pedW / 2 - 0.07, pedH / 2 + 0.03, 0);
-    g.add(ped);
+    const apron = new THREE.Mesh(new THREE.BoxGeometry(W - 0.04, 0.055, 0.024), deskMat);
+    apron.position.set(0, H - topThick - 0.028, D / 2 - 0.06);
+    g.add(apron);
 
-    for (let i = 0; i < 3; i++) {
-      const handle = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.012, 0.016), frameMat);
-      handle.position.set(
-        W / 2 - pedW / 2 - 0.07,
-        0.16 + i * (pedH / 3.2),
-        (D - 0.08) / 2 + 0.008
+    // Rear lower wall modesty backing
+    const modesty = new THREE.Mesh(
+      new THREE.BoxGeometry(W - 0.02, H - topThick, 0.02),
+      backMat
+    );
+    modesty.position.set(0, (H - topThick) / 2, -D / 2 + 0.014);
+    g.add(modesty);
+
+    // Bay vertical cheek partitions (ends + interior dividers)
+    const bays = Math.max(1, Math.min(4, obj.bayCount ?? (W >= 1.9 ? 3 : 2)));
+    const panelThick = 0.028;
+    for (let i = 0; i <= bays; i++) {
+      const px = -W / 2 + panelThick / 2 + (i / bays) * (W - panelThick);
+      const sidePanel = new THREE.Mesh(
+        new THREE.BoxGeometry(panelThick, H + (i > 0 && i < bays ? 0.34 : 0.12), D - 0.02),
+        deskMat
       );
-      g.add(handle);
+      sidePanel.position.set(
+        px,
+        (H + (i > 0 && i < bays ? 0.34 : 0.12)) / 2,
+        0
+      );
+      g.add(sidePanel);
+    }
+
+    // Subtle under-desk PC tower / UPS footrest inside right bay when wide
+    if (W >= 1.3) {
+      const pc = new THREE.Mesh(new THREE.BoxGeometry(0.19, 0.42, 0.44), towerMat);
+      pc.position.set(W * 0.16, 0.21, -0.04);
+      const ups = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.09, 0.24), towerMat);
+      ups.position.set(W * 0.36, 0.045, -0.06);
+      g.add(pc, ups);
+    }
+  } else {
+    const topMat = makeMat(obj.primaryColor, 0.56, 0.06);
+    const frameMat = makeMat(obj.secondaryColor, 0.35, 0.65);
+
+    const top = new THREE.Mesh(new THREE.BoxGeometry(W, topThick, D), topMat);
+    top.position.y = H - topThick / 2;
+    g.add(top);
+
+    const apron = new THREE.Mesh(new THREE.BoxGeometry(W - 0.1, 0.045, D - 0.12), frameMat);
+    apron.position.y = H - topThick - 0.022;
+    g.add(apron);
+
+    const legH = H - topThick;
+    const legGeo = new THREE.BoxGeometry(0.042, legH, 0.042);
+    const lx = W / 2 - 0.06;
+    const lz = D / 2 - 0.06;
+    for (const sx of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        const leg = new THREE.Mesh(legGeo, frameMat);
+        leg.position.set(sx * lx, legH / 2, sz * lz);
+        g.add(leg);
+      }
+    }
+
+    if (W >= 1.05 && obj.hasMonitor === true) {
+      const pedW = Math.min(0.4, W * 0.28);
+      const pedH = legH - 0.06;
+      const ped = new THREE.Mesh(new THREE.BoxGeometry(pedW, pedH, D - 0.08), topMat);
+      ped.position.set(W / 2 - pedW / 2 - 0.07, pedH / 2 + 0.03, 0);
+      g.add(ped);
     }
   }
 
-  // Sleek widescreen monitor + stand + keyboard on tabletop
-  const monW = Math.min(0.62, W * 0.45);
-  const monH = monW * 0.58;
-  const standBase = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.012, 0.14), frameMat);
-  standBase.position.set(-W * 0.08, H + 0.006, -D * 0.22);
-  const standNeck = new THREE.Mesh(new THREE.BoxGeometry(0.036, 0.14, 0.024), frameMat);
-  standNeck.position.set(-W * 0.08, H + 0.075, -D * 0.25);
-  const bezel = new THREE.Mesh(new THREE.BoxGeometry(monW, monH, 0.022), frameMat);
-  bezel.position.set(-W * 0.08, H + 0.12 + monH / 2, -D * 0.23);
-  const screen = new THREE.Mesh(new THREE.PlaneGeometry(monW - 0.026, monH - 0.026), screenMat);
-  screen.position.set(-W * 0.08, H + 0.12 + monH / 2, -D * 0.23 + 0.012);
-  const kb = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.01, 0.11), frameMat);
-  kb.position.set(-W * 0.08, H + 0.006, D * 0.12);
-  g.add(standBase, standNeck, bezel, screen, kb);
+  // Only render monitor + keyboard if explicitly detected/visible in the photo
+  if (obj.hasMonitor === true) {
+    const frameMat = makeMat('#1f232b', 0.3, 0.6);
+    const screenMat = makeMat('#11151e', 0.14, 0.3, {
+      emissive: '#38bdf8',
+      emissiveIntensity: 0.22,
+    });
+    const monW = Math.min(0.58, W * 0.42);
+    const monH = monW * 0.56;
+    const standBase = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.012, 0.13), frameMat);
+    standBase.position.set(-W * 0.06, H + 0.006, -D * 0.22);
+    const standNeck = new THREE.Mesh(new THREE.BoxGeometry(0.034, 0.13, 0.022), frameMat);
+    standNeck.position.set(-W * 0.06, H + 0.07, -D * 0.25);
+    const bezel = new THREE.Mesh(new THREE.BoxGeometry(monW, monH, 0.022), frameMat);
+    bezel.position.set(-W * 0.06, H + 0.11 + monH / 2, -D * 0.23);
+    const screen = new THREE.Mesh(new THREE.PlaneGeometry(monW - 0.026, monH - 0.026), screenMat);
+    screen.position.set(-W * 0.06, H + 0.11 + monH / 2, -D * 0.23 + 0.012);
+    const kb = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.01, 0.1), frameMat);
+    kb.position.set(-W * 0.06, H + 0.006, D * 0.12);
+    g.add(standBase, standNeck, bezel, screen, kb);
+  }
 
   enableShadows(g);
   return g;
@@ -116,47 +170,54 @@ function buildDesk(obj: RoomReplicaObject): THREE.Group {
 function buildOfficeChair(obj: RoomReplicaObject): THREE.Group {
   const g = new THREE.Group();
   const { widthM: W, depthM: D, heightM: H } = obj;
-  const cushionMat = makeMat(obj.primaryColor, 0.78, 0.04);
+  const cushionMat = makeMat(obj.primaryColor, 0.72, 0.06);
   const metalMat = makeMat(obj.secondaryColor, 0.3, 0.75);
-  const seatY = Math.min(0.48, H * 0.46);
+  const seatY = Math.min(0.47, H * 0.46);
 
   // 5-star caster base
   for (let i = 0; i < 5; i++) {
     const a = (i / 5) * Math.PI * 2;
-    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.032, 0.028, 0.27), metalMat);
-    arm.position.set(Math.sin(a) * 0.13, 0.065, Math.cos(a) * 0.13);
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.024, 0.26), metalMat);
+    arm.position.set(Math.sin(a) * 0.125, 0.062, Math.cos(a) * 0.125);
     arm.rotation.y = a;
-    const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.024, 0.026, 12), metalMat);
+    const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.023, 0.023, 0.024, 12), metalMat);
     wheel.rotation.z = Math.PI / 2;
-    wheel.position.set(Math.sin(a) * 0.24, 0.024, Math.cos(a) * 0.24);
+    wheel.position.set(Math.sin(a) * 0.235, 0.023, Math.cos(a) * 0.235);
     g.add(arm, wheel);
   }
 
-  // Pneumatic cylinder
-  const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.03, seatY - 0.07, 14), metalMat);
-  stem.position.y = 0.07 + (seatY - 0.07) / 2;
+  const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.028, seatY - 0.06, 14), metalMat);
+  stem.position.y = 0.06 + (seatY - 0.06) / 2;
   g.add(stem);
 
-  // Contoured seat cushion
-  const seat = new THREE.Mesh(new THREE.BoxGeometry(W * 0.84, 0.072, D * 0.82), cushionMat);
+  const seat = new THREE.Mesh(new THREE.BoxGeometry(W * 0.82, 0.065, D * 0.8), cushionMat);
   seat.position.y = seatY;
   g.add(seat);
 
-  // Sculpted backrest + lumbar spine
+  // Sculpted ergonomic mesh-style backrest with horizontal ribs
   const backH = Math.max(0.38, H - seatY - 0.04);
-  const back = new THREE.Mesh(new THREE.BoxGeometry(W * 0.78, backH, 0.06), cushionMat);
-  back.position.set(0, seatY + backH / 2 + 0.03, -D * 0.36);
+  const back = new THREE.Mesh(new THREE.BoxGeometry(W * 0.76, backH, 0.042), cushionMat);
+  back.position.set(0, seatY + backH / 2 + 0.03, -D * 0.35);
   back.rotation.x = -0.09;
-  const spine = new THREE.Mesh(new THREE.BoxGeometry(0.06, backH * 0.8, 0.035), metalMat);
-  spine.position.set(0, seatY + backH * 0.4, -D * 0.4);
-  g.add(back, spine);
+  g.add(back);
 
-  // Dual armrests
+  for (let r = 0; r < 3; r++) {
+    const rib = new THREE.Mesh(new THREE.BoxGeometry(W * 0.78, 0.016, 0.048), metalMat);
+    rib.position.set(0, seatY + 0.1 + (r / 2) * (backH - 0.12), -D * 0.355);
+    rib.rotation.x = -0.09;
+    g.add(rib);
+  }
+
+  const spine = new THREE.Mesh(new THREE.BoxGeometry(0.052, backH * 0.78, 0.03), metalMat);
+  spine.position.set(0, seatY + backH * 0.38, -D * 0.39);
+  g.add(spine);
+
+  // Curved loop armrests
   for (const sx of [-1, 1]) {
-    const post = new THREE.Mesh(new THREE.BoxGeometry(0.028, 0.2, 0.035), metalMat);
-    post.position.set(sx * (W * 0.44), seatY + 0.1, -0.02);
-    const pad = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.026, D * 0.56), cushionMat);
-    pad.position.set(sx * (W * 0.44), seatY + 0.21, 0.0);
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.024, 0.19, 0.03), metalMat);
+    post.position.set(sx * (W * 0.43), seatY + 0.095, -0.02);
+    const pad = new THREE.Mesh(new THREE.BoxGeometry(0.048, 0.024, D * 0.56), cushionMat);
+    pad.position.set(sx * (W * 0.43), seatY + 0.2, 0.01);
     g.add(post, pad);
   }
 
@@ -171,7 +232,6 @@ function buildChair(obj: RoomReplicaObject): THREE.Group {
   const padMat = makeMat(obj.secondaryColor, 0.82, 0.02);
   const seatY = Math.min(0.46, H * 0.52);
 
-  // 4 tapered legs
   const legGeo = new THREE.CylinderGeometry(0.018, 0.013, seatY, 10);
   for (const sx of [-1, 1]) {
     for (const sz of [-1, 1]) {
@@ -223,15 +283,6 @@ function buildTable(obj: RoomReplicaObject): THREE.Group {
     }
   }
 
-  // Subtle decorative stacked coffee-table book
-  const book = new THREE.Mesh(
-    new THREE.BoxGeometry(Math.min(0.28, W * 0.28), 0.026, Math.min(0.21, D * 0.32)),
-    makeMat('#e7e1d6', 0.8, 0.02)
-  );
-  book.position.set(W * 0.12, H + 0.013, 0);
-  book.rotation.y = 0.22;
-  g.add(book);
-
   enableShadows(g);
   return g;
 }
@@ -239,52 +290,79 @@ function buildTable(obj: RoomReplicaObject): THREE.Group {
 function buildSofa(obj: RoomReplicaObject): THREE.Group {
   const g = new THREE.Group();
   const { widthM: W, depthM: D, heightM: H } = obj;
-  const fabricMat = makeMat(obj.primaryColor, 0.88, 0.02);
+  const fabricMat = makeMat(obj.primaryColor, 0.86, 0.02);
   const pillowMat = makeMat(obj.secondaryColor, 0.84, 0.02);
   const footMat = makeMat('#2b2623', 0.5, 0.2);
 
-  // Recessed wooden feet
+  const isArmchair = obj.variant === 'armchair' || W <= 1.18;
+
   for (const sx of [-1, 1]) {
     for (const sz of [-1, 1]) {
-      const foot = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.02, 0.09, 10), footMat);
-      foot.position.set(sx * (W / 2 - 0.12), 0.045, sz * (D / 2 - 0.1));
+      const foot = new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.018, 0.06, 10), footMat);
+      foot.position.set(sx * (W / 2 - 0.1), 0.03, sz * (D / 2 - 0.1));
       g.add(foot);
     }
   }
 
-  // Main base plinth
+  if (isArmchair) {
+    // Sleek sculpted corner lounge armchair (curved wrap-around back & arms)
+    const baseH = Math.min(0.24, H * 0.34);
+    const base = new THREE.Mesh(new THREE.BoxGeometry(W - 0.02, baseH, D - 0.02), fabricMat);
+    base.position.y = 0.06 + baseH / 2;
+    g.add(base);
+
+    const armW = Math.min(0.14, W * 0.14);
+    const armH = Math.min(0.42, H * 0.55);
+    for (const sx of [-1, 1]) {
+      const arm = new THREE.Mesh(new THREE.BoxGeometry(armW, armH, D - 0.02), fabricMat);
+      arm.position.set(sx * (W / 2 - armW / 2), 0.06 + baseH + armH / 2 - 0.08, 0);
+      g.add(arm);
+    }
+
+    const seatC = new THREE.Mesh(
+      new THREE.BoxGeometry(W - armW * 2 - 0.02, 0.13, D * 0.78),
+      fabricMat
+    );
+    seatC.position.set(0, 0.06 + baseH + 0.06, D * 0.07);
+
+    const backH = Math.max(0.34, H - (0.06 + baseH));
+    const back = new THREE.Mesh(new THREE.BoxGeometry(W - 0.02, backH, 0.15), fabricMat);
+    back.position.set(0, 0.06 + baseH + backH / 2 - 0.06, -D / 2 + 0.085);
+    g.add(seatC, back);
+
+    enableShadows(g);
+    return g;
+  }
+
   const baseH = Math.min(0.22, H * 0.28);
   const base = new THREE.Mesh(new THREE.BoxGeometry(W - 0.04, baseH, D - 0.04), fabricMat);
-  base.position.y = 0.09 + baseH / 2;
+  base.position.y = 0.06 + baseH / 2;
   g.add(base);
 
-  // Armrests
   const armW = Math.min(0.18, W * 0.11);
   const armH = Math.min(0.54, H * 0.68);
   for (const sx of [-1, 1]) {
     const arm = new THREE.Mesh(new THREE.BoxGeometry(armW, armH, D - 0.02), fabricMat);
-    arm.position.set(sx * (W / 2 - armW / 2), 0.09 + armH / 2, 0);
+    arm.position.set(sx * (W / 2 - armW / 2), 0.06 + armH / 2, 0);
     g.add(arm);
   }
 
-  // Seat & Back Cushions (2 or 3 cushions based on width)
   const innerW = W - armW * 2 - 0.03;
   const count = W >= 1.75 ? 3 : 2;
   const cW = innerW / count - 0.015;
-  const seatTopY = 0.09 + baseH + 0.13;
+  const seatTopY = 0.06 + baseH + 0.13;
   const backH = Math.max(0.32, H - seatTopY + 0.06);
 
   for (let i = 0; i < count; i++) {
     const cx = -innerW / 2 + (i + 0.5) * (innerW / count);
     const seatC = new THREE.Mesh(new THREE.BoxGeometry(cW, 0.14, D * 0.72), fabricMat);
-    seatC.position.set(cx, 0.09 + baseH + 0.065, D * 0.08);
+    seatC.position.set(cx, 0.06 + baseH + 0.065, D * 0.08);
     const backC = new THREE.Mesh(new THREE.BoxGeometry(cW, backH, 0.17), fabricMat);
     backC.position.set(cx, seatTopY + backH / 2 - 0.04, -D / 2 + 0.15);
     backC.rotation.x = -0.14;
     g.add(seatC, backC);
   }
 
-  // Accent throw pillows
   for (const sx of [-1, 1]) {
     const pillow = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.28, 0.1), pillowMat);
     pillow.position.set(sx * (innerW * 0.38), seatTopY + 0.14, -D * 0.16);
@@ -308,27 +386,20 @@ function buildBed(obj: RoomReplicaObject): THREE.Group {
   frame.position.y = frameH / 2 + 0.05;
   g.add(frame);
 
-  // Headboard
   const headH = Math.max(0.92, H + 0.42);
   const headboard = new THREE.Mesh(new THREE.BoxGeometry(W + 0.04, headH, 0.09), frameMat);
   headboard.position.set(0, headH / 2, -D / 2 + 0.045);
   g.add(headboard);
 
-  // Mattress
   const matH = Math.max(0.2, H - frameH);
   const mattress = new THREE.Mesh(new THREE.BoxGeometry(W - 0.06, matH, D - 0.12), sheetMat);
   mattress.position.set(0, frameH + 0.05 + matH / 2, 0.03);
   g.add(mattress);
 
-  // Folded duvet covering lower 70%
-  const duvet = new THREE.Mesh(
-    new THREE.BoxGeometry(W - 0.02, matH * 0.55, D * 0.66),
-    duvetMat
-  );
+  const duvet = new THREE.Mesh(new THREE.BoxGeometry(W - 0.02, matH * 0.55, D * 0.66), duvetMat);
   duvet.position.set(0, frameH + 0.06 + matH * 0.8, D * 0.15);
   g.add(duvet);
 
-  // Two plump pillows
   const pillowW = Math.min(0.62, W * 0.39);
   for (const sx of [-1, 1]) {
     const p = new THREE.Mesh(new THREE.BoxGeometry(pillowW, 0.12, 0.34), sheetMat);
@@ -344,23 +415,52 @@ function buildBed(obj: RoomReplicaObject): THREE.Group {
 function buildBookshelf(obj: RoomReplicaObject): THREE.Group {
   const g = new THREE.Group();
   const { widthM: W, depthM: D, heightM: H } = obj;
+  const isOpenWallLedge =
+    obj.variant === 'open-wall-ledge' || ((obj.elevationM ?? 0) >= 0.45 && H <= 0.46);
+
+  if (isOpenWallLedge) {
+    // Crisp horizontal open wall cubby/shelf box (e.g. bright white open shelf under wall cupboards)
+    const shelfMat = makeMat(obj.primaryColor, 0.52, 0.04);
+    const backMat = makeMat(obj.secondaryColor, 0.72, 0.03);
+    const thick = 0.028;
+
+    const topBoard = new THREE.Mesh(new THREE.BoxGeometry(W, thick, D), shelfMat);
+    topBoard.position.y = H - thick / 2;
+    const botBoard = new THREE.Mesh(new THREE.BoxGeometry(W, thick, D), shelfMat);
+    botBoard.position.y = thick / 2;
+    const backBoard = new THREE.Mesh(
+      new THREE.BoxGeometry(W - thick, H - thick * 1.4, 0.018),
+      backMat
+    );
+    backBoard.position.set(0, H / 2, -D / 2 + 0.01);
+    g.add(topBoard, botBoard, backBoard);
+
+    const bays = Math.max(1, Math.min(4, obj.bayCount ?? (W >= 1.8 ? 3 : 2)));
+    for (let i = 0; i <= bays; i++) {
+      const px = -W / 2 + thick / 2 + (i / bays) * (W - thick);
+      const divider = new THREE.Mesh(new THREE.BoxGeometry(thick, H, D), shelfMat);
+      divider.position.set(px, H / 2, 0);
+      g.add(divider);
+    }
+
+    enableShadows(g);
+    return g;
+  }
+
   const woodMat = makeMat(obj.primaryColor, 0.62, 0.05);
   const backMat = makeMat(obj.secondaryColor, 0.8, 0.04);
   const thick = 0.028;
 
-  // Left & Right side uprights
   for (const sx of [-1, 1]) {
     const side = new THREE.Mesh(new THREE.BoxGeometry(thick, H, D), woodMat);
     side.position.set(sx * (W / 2 - thick / 2), H / 2, 0);
     g.add(side);
   }
 
-  // Back panel
   const back = new THREE.Mesh(new THREE.BoxGeometry(W - thick, H - 0.04, 0.016), backMat);
   back.position.set(0, H / 2, -D / 2 + 0.008);
   g.add(back);
 
-  // Horizontal shelves + decorative book blocks
   const shelfCount = Math.max(3, Math.min(6, Math.round(H / 0.36)));
   const bookColors = ['#b45309', '#334155', '#64748b', '#9f1239', '#0f766e', '#d6d3d1'];
   for (let i = 0; i <= shelfCount; i++) {
@@ -393,8 +493,9 @@ function buildCabinetOrWardrobe(obj: RoomReplicaObject): THREE.Group {
   const g = new THREE.Group();
   const { widthM: W, depthM: D, heightM: H } = obj;
   const isWallMounted = (obj.elevationM ?? 0) >= 0.35;
-  const bodyMat = makeMat(obj.primaryColor, 0.6, 0.06);
-  const trimMat = makeMat(obj.secondaryColor, 0.4, 0.55);
+  const bodyMat = makeMat(obj.primaryColor, 0.56, 0.06);
+  const trimMat = makeMat(obj.secondaryColor, 0.38, 0.55);
+  const seamMat = makeMat('#1f2329', 0.8, 0.1);
 
   const plinthH = isWallMounted ? 0 : 0.07;
   if (plinthH > 0) {
@@ -407,25 +508,41 @@ function buildCabinetOrWardrobe(obj: RoomReplicaObject): THREE.Group {
   body.position.set(0, plinthH + (H - plinthH) / 2, -0.01);
   g.add(body);
 
-  // Recessed front doors (2..5 bays scaled to width) with vertical handles
-  const doorCount = W >= 1.8 ? 4 : W >= 1.3 ? 3 : 2;
+  // Explicit doorCount or auto-scaled 2..5 doors with crisp recessed reveal seams
+  const doorCount = obj.doorCount ?? (W >= 1.75 ? 4 : W >= 1.25 ? 3 : 2);
   const doorW = W / doorCount - 0.012;
-  const doorH = H - plinthH - 0.03;
+  const doorH = H - plinthH - 0.024;
   for (let i = 0; i < doorCount; i++) {
     const dx = -W / 2 + (i + 0.5) * (W / doorCount);
-    const door = new THREE.Mesh(new THREE.BoxGeometry(doorW, doorH, 0.02), bodyMat);
-    door.position.set(dx, plinthH + doorH / 2 + 0.015, D / 2 - 0.01);
+    const door = new THREE.Mesh(new THREE.BoxGeometry(doorW, doorH, 0.022), bodyMat);
+    door.position.set(dx, plinthH + doorH / 2 + 0.012, D / 2 - 0.008);
+    g.add(door);
+
+    if (i > 0) {
+      const seamX = -W / 2 + i * (W / doorCount);
+      const seam = new THREE.Mesh(new THREE.BoxGeometry(0.009, doorH + 0.01, 0.026), seamMat);
+      seam.position.set(seamX, plinthH + doorH / 2 + 0.012, D / 2 - 0.004);
+      g.add(seam);
+    }
+
     const handleSide = i % 2 === 0 ? 1 : -1;
     const handle = new THREE.Mesh(
-      new THREE.BoxGeometry(0.014, Math.min(0.2, doorH * 0.24), 0.022),
+      new THREE.BoxGeometry(0.012, Math.min(0.16, doorH * 0.24), 0.024),
       trimMat
     );
     handle.position.set(
-      dx + handleSide * Math.max(0.025, doorW * 0.34),
-      isWallMounted ? doorH * 0.24 : plinthH + doorH * 0.54,
+      dx + handleSide * Math.max(0.025, doorW * 0.36),
+      isWallMounted ? doorH * 0.18 : plinthH + doorH * 0.54,
       D / 2 + 0.012
     );
-    g.add(door, handle);
+    g.add(handle);
+  }
+
+  // Horizontal upper reveal strip matching flush Euro-style overhead cupboards
+  if (isWallMounted && H >= 0.45) {
+    const topReveal = new THREE.Mesh(new THREE.BoxGeometry(W - 0.01, 0.008, 0.026), seamMat);
+    topReveal.position.set(0, H * 0.72, D / 2 + 0.002);
+    g.add(topReveal);
   }
 
   enableShadows(g);
@@ -442,7 +559,6 @@ function buildTvStand(obj: RoomReplicaObject): THREE.Group {
     emissiveIntensity: 0.35,
   });
 
-  // Low console body + legs
   const legH = 0.12;
   const bodyH = Math.max(0.28, H - legH);
   for (const sx of [-1, 1]) {
@@ -456,7 +572,6 @@ function buildTvStand(obj: RoomReplicaObject): THREE.Group {
   consoleBox.position.y = legH + bodyH / 2;
   g.add(consoleBox);
 
-  // Slim widescreen TV resting atop the console
   const tvW = Math.min(W * 0.84, 1.28);
   const tvH = tvW * 0.56;
   const ped = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.02, 0.16), screenFrameMat);
@@ -465,10 +580,7 @@ function buildTvStand(obj: RoomReplicaObject): THREE.Group {
   neck.position.set(0, H + 0.055, -0.03);
   const tvFrame = new THREE.Mesh(new THREE.BoxGeometry(tvW, tvH, 0.032), screenFrameMat);
   tvFrame.position.set(0, H + 0.08 + tvH / 2, -0.02);
-  const tvDisplay = new THREE.Mesh(
-    new THREE.PlaneGeometry(tvW - 0.03, tvH - 0.03),
-    screenGlassMat
-  );
+  const tvDisplay = new THREE.Mesh(new THREE.PlaneGeometry(tvW - 0.03, tvH - 0.03), screenGlassMat);
   tvDisplay.position.set(0, H + 0.08 + tvH / 2, -0.002);
   g.add(ped, neck, tvFrame, tvDisplay);
 
@@ -481,15 +593,15 @@ function buildRugOrMat(obj: RoomReplicaObject): THREE.Group {
   const { widthM: W, depthM: D, type } = obj;
   const mainMat = makeMat(obj.primaryColor, 0.94, 0.0);
   const borderMat = makeMat(obj.secondaryColor, 0.9, 0.0);
-  const thick = type === 'fitness-mat' ? 0.014 : 0.01;
+  const thick = type === 'fitness-mat' ? 0.014 : 0.015;
 
   const border = new THREE.Mesh(new THREE.BoxGeometry(W, thick, D), borderMat);
-  border.position.y = thick / 2 + 0.006;
+  border.position.y = thick / 2 + 0.005;
   const center = new THREE.Mesh(
-    new THREE.BoxGeometry(Math.max(0.2, W - 0.12), thick + 0.002, Math.max(0.2, D - 0.12)),
+    new THREE.BoxGeometry(Math.max(0.16, W - 0.06), thick + 0.003, Math.max(0.16, D - 0.06)),
     mainMat
   );
-  center.position.y = thick / 2 + 0.007;
+  center.position.y = thick / 2 + 0.006;
   g.add(border, center);
 
   enableShadows(g, false, true);
@@ -499,9 +611,88 @@ function buildRugOrMat(obj: RoomReplicaObject): THREE.Group {
 function buildPlant(obj: RoomReplicaObject): THREE.Group {
   const g = new THREE.Group();
   const { widthM: W, heightM: H } = obj;
-  const potMat = makeMat(obj.secondaryColor, 0.64, 0.06);
+  const potMat = makeMat(obj.secondaryColor, 0.62, 0.08);
   const soilMat = makeMat('#3a2c22', 0.95, 0.0);
-  const leafMat = makeMat(obj.primaryColor, 0.62, 0.03);
+  const leafMat = makeMat(obj.primaryColor, 0.66, 0.03);
+  const trunkMat = makeMat('#6b5340', 0.85, 0.02);
+
+  const isSmallShelfPot =
+    obj.variant === 'small-shelf-pot' || H <= 0.34 || (obj.elevationM ?? 0) >= 0.45;
+  const isTallTree = obj.variant === 'tall-tree' || H >= 1.35;
+
+  if (isSmallShelfPot) {
+    const potR = Math.max(0.038, Math.min(0.065, W * 0.36));
+    const potH = Math.min(0.08, H * 0.42);
+    const pot = new THREE.Mesh(new THREE.CylinderGeometry(potR, potR * 0.8, potH, 14), potMat);
+    pot.position.y = potH / 2;
+    g.add(pot);
+
+    const tuftCount = 6;
+    for (let i = 0; i < tuftCount; i++) {
+      const a = (i / tuftCount) * Math.PI * 2;
+      const leaf = new THREE.Mesh(new THREE.DodecahedronGeometry(potR * 0.72, 0), leafMat);
+      leaf.position.set(
+        Math.cos(a) * potR * 0.48,
+        potH + (H - potH) * 0.48 + (i % 2) * 0.015,
+        Math.sin(a) * potR * 0.48
+      );
+      leaf.scale.set(1.0, 0.85, 0.9);
+      g.add(leaf);
+    }
+    const crown = new THREE.Mesh(new THREE.DodecahedronGeometry(potR * 0.75, 0), leafMat);
+    crown.position.y = potH + (H - potH) * 0.72;
+    g.add(crown);
+    enableShadows(g);
+    return g;
+  }
+
+  if (isTallTree) {
+    // Tall indoor tree (sculpted ribbed planter + woody trunk + lush multi-tier botanical crown)
+    const potR = Math.max(0.14, Math.min(0.22, W * 0.36));
+    const potH = Math.min(0.36, H * 0.22);
+    const pot = new THREE.Mesh(new THREE.CylinderGeometry(potR, potR * 0.76, potH, 18), potMat);
+    pot.position.y = potH / 2;
+    const soil = new THREE.Mesh(new THREE.CylinderGeometry(potR * 0.9, potR * 0.9, 0.02, 16), soilMat);
+    soil.position.y = potH - 0.012;
+
+    const trunkH = H * 0.76;
+    const trunk = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.016, 0.028, trunkH, 10),
+      trunkMat
+    );
+    trunk.position.y = potH + trunkH * 0.42;
+    g.add(pot, soil, trunk);
+
+    // Multi-tier foliage crowns (lower & upper canopy tufts)
+    const tiers = [
+      { y: potH + trunkH * 0.56, r: potR * 1.15, count: 6 },
+      { y: potH + trunkH * 0.88, r: potR * 1.35, count: 8 },
+    ];
+    for (let tIdx = 0; tIdx < tiers.length; tIdx++) {
+      const tier = tiers[tIdx];
+      for (let i = 0; i < tier.count; i++) {
+        const a = (i / tier.count) * Math.PI * 2 + tIdx * 0.4;
+        const rad = tier.r * (0.45 + (i % 2) * 0.35);
+        const cluster = new THREE.Mesh(
+          new THREE.DodecahedronGeometry(tier.r * 0.52, 1),
+          leafMat
+        );
+        cluster.position.set(
+          Math.cos(a) * rad,
+          tier.y + ((i % 3) - 1) * 0.1,
+          Math.sin(a) * rad
+        );
+        cluster.scale.set(1.15, 0.82, 1.05);
+        g.add(cluster);
+      }
+    }
+    const topCrown = new THREE.Mesh(new THREE.DodecahedronGeometry(potR * 0.85, 1), leafMat);
+    topCrown.position.y = H - 0.14;
+    g.add(topCrown);
+
+    enableShadows(g);
+    return g;
+  }
 
   const potR = Math.max(0.11, Math.min(0.22, W * 0.42));
   const potH = Math.min(0.38, H * 0.35);
@@ -511,7 +702,6 @@ function buildPlant(obj: RoomReplicaObject): THREE.Group {
   soil.position.y = potH - 0.015;
   g.add(pot, soil);
 
-  // Layered multi-stem foliage fronds
   const stemCount = 7;
   for (let i = 0; i < stemCount; i++) {
     const a = (i / stemCount) * Math.PI * 2 + 0.3;
@@ -525,10 +715,7 @@ function buildPlant(obj: RoomReplicaObject): THREE.Group {
     );
     stem.rotation.set(Math.sin(a) * tilt, 0, -Math.cos(a) * tilt);
 
-    const leaf = new THREE.Mesh(
-      new THREE.SphereGeometry(Math.max(0.075, potR * 0.55), 10, 8),
-      leafMat
-    );
+    const leaf = new THREE.Mesh(new THREE.SphereGeometry(Math.max(0.075, potR * 0.55), 10, 8), leafMat);
     leaf.scale.set(1.25, 0.45, 0.75);
     leaf.position.set(
       Math.cos(a) * (potR * 0.85 + 0.04),
@@ -594,7 +781,6 @@ function buildWindow(obj: RoomReplicaObject, ceilingHeightM: number): THREE.Grou
   const sill = new THREE.Mesh(new THREE.BoxGeometry(W + 0.1, 0.035, 0.12), frameMat);
   sill.position.set(0, sillY - 0.01, 0.04);
 
-  // Soft side curtain drapes
   const drapeH = Math.min(ceilingHeightM - 0.14, H + 0.55);
   for (const sx of [-1, 1]) {
     const drape = new THREE.Mesh(new THREE.BoxGeometry(0.18, drapeH, 0.075), curtainMat);
@@ -616,25 +802,51 @@ function buildWindow(obj: RoomReplicaObject, ceilingHeightM: number): THREE.Grou
 function buildDoor(obj: RoomReplicaObject): THREE.Group {
   const g = new THREE.Group();
   const { widthM: W, heightM: H } = obj;
-  const isOpenDoorway = obj.label.toLowerCase().includes('doorway');
+  const isOpenDoorway =
+    obj.variant === 'open-doorway' || obj.label.toLowerCase().includes('doorway');
 
   if (isOpenDoorway) {
-    const jambMat = makeMat(obj.secondaryColor, 0.55, 0.08);
-    const corridorMat = makeMat(obj.primaryColor, 0.85, 0.02, {
+    const jambMat = makeMat(obj.secondaryColor, 0.52, 0.08);
+    const corridorWallMat = makeMat(obj.primaryColor, 0.85, 0.02, {
       emissive: obj.primaryColor,
-      emissiveIntensity: 0.28,
+      emissiveIntensity: 0.24,
     });
-    const jambW = 0.065;
+    const corridorFloorMat = makeMat('#d8d3ca', 0.38, 0.04, {
+      emissive: obj.primaryColor,
+      emissiveIntensity: 0.12,
+    });
+
+    const jambW = 0.068;
+    const alcoveD = 0.42;
     for (const sx of [-1, 1]) {
-      const sideJamb = new THREE.Mesh(new THREE.BoxGeometry(jambW, H, 0.08), jambMat);
+      const sideJamb = new THREE.Mesh(new THREE.BoxGeometry(jambW, H, 0.12), jambMat);
       sideJamb.position.set(sx * (W / 2 + jambW / 2), H / 2, 0.02);
-      g.add(sideJamb);
+      const alcoveSide = new THREE.Mesh(new THREE.BoxGeometry(0.03, H, alcoveD), corridorWallMat);
+      alcoveSide.position.set(sx * (W / 2 - 0.015), H / 2, -alcoveD / 2);
+      g.add(sideJamb, alcoveSide);
     }
-    const header = new THREE.Mesh(new THREE.BoxGeometry(W + jambW * 2, jambW, 0.08), jambMat);
+    const header = new THREE.Mesh(new THREE.BoxGeometry(W + jambW * 2, jambW, 0.12), jambMat);
     header.position.set(0, H + jambW / 2, 0.02);
-    const passageBackdrop = new THREE.Mesh(new THREE.PlaneGeometry(W, H), corridorMat);
-    passageBackdrop.position.set(0, H / 2, 0.004);
-    g.add(header, passageBackdrop);
+
+    const alcoveBack = new THREE.Mesh(new THREE.PlaneGeometry(W, H), corridorWallMat);
+    alcoveBack.position.set(0, H / 2, -alcoveD);
+    const alcoveFloor = new THREE.Mesh(new THREE.PlaneGeometry(W, alcoveD), corridorFloorMat);
+    alcoveFloor.rotation.x = -Math.PI / 2;
+    alcoveFloor.position.set(0, 0.008, -alcoveD / 2);
+
+    // Subtle console stand silhouette inside adjacent hallway for authentic depth parallax
+    const hallStand = new THREE.Mesh(
+      new THREE.BoxGeometry(Math.min(0.36, W * 0.38), 0.72, 0.22),
+      makeMat('#6b5e50', 0.55, 0.18)
+    );
+    hallStand.position.set(-W * 0.15, 0.36, -alcoveD * 0.55);
+    const hallVase = new THREE.Mesh(
+      new THREE.DodecahedronGeometry(0.14, 0),
+      makeMat('#e7b9ac', 0.75, 0.02)
+    );
+    hallVase.position.set(-W * 0.15, 0.85, -alcoveD * 0.55);
+
+    g.add(header, alcoveBack, alcoveFloor, hallStand, hallVase);
     enableShadows(g, false, true);
     return g;
   }
@@ -659,6 +871,22 @@ function buildDoor(obj: RoomReplicaObject): THREE.Group {
   return g;
 }
 
+function makeGraphicCanvasTexture(
+  wPx: number,
+  hPx: number,
+  draw: (ctx: CanvasRenderingContext2D, w: number, h: number) => void
+): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = wPx;
+  canvas.height = hPx;
+  const ctx = canvas.getContext('2d')!;
+  draw(ctx, wPx, hPx);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  return tex;
+}
+
 function buildMirrorOrArt(obj: RoomReplicaObject, ceilingHeightM: number): THREE.Group {
   const g = new THREE.Group();
   const { widthM: W, heightM: H, type } = obj;
@@ -667,6 +895,14 @@ function buildMirrorOrArt(obj: RoomReplicaObject, ceilingHeightM: number): THREE
     type === 'mirror'
       ? Math.min(ceilingHeightM - H / 2 - 0.12, Math.max(H / 2 + 0.08, 1.12))
       : Math.min(ceilingHeightM - H / 2 - 0.18, 1.52);
+
+  if (obj.variant === 'switch-panel') {
+    const plate = new THREE.Mesh(new THREE.BoxGeometry(W, H, 0.016), makeMat('#f3f4f6', 0.35, 0.05));
+    plate.position.set(0, 1.18, 0);
+    g.add(plate);
+    enableShadows(g, false, true);
+    return g;
+  }
 
   const frame = new THREE.Mesh(new THREE.BoxGeometry(W, H, 0.034), frameMat);
   frame.position.set(0, centerY, 0);
@@ -699,6 +935,222 @@ function buildMirrorOrArt(obj: RoomReplicaObject, ceilingHeightM: number): THREE
   }
 
   enableShadows(g, false, true);
+  return g;
+}
+
+function buildArchitecturalFeature(
+  feat: RoomArchitecturalFeature,
+  ceilingHeightM: number
+): THREE.Group {
+  const g = new THREE.Group();
+  const { widthM: W, depthM: D, heightM: H, primaryColor, secondaryColor } = feat;
+
+  switch (feat.type) {
+    case 'soffit-beam': {
+      const beamMat = makeMat(primaryColor, 0.72, 0.03);
+      const beam = new THREE.Mesh(new THREE.BoxGeometry(W, H, D), beamMat);
+      beam.position.set(0, H / 2, 0);
+      g.add(beam);
+
+      if (feat.textLabel) {
+        const tex = makeGraphicCanvasTexture(1024, 256, (ctx, cw, ch) => {
+          ctx.fillStyle = primaryColor;
+          ctx.fillRect(0, 0, cw, ch);
+          ctx.fillStyle = secondaryColor;
+          // Accent corner triangles
+          ctx.beginPath();
+          ctx.moveTo(42, 24);
+          ctx.lineTo(94, 24);
+          ctx.lineTo(68, 72);
+          ctx.closePath();
+          ctx.fill();
+
+          ctx.font = '700 66px "Plus Jakarta Sans", sans-serif';
+          ctx.textBaseline = 'middle';
+          ctx.textAlign = 'right';
+          const lines = feat.textLabel!.split(/\s+/).slice(0, 4);
+          if (lines.length === 2) {
+            ctx.fillText(lines[0], cw - 64, ch * 0.34);
+            ctx.fillText(lines[1], cw - 64, ch * 0.72);
+          } else {
+            ctx.fillText(feat.textLabel!, cw - 64, ch * 0.52);
+          }
+        });
+        const face = new THREE.Mesh(
+          new THREE.PlaneGeometry(W * 0.98, H * 0.94),
+          makeMat('#ffffff', 0.78, 0.02, { map: tex })
+        );
+        face.position.set(0, H / 2, D / 2 + 0.003);
+        g.add(face);
+      }
+      g.position.set(
+        feat.x,
+        Math.min(ceilingHeightM - H, Math.max(1.6, feat.elevationM)),
+        feat.z
+      );
+      break;
+    }
+
+    case 'ceiling-fan': {
+      const rodMat = makeMat(secondaryColor, 0.35, 0.65);
+      const bladeMat = makeMat(primaryColor, 0.42, 0.12);
+      const rodH = Math.min(0.26, Math.max(0.14, H * 0.65));
+
+      const canopy = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.075, 0.04, 16), rodMat);
+      canopy.position.y = -0.02;
+      const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, rodH, 12), rodMat);
+      rod.position.y = -rodH / 2 - 0.02;
+      const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.095, 0.07, 20), rodMat);
+      hub.position.y = -rodH - 0.03;
+      g.add(canopy, rod, hub);
+
+      const bladeLen = Math.max(0.38, Math.min(0.58, W * 0.46));
+      for (let i = 0; i < 3; i++) {
+        const a = (i / 3) * Math.PI * 2 + 0.4;
+        const bladePivot = new THREE.Group();
+        bladePivot.position.y = -rodH - 0.03;
+        bladePivot.rotation.y = a;
+        const blade = new THREE.Mesh(new THREE.BoxGeometry(bladeLen, 0.012, 0.11), bladeMat);
+        blade.position.x = bladeLen * 0.5 + 0.05;
+        blade.rotation.x = 0.12;
+        bladePivot.add(blade);
+        g.add(bladePivot);
+      }
+      g.position.set(feat.x, ceilingHeightM, feat.z);
+      break;
+    }
+
+    case 'ceiling-spotlights': {
+      const canMat = makeMat(primaryColor, 0.35, 0.6);
+      const lensMat = makeMat('#fff8e6', 0.15, 0.1, {
+        emissive: '#fef3c7',
+        emissiveIntensity: 1.4,
+      });
+      const n = Math.max(1, Math.min(6, feat.count ?? 3));
+      for (let i = 0; i < n; i++) {
+        const ox = n === 1 ? 0 : -W / 2 + 0.14 + (i / (n - 1)) * Math.max(0.2, W - 0.28);
+        const can = new THREE.Mesh(new THREE.CylinderGeometry(0.042, 0.046, 0.11, 16), canMat);
+        can.position.set(ox, -0.055, 0);
+        const lens = new THREE.Mesh(new THREE.CircleGeometry(0.036, 14), lensMat);
+        lens.rotation.x = Math.PI / 2;
+        lens.position.set(ox, -0.111, 0);
+        g.add(can, lens);
+      }
+      g.position.set(feat.x, ceilingHeightM, feat.z);
+      break;
+    }
+
+    case 'slatted-panel': {
+      const backMat = makeMat(secondaryColor, 0.85, 0.04);
+      const slatMat = makeMat(primaryColor, 0.62, 0.08);
+      const back = new THREE.Mesh(new THREE.BoxGeometry(W, H, Math.max(0.016, D * 0.5)), backMat);
+      back.position.set(0, H / 2, 0);
+      g.add(back);
+
+      const slatCount = Math.max(4, Math.min(36, feat.count ?? Math.round(W * 14)));
+      const slatW = Math.min(0.036, (W / slatCount) * 0.56);
+      const slatGeo = new THREE.BoxGeometry(slatW, H - 0.01, Math.max(0.022, D * 0.65));
+      for (let i = 0; i < slatCount; i++) {
+        const sx = -W / 2 + (i + 0.5) * (W / slatCount);
+        const slat = new THREE.Mesh(slatGeo, slatMat);
+        slat.position.set(sx, H / 2, D * 0.35);
+        g.add(slat);
+      }
+      g.position.set(feat.x, feat.elevationM, feat.z);
+      break;
+    }
+
+    case 'wall-logo': {
+      const logoMat = makeMat(primaryColor, 0.32, 0.25);
+      // Stylized twin slanted geometric chevron bars + triangle emblem (or crisp monogram)
+      const hUnit = H * 0.85;
+      const barW = W * 0.22;
+      const bar1 = new THREE.Mesh(new THREE.BoxGeometry(barW, hUnit, 0.032), logoMat);
+      bar1.position.set(-W * 0.02, H / 2, 0.016);
+      bar1.rotation.z = -0.22;
+      const bar2 = new THREE.Mesh(new THREE.BoxGeometry(barW, hUnit, 0.032), logoMat);
+      bar2.position.set(W * 0.24, H / 2, 0.016);
+      bar2.rotation.z = -0.22;
+      const dot = new THREE.Mesh(new THREE.BoxGeometry(barW * 0.9, hUnit * 0.36, 0.032), logoMat);
+      dot.position.set(-W * 0.26, H * 0.72, 0.016);
+      dot.rotation.z = -0.22;
+      g.add(dot, bar1, bar2);
+      g.position.set(feat.x, feat.elevationM, feat.z);
+      break;
+    }
+
+    case 'wall-mural': {
+      const tex = makeGraphicCanvasTexture(512, 512, (ctx, cw, ch) => {
+        ctx.clearRect(0, 0, cw, ch);
+        // Subtle triangle accent cluster + clean wall typography
+        ctx.fillStyle = primaryColor;
+        for (let r = 0; r < 3; r++) {
+          for (let c = 0; c < 3 - r; c++) {
+            const tx = cw * 0.45 + c * 48 + r * 24;
+            const ty = 48 + r * 44;
+            ctx.beginPath();
+            ctx.moveTo(tx, ty);
+            ctx.lineTo(tx + 34, ty);
+            ctx.lineTo(tx + 17, ty + 28);
+            ctx.closePath();
+            ctx.strokeStyle = c % 2 === 0 ? primaryColor : secondaryColor;
+            ctx.lineWidth = 3;
+            ctx.stroke();
+          }
+        }
+        if (feat.textLabel) {
+          ctx.fillStyle = primaryColor;
+          ctx.font = '600 32px "DM Sans", sans-serif';
+          ctx.textAlign = 'left';
+          ctx.fillText(feat.textLabel.slice(0, 26), 28, ch * 0.56);
+        }
+      });
+      const plane = new THREE.Mesh(
+        new THREE.PlaneGeometry(W, H),
+        makeMat('#ffffff', 0.85, 0.02, { map: tex, transparent: true })
+      );
+      plane.position.set(0, H / 2, 0.012);
+      g.add(plane);
+      g.position.set(feat.x, feat.elevationM, feat.z);
+      break;
+    }
+
+    case 'door-garland': {
+      const orangeMat = makeMat(primaryColor, 0.72, 0.02);
+      const yellowMat = makeMat(secondaryColor, 0.72, 0.02);
+      const beads = Math.max(8, Math.min(26, Math.round(H * 14)));
+      for (let i = 0; i < beads; i++) {
+        const y = H - (i + 0.5) * (H / beads);
+        const bead = new THREE.Mesh(
+          new THREE.SphereGeometry(0.026, 8, 6),
+          i > beads * 0.66 && i < beads * 0.84 ? yellowMat : orangeMat
+        );
+        bead.position.set(0, y, 0.025);
+        g.add(bead);
+      }
+      g.position.set(feat.x, feat.elevationM, feat.z);
+      break;
+    }
+
+    case 'desk-box': {
+      const boxMat = makeMat(primaryColor, 0.86, 0.02);
+      const labelMat = makeMat(secondaryColor, 0.85, 0.01);
+      const body = new THREE.Mesh(new THREE.BoxGeometry(W, H * 0.45, D), boxMat);
+      body.position.y = H * 0.225;
+      const lid = new THREE.Mesh(new THREE.BoxGeometry(W * 0.96, H * 0.55, 0.016), boxMat);
+      lid.position.set(0, H * 0.65, -D * 0.42);
+      lid.rotation.x = 0.25;
+      const sticker = new THREE.Mesh(new THREE.PlaneGeometry(W * 0.35, H * 0.22), labelMat);
+      sticker.position.set(W * 0.2, H * 0.24, D / 2 + 0.002);
+      g.add(body, lid, sticker);
+      g.position.set(feat.x, feat.elevationM, feat.z);
+      break;
+    }
+  }
+
+  g.name = `Replica_Feat_${feat.type}_${feat.id}`;
+  g.rotation.y = THREE.MathUtils.degToRad(feat.rotationDeg);
+  enableShadows(g, feat.type !== 'wall-mural', true);
   return g;
 }
 
@@ -773,8 +1225,12 @@ function disposeGroupChildren(parent: THREE.Group): void {
       if (node instanceof THREE.Mesh) {
         node.geometry.dispose();
         if (Array.isArray(node.material)) {
-          node.material.forEach((m) => m.dispose());
+          node.material.forEach((m) => {
+            if (m.map) m.map.dispose();
+            m.dispose();
+          });
         } else {
+          if (node.material.map) node.material.map.dispose();
           node.material.dispose();
         }
       }
@@ -784,8 +1240,6 @@ function disposeGroupChildren(parent: THREE.Group): void {
 
 /**
  * Manages the procedural 3D furniture & architectural replica meshes inside the studio scene.
- * Rebuilds cleanly only when the scanned RoomReplicaScene changes, and toggles inferred
- * unseen-zone furniture visibility in O(n) without geometry churn.
  */
 export function createRoomReplicaRig(parent: THREE.Group): RoomReplicaRigHandle {
   const group = new THREE.Group();
@@ -805,13 +1259,18 @@ export function createRoomReplicaRig(parent: THREE.Group): RoomReplicaRigHandle 
       return;
     }
 
-    const nextKey = `${sceneData.capturedAt}|${sceneData.objects.length}|${sceneData.ceilingHeightCm}`;
+    const featCount = sceneData.architecturalFeatures?.length ?? 0;
+    const nextKey = `${sceneData.capturedAt}|${sceneData.objects.length}|${featCount}|${sceneData.ceilingHeightCm}`;
     if (builtKey !== nextKey) {
       disposeGroupChildren(group);
       const ceilingM = sceneData.ceilingHeightCm / 100;
       for (const obj of sceneData.objects) {
-        const mesh = buildReplicaObjectMesh(obj, ceilingM);
-        group.add(mesh);
+        group.add(buildReplicaObjectMesh(obj, ceilingM));
+      }
+      if (sceneData.architecturalFeatures) {
+        for (const feat of sceneData.architecturalFeatures) {
+          group.add(buildArchitecturalFeature(feat, ceilingM));
+        }
       }
       builtKey = nextKey;
     }
