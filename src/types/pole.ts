@@ -17,6 +17,7 @@ export type LightingPreset =
 
 export type CameraFocusId =
   | 'full-rig'
+  | 'floor-plan'
   | 'base-hub'
   | 'x-joint'
   | 'top-mount'

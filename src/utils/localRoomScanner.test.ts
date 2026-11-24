@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  mergeTiledDetectionsWithNMS,
   reconstructRoomLocallyFromPixels,
   sampleRoomPaletteAndMaterials,
   type RawObjectDetection,
@@ -139,3 +140,76 @@ test('reconstructRoomLocallyFromPixels maps COCO-SSD furniture detections into 3
     assert.ok(Math.abs(obj.z) <= result.scene.roomDepthM / 2);
   }
 });
+
+test('mergeTiledDetectionsWithNMS merges overlapping duplicate detections and boosts consensus score', () => {
+  const merged = mergeTiledDetectionsWithNMS([
+    { className: 'chair', score: 0.72, x: 0.2, y: 0.5, w: 0.14, h: 0.24 },
+    { className: 'chair', score: 0.65, x: 0.21, y: 0.51, w: 0.13, h: 0.23 }, // duplicate from side tile
+    { className: 'chair', score: 0.69, x: 0.66, y: 0.5, w: 0.14, h: 0.24 }, // distinct second chair
+  ]);
+
+  assert.equal(merged.length, 2, 'Duplicate overlapping box should merge while keeping distinct chair');
+  assert.ok(merged[0].score > 0.72, 'Multi-tile consensus should boost confidence score');
+});
+
+test('hybrid detector recovers uncovered furniture, multiple desk clusters, and doors/mirrors even when COCO finds >=2 objects', () => {
+  const w = 160;
+  const h = 120;
+  const rgba = createSyntheticRoomRgba(w, h);
+  const ceilPx = Math.floor(h * 0.2);
+  const floorPx = Math.floor(h * 0.74);
+
+  // Paint a vertical dark-wood door on the left wall (x: 8%..20%, y: 24%..74%)
+  for (let y = ceilPx + 5; y < floorPx; y++) {
+    for (let x = Math.floor(w * 0.08); x <= Math.floor(w * 0.2); x++) {
+      const idx = (y * w + x) * 4;
+      rgba[idx] = 64;
+      rgba[idx + 1] = 48;
+      rgba[idx + 2] = 36;
+    }
+  }
+
+  // Paint a tall uncovered wardrobe silhouette on far right (x: 78%..93%, y: 25%..76%)
+  for (let y = ceilPx + 6; y <= floorPx + 2; y++) {
+    for (let x = Math.floor(w * 0.78); x <= Math.floor(w * 0.93); x++) {
+      const idx = (y * w + x) * 4;
+      rgba[idx] = 52;
+      rgba[idx + 1] = 56;
+      rgba[idx + 2] = 66;
+    }
+  }
+
+  const markers = { ...DEFAULT_AR_MARKERS, ceilingY: 0.2, floorY: 0.74 };
+  const detections: RawObjectDetection[] = [
+    // Two separate laptop clusters + 2 chairs -> COCO already has >= 2 objects
+    { className: 'laptop', score: 0.85, x: 0.24, y: 0.48, w: 0.09, h: 0.07 },
+    { className: 'laptop', score: 0.82, x: 0.56, y: 0.48, w: 0.09, h: 0.07 },
+    { className: 'chair', score: 0.76, x: 0.25, y: 0.56, w: 0.1, h: 0.22 },
+    { className: 'chair', score: 0.74, x: 0.57, y: 0.56, w: 0.1, h: 0.22 },
+  ];
+
+  const result = reconstructRoomLocallyFromPixels(rgba, w, h, {
+    markers,
+    roomWidthM: 4.6,
+    roomDepthM: 4.0,
+    ceilingHeightCm: 280,
+    distanceM: 3.0,
+    poleOffsetXM: 0,
+    floorAccuracyPct: 95,
+    ceilingAccuracyPct: 94,
+    overallAccuracyPct: 95,
+    externalDetections: detections,
+  });
+
+  const visibleDesks = result.scene.objects.filter((o) => !o.inferred && o.type === 'desk');
+  assert.ok(visibleDesks.length >= 2, `Expected >=2 synthesized desks from distinct laptop clusters, got ${visibleDesks.length}`);
+  assert.ok(
+    result.scene.objects.some((o) => !o.inferred && o.type === 'door'),
+    'Should detect left-wall door from raw pixels even when COCO-SSD has >=2 objects'
+  );
+  assert.ok(
+    result.scene.visibleObjectCount >= 6,
+    `Expected hybrid detector to find >=6 visible objects, got ${result.scene.visibleObjectCount}`
+  );
+});
+

@@ -230,6 +230,12 @@ export default function App() {
     [activePole.id, config.ceilingHeightCm]
   );
 
+  const handleApplyFinishToAll = useCallback((finish: PoleFinishId) => {
+    soundFx.playDetent();
+    setPoles((prev) => prev.map((p) => ({ ...p, finish })));
+    setConfig((prev) => ({ ...prev, finish }));
+  }, []);
+
   const handleAddPole = useCallback(() => {
     if (poles.length >= MAX_POLES_IN_STUDIO) return;
     soundFx.playMetalSeat();
@@ -524,6 +530,10 @@ export default function App() {
     return viewportRef.current.generateUSDZUrl();
   }, []);
 
+  const handleCaptureSnapshot = useCallback(() => {
+    return viewportRef.current?.captureSnapshot() ?? null;
+  }, []);
+
   const isDark = isDarkLighting(config.lighting);
 
   return (
@@ -702,6 +712,7 @@ export default function App() {
         onRemoveActivePole={handleRemoveActivePole}
         onCenterActivePole={handleCenterActivePole}
         onChangeActivePole={handleChangeActivePole}
+        onApplyFinishToAll={handleApplyFinishToAll}
         onChangeConfig={handleChangeConfig}
         compareMode={compareMode}
         onToggleCompareMode={handleToggleCompareMode}
@@ -779,6 +790,7 @@ export default function App() {
         bom={bom}
         onExportCAD={handleExportCAD}
         onGenerateUSDZUrl={handleGenerateUSDZUrl}
+        onCaptureSnapshot={handleCaptureSnapshot}
         onLaunchAssemblyDemo={handleLaunchAssemblyDemo}
         onStartArCamera={startArCamera}
       />

@@ -57,6 +57,7 @@ export interface PoleViewportHandle {
   focusPart: (partId: HardwarePartId) => void;
   exportCAD: (format: CadFormat) => Promise<{ filename: string; bytes: number }>;
   generateUSDZUrl: () => Promise<string>;
+  captureSnapshot: () => string | null;
 }
 
 interface PoleViewport3DProps {
@@ -210,6 +211,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       poleGeoKeys: string[];
       env: EnvironmentRigHandle | null;
       arCloudRig: ARPointCloudRigHandle | null;
+      scene: THREE.Scene | null;
       camera: THREE.PerspectiveCamera | null;
       controls: OrbitControls | null;
       renderer: THREE.WebGLRenderer | null;
@@ -221,6 +223,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       poleGeoKeys: [],
       env: null,
       arCloudRig: null,
+      scene: null,
       camera: null,
       controls: null,
       renderer: null,
@@ -258,6 +261,13 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
             pos: new THREE.Vector3(0, H * 0.46, 3.15),
             target: new THREE.Vector3(0, H * 0.39, 0),
           };
+        case 'floor-plan': {
+          const planY = Math.max(2.05, H - 0.14);
+          return {
+            pos: new THREE.Vector3(0, planY, 0.08),
+            target: new THREE.Vector3(0, 0, 0),
+          };
+        }
         case 'base-hub': {
           const pt = anchor.handle
             ? anchor.handle.getPartFocusPoint('bearing-hub')
@@ -333,6 +343,16 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
         const anchor = getActivePoleAnchor();
         if (!anchor.handle) throw new Error('3D rig not initialized');
         return buildQuickLookUSDZUrl(anchor.handle.root);
+      },
+      captureSnapshot: () => {
+        const api = sceneApiRef.current;
+        if (!api.renderer || !api.scene || !api.camera) return null;
+        try {
+          api.renderer.render(api.scene, api.camera);
+          return api.renderer.domElement.toDataURL('image/png');
+        } catch {
+          return null;
+        }
       },
     }));
 
@@ -1050,6 +1070,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
         poleGeoKeys,
         env,
         arCloudRig,
+        scene,
         camera,
         controls,
         renderer,

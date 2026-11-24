@@ -64,6 +64,7 @@ interface ControlDockProps {
   onRemoveActivePole: () => void;
   onCenterActivePole: () => void;
   onChangeActivePole: (patch: Partial<PoleInstance>) => void;
+  onApplyFinishToAll: (finish: PoleFinishId) => void;
   onChangeConfig: (patch: Partial<PoleRigConfig>) => void;
   compareMode: boolean;
   onToggleCompareMode: () => void;
@@ -119,6 +120,7 @@ export function ControlDock({
   onRemoveActivePole,
   onCenterActivePole,
   onChangeActivePole,
+  onApplyFinishToAll,
   onChangeConfig,
   compareMode,
   onToggleCompareMode,
@@ -518,6 +520,21 @@ export function ControlDock({
                   );
                 })}
               </div>
+
+              {poles.length > 1 && (
+                <div className="flex items-center justify-between gap-2 px-1">
+                  <span className={`text-[10px] ${mutedText}`}>
+                    Editing {activePole.label} · {POLE_FINISHES[activePole.finish].shortName}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => onApplyFinishToAll(activePole.finish)}
+                    className={`px-2 py-0.5 text-[10px] font-semibold rounded border transition-colors whitespace-nowrap ${cardBtnIdle}`}
+                  >
+                    Apply to All Poles
+                  </button>
+                </div>
+              )}
 
               {/* Compact 5-Preset Fitness Studio Lighting Manager */}
               <div
@@ -1128,6 +1145,19 @@ export function ControlDock({
 
             <button
               type="button"
+              data-testid="plan-camera-button"
+              onClick={() => {
+                onChangeCameraMotion('manual');
+                onFocusCamera('floor-plan');
+              }}
+              title="Top-down floor plan & clearance view"
+              className={`px-2 py-1 text-[11px] font-medium rounded-md border transition-colors whitespace-nowrap shrink-0 ${cardBtnIdle}`}
+            >
+              Plan
+            </button>
+
+            <button
+              type="button"
               data-testid="orbit-camera-button"
               onClick={() => onChangeCameraMotion(cameraMotion === 'orbit' ? 'manual' : 'orbit')}
               aria-pressed={cameraMotion === 'orbit'}
@@ -1292,49 +1322,63 @@ export function ControlDock({
           {activeTab === 'configure' && !compareMode && (
             <div className="space-y-2">
               <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-2">
-                <div
-                  className="grid grid-cols-4 gap-1.5 flex-1 min-w-0"
-                  role="group"
-                  aria-label="Pole finish options"
-                >
-                  {FINISH_ORDER.map((fid) => {
-                    const spec = POLE_FINISHES[fid];
-                    const selected = activePole.finish === fid;
-                    return (
-                      <button
-                        key={fid}
-                        type="button"
-                        onClick={() => onChangeActivePole({ finish: fid })}
-                        aria-pressed={selected}
-                        className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border text-left transition-colors min-w-0 ${
-                          selected ? cardBtnActive : cardBtnIdle
-                        }`}
-                      >
-                        <img
-                          src={materialAvatars[fid]}
-                          alt=""
-                          aria-hidden="true"
-                          className={`w-6.5 h-6.5 rounded-full object-cover shrink-0 ring-1 ${
-                            selected
-                              ? isNeon
-                                ? 'ring-cyan-400'
-                                : 'ring-amber-500'
-                              : isDark
-                                ? 'ring-white/20'
-                                : 'ring-black/15'
+                <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                  <div
+                    className="grid grid-cols-4 gap-1.5 flex-1 min-w-0"
+                    role="group"
+                    aria-label="Pole finish options"
+                  >
+                    {FINISH_ORDER.map((fid) => {
+                      const spec = POLE_FINISHES[fid];
+                      const selected = activePole.finish === fid;
+                      return (
+                        <button
+                          key={fid}
+                          type="button"
+                          onClick={() => onChangeActivePole({ finish: fid })}
+                          aria-pressed={selected}
+                          className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border text-left transition-colors min-w-0 ${
+                            selected ? cardBtnActive : cardBtnIdle
                           }`}
-                        />
-                        <span className="min-w-0">
-                          <span className="block text-[11px] font-semibold leading-tight whitespace-nowrap">
-                            {spec.shortName}
+                        >
+                          <img
+                            src={materialAvatars[fid]}
+                            alt=""
+                            aria-hidden="true"
+                            className={`w-6.5 h-6.5 rounded-full object-cover shrink-0 ring-1 ${
+                              selected
+                                ? isNeon
+                                  ? 'ring-cyan-400'
+                                  : 'ring-amber-500'
+                                : isDark
+                                  ? 'ring-white/20'
+                                  : 'ring-black/15'
+                            }`}
+                          />
+                          <span className="min-w-0">
+                            <span className="block text-[11px] font-semibold leading-tight whitespace-nowrap">
+                              {spec.shortName}
+                            </span>
+                            <span className={`block font-mono text-[10px] tabular-nums leading-tight ${mutedText}`}>
+                              ${spec.basePriceUsd}
+                            </span>
                           </span>
-                          <span className={`block font-mono text-[10px] tabular-nums leading-tight ${mutedText}`}>
-                            ${spec.basePriceUsd}
-                          </span>
-                        </span>
-                      </button>
-                    );
-                  })}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {poles.length > 1 && (
+                    <button
+                      type="button"
+                      data-testid="apply-finish-all-button"
+                      onClick={() => onApplyFinishToAll(activePole.finish)}
+                      title={`Apply ${POLE_FINISHES[activePole.finish].shortName} to all ${poles.length} poles`}
+                      className={`px-2 py-1.5 text-[10px] font-semibold rounded-lg border transition-colors whitespace-nowrap shrink-0 ${cardBtnIdle}`}
+                    >
+                      Apply to All
+                    </button>
+                  )}
                 </div>
 
                 <div

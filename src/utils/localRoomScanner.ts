@@ -5,6 +5,7 @@ import type {
   RoomReplicaScene,
 } from '../types/pole';
 import type { ARMarkerState } from './arMeasure';
+import { screenToFloorPoint3D } from './arSurfaceCalibration';
 import { sanitizeRoomReplicaScene } from './roomReplica';
 
 export interface RawObjectDetection {
@@ -70,6 +71,8 @@ interface SurfacePalette {
   floorMaterial: RoomReplicaFloorMaterial;
   lightingMood: RoomReplicaLightingMood;
   wallRgb: RGB;
+  leftWallRgb: RGB;
+  rightWallRgb: RGB;
   floorRgb: RGB;
 }
 
@@ -413,13 +416,15 @@ export function sampleRoomPaletteAndMaterials(
     floorMaterial,
     lightingMood,
     wallRgb: centerWallRgb,
+    leftWallRgb,
+    rightWallRgb,
     floorRgb,
   };
 }
 
 /**
  * Projects a normalized image bounding box into 3D room coordinates using
- * the calibrated AR camera frustum & room wall bounds.
+ * the calibrated AR camera frustum, pinhole ground-plane ray intersection, & wall bounds.
  */
 function projectBoxToRoomCoords(
   box: { x: number; y: number; w: number; h: number },
@@ -446,18 +451,33 @@ function projectBoxToRoomCoords(
   // Horizontal projection: map [leftCornerX .. rightCornerX] across the back wall width
   const spanX = Math.max(0.25, rightCornerX - leftCornerX);
   const normX = (uCenter - 0.5) / (spanX * 0.52);
-  const roomX = clamp(normX * (halfW * 0.88), -halfW + 0.25, halfW - 0.25);
+  let roomX = clamp(normX * (halfW * 0.88), -halfW + 0.25, halfW - 0.25);
 
-  // Depth projection: objects whose base touches near floorY are close to the back wall (-halfD);
-  // objects whose base extends lower into the floor band sit closer toward center/foreground.
+  // Linear normalized floor depth progress
   const floorSpan = Math.max(0.12, 0.96 - floorY);
   const depthProgress = clamp((vBottom - (floorY - 0.04)) / floorSpan, 0, 1);
-  // Map depth mostly in back 75% of room (visible camera frustum) so pole center remains playable
-  const roomZ = clamp(
+  const linearRoomZ = clamp(
     -halfD + 0.34 + depthProgress * Math.min(roomDepthM * 0.62, distanceM * 0.85),
     -halfD + 0.24,
     halfD - 0.36
   );
+
+  // Refine depth & lateral X with pinhole ground-plane ray intersection when object base touches floor
+  let roomZ = linearRoomZ;
+  if (vBottom >= floorY - 0.02) {
+    const floorHit = screenToFloorPoint3D(uCenter, vBottom, markers);
+    const backHit = screenToFloorPoint3D(0.5, floorY, markers);
+    if (floorHit && backHit) {
+      const rayDzFromBack = Math.max(0, floorHit.z - backHit.z);
+      const rayRoomZ = clamp(-halfD + 0.28 + rayDzFromBack, -halfD + 0.24, halfD - 0.36);
+      roomZ = clamp(rayRoomZ * 0.65 + linearRoomZ * 0.35, -halfD + 0.24, halfD - 0.36);
+      roomX = clamp(
+        floorHit.x * 0.45 + roomX * 0.55,
+        -halfW + 0.25,
+        halfW - 0.25
+      );
+    }
+  }
 
   // Metric width & height using vertical pixel span against AR ceiling-to-floor wall height
   const wallPixelSpan = Math.max(0.24, floorY - ceilY);
@@ -597,123 +617,314 @@ function detectArchitecturalAndFallbackObjects(
     }
   }
 
-  // 2. FOREGROUND FURNITURE SILHOUETTE DETECTION (runs before wall-art so floor-standing desks/sofas/plants are never misread as wall art)
-  if (needFurnitureFallback) {
-    const bandTop = clamp(floorY - wallSpan * 0.56, ceilY + 0.06, floorY - 0.1);
-    const bandBot = clamp(floorY + 0.14, floorY + 0.04, 0.95);
-    const colBins = 24;
-    const colOccupancy = new Float32Array(colBins);
-    const colTopY = new Float32Array(colBins).fill(bandBot);
-    const colBotY = new Float32Array(colBins).fill(bandTop);
-    const colGreenFrac = new Float32Array(colBins);
+  // 2. VERTICAL DOOR & FULL-LENGTH MIRROR DETECTION (tall floor-anchored wall silhouettes)
+  {
+    const doorMinH = wallSpan * 0.54;
+    const scanY0 = Math.floor(clamp(ceilY + wallSpan * 0.06, 0.1, floorY - doorMinH) * h);
+    const scanY1 = Math.min(
+      h - 1,
+      Math.max(scanY0 + 8, Math.floor(clamp(floorY + 0.02, 0.4, 0.92) * h))
+    );
+    const intY0 = scanY0 + Math.floor((scanY1 - scanY0) * 0.2);
+    const intY1 = scanY1 - Math.floor((scanY1 - scanY0) * 0.16);
+    const colBgDist = new Float32Array(w);
+    const colMeanLum = new Float32Array(w);
+    const colIntStdDev = new Float32Array(w);
 
-    for (let c = 0; c < colBins; c++) {
-      const x0 = Math.floor((0.04 + (c / colBins) * 0.92) * w);
-      const x1 = Math.max(x0 + 1, Math.floor((0.04 + ((c + 1) / colBins) * 0.92) * w));
-      const y0 = Math.floor(bandTop * h);
-      const y1 = Math.max(y0 + 1, Math.floor(bandBot * h));
-      let fgCount = 0;
-      let greenCount = 0;
-      let total = 0;
-      for (let y = y0; y < y1; y += 2) {
-        const yNorm = y / h;
-        for (let x = x0; x < x1; x += 2) {
-          total += 1;
-          const idx = (y * w + x) * 4;
-          const px: RGB = { r: rgba[idx], g: rgba[idx + 1], b: rgba[idx + 2] };
-          const refBg = yNorm < floorY ? palette.wallRgb : palette.floorRgb;
-          if (rgbDistance(px, refBg) >= 34 && rgbLuminance(px) < 236) {
-            fgCount += 1;
-            if (yNorm < colTopY[c]) colTopY[c] = yNorm;
-            if (yNorm > colBotY[c]) colBotY[c] = yNorm;
-            if (px.g > px.r + 10 && px.g > px.b + 10) greenCount += 1;
-          }
+    for (let x = 2; x < w - 2; x++) {
+      const xNorm = x / w;
+      const rawSide =
+        xNorm < markers.leftCornerX
+          ? palette.leftWallRgb
+          : xNorm > markers.rightCornerX
+            ? palette.rightWallRgb
+            : palette.wallRgb;
+      const localWall =
+        rgbDistance(rawSide, palette.wallRgb) > 65 ? palette.wallRgb : rawSide;
+      let diffSum = 0;
+      let lumSum = 0;
+      let cnt = 0;
+      let intLumSum = 0;
+      let intLumSqSum = 0;
+      let intCnt = 0;
+      for (let y = scanY0; y < scanY1; y += 2) {
+        const idx = (y * w + x) * 4;
+        const px: RGB = { r: rgba[idx], g: rgba[idx + 1], b: rgba[idx + 2] };
+        diffSum += rgbDistance(px, localWall);
+        const l = rgbLuminance(px);
+        lumSum += l;
+        cnt += 1;
+        if (y >= intY0 && y < intY1) {
+          intLumSum += l;
+          intLumSqSum += l * l;
+          intCnt += 1;
         }
       }
-      colOccupancy[c] = total > 0 ? fgCount / total : 0;
-      colGreenFrac[c] = fgCount > 0 ? greenCount / fgCount : 0;
+      colBgDist[x] = cnt > 0 ? diffSum / cnt : 0;
+      colMeanLum[x] = cnt > 0 ? lumSum / cnt : 0;
+      const intMean = intCnt > 0 ? intLumSum / intCnt : 0;
+      colIntStdDev[x] =
+        intCnt > 0 ? Math.sqrt(Math.max(0, intLumSqSum / intCnt - intMean * intMean)) : 0;
     }
 
-    // Extract contiguous horizontal runs of foreground occupancy >= 0.28
-    let runStart = -1;
-    let furnitureAdded = 0;
-    for (let c = 0; c <= colBins && furnitureAdded < 4; c++) {
-      const active = c < colBins && colOccupancy[c] >= 0.28;
-      if (active && runStart === -1) {
-        runStart = c;
-      } else if (!active && runStart !== -1) {
-        const runLen = c - runStart;
-        if (runLen >= 2 && runLen <= 14) {
-          const bx = 0.04 + (runStart / colBins) * 0.92;
-          const bw = (runLen / colBins) * 0.92;
-          let minY = bandBot;
-          let maxY = bandTop;
-          let greenAvg = 0;
-          for (let k = runStart; k < c; k++) {
-            minY = Math.min(minY, colTopY[k]);
-            maxY = Math.max(maxY, colBotY[k]);
-            greenAvg += colGreenFrac[k];
-          }
-          greenAvg /= runLen;
-          const bh = Math.max(0.08, maxY - minY);
-          const candidateBox = { x: bx, y: minY, w: bw, h: bh };
+    let dStart = -1;
+    let doorAdded = 0;
+    const tryEmitDoorOrMirror = (startCol: number, endCol: number) => {
+      if (doorAdded >= 2) return;
+      const bw = (endCol - startCol) / w;
+      if (bw < 0.09 || bw > 0.3) return;
+      const bx = startCol / w;
+      const by = scanY0 / h;
+      const bh = (scanY1 - scanY0) / h;
+      const candBox = { x: bx, y: by, w: bw, h: bh };
+      const candArea = Math.max(1e-5, bw * bh);
+      const isCovered = coveredBoxes.some((b) => {
+        const ix = Math.max(0, Math.min(bx + bw, b.x + b.w) - Math.max(bx, b.x));
+        const iy = Math.max(0, Math.min(by + bh, b.y + b.h) - Math.max(by, b.y));
+        return (ix * iy) / candArea > 0.28;
+      });
+      if (isCovered) return;
 
-          if (!coveredBoxes.some((b) => boxesOverlap(candidateBox, b, -0.02))) {
-            const proj = projectBoxToRoomCoords(candidateBox, input);
-            const colors = sampleBoxColors(rgba, w, h, bx, minY, bw, bh, '#7a5c44', '#2e333c');
+      let avgIntStd = 0;
+      for (let k = startCol; k < endCol; k++) avgIntStd += colIntStdDev[k];
+      avgIntStd /= Math.max(1, endCol - startCol);
+      const isMirror = avgIntStd >= 26;
+      const proj = projectBoxToRoomCoords(candBox, input);
+      const colors = sampleBoxColors(
+        rgba,
+        w,
+        h,
+        bx,
+        by,
+        bw,
+        bh,
+        isMirror ? '#272a30' : palette.trimColor,
+        isMirror ? '#cbd5e1' : '#8c8378'
+      );
+      const isLeft = bx + bw / 2 < markers.leftCornerX;
+      found.push({
+        type: isMirror ? 'mirror' : 'door',
+        label: isMirror ? 'Full-Length Mirror' : 'Room Door',
+        x: isLeft ? -input.roomWidthM / 2 + 0.05 : proj.roomX,
+        z: isLeft ? proj.roomZ : -input.roomDepthM / 2 + 0.05,
+        widthM: clamp(proj.estWidthM, 0.72, 1.15),
+        depthM: isMirror ? 0.05 : 0.08,
+        heightM: clamp(proj.estHeightM, 1.65, 2.15),
+        rotationDeg: isLeft ? 90 : 0,
+        primaryColor: colors.primaryColor,
+        secondaryColor: colors.secondaryColor,
+        inferred: false,
+        confidence: 0.79,
+      });
+      coveredBoxes.push(candBox);
+      doorAdded += 1;
+    };
 
-            let type: RoomReplicaObjectType = 'cabinet';
-            let label = 'Storage Cabinet';
-            let depthM = 0.5;
-            if (greenAvg >= 0.16 && proj.estWidthM <= 1.15) {
-              type = 'plant';
-              label = 'Indoor Plant';
-              depthM = 0.44;
-            } else if (proj.estWidthM >= 1.75 && proj.estHeightM <= 1.05) {
-              type = 'sofa';
-              label = 'Room Sofa';
-              depthM = 0.86;
-            } else if (proj.estWidthM >= 1.0 && proj.estHeightM <= 1.35) {
-              type = 'desk';
-              label = 'Work Desk';
-              depthM = 0.65;
-            } else if (proj.estHeightM >= 1.42) {
-              type = proj.estWidthM >= 1.0 ? 'wardrobe' : 'bookshelf';
-              label = type === 'wardrobe' ? 'Wardrobe' : 'Bookshelf';
-              depthM = type === 'wardrobe' ? 0.56 : 0.36;
-            } else if (proj.estWidthM <= 0.78) {
-              type = 'chair';
-              label = 'Accent Chair';
-              depthM = 0.54;
-            } else {
-              type = 'table';
-              label = 'Side Table';
-              depthM = 0.62;
+    for (let x = 2; x <= w - 2 && doorAdded < 2; x++) {
+      const active = x < w - 2 && colBgDist[x] >= 30;
+      const sharpBoundary =
+        active && dStart !== -1 && Math.abs(colMeanLum[x] - colMeanLum[x - 1]) >= 42;
+      if (sharpBoundary) {
+        tryEmitDoorOrMirror(dStart, x);
+        dStart = x;
+      } else if (active && dStart === -1) {
+        dStart = x;
+      } else if (!active && dStart !== -1) {
+        tryEmitDoorOrMirror(dStart, x);
+        dStart = -1;
+      }
+    }
+  }
+
+  // 3. 2D CONNECTED-COMPONENT FOREGROUND FURNITURE DETECTOR (per-wall adaptive background + edge energy)
+  if (needFurnitureFallback) {
+    const bandTop = clamp(floorY - wallSpan * 0.62, ceilY + 0.05, floorY - 0.12);
+    const bandBot = clamp(floorY + 0.16, floorY + 0.04, 0.95);
+    const fCols = 24;
+    const fRows = 12;
+    const fgGrid: boolean[][] = Array.from({ length: fRows }, () => Array(fCols).fill(false));
+
+    for (let r = 0; r < fRows; r++) {
+      const cy0 = bandTop + (r / fRows) * (bandBot - bandTop);
+      const cy1 = bandTop + ((r + 1) / fRows) * (bandBot - bandTop);
+      const y0 = Math.max(1, Math.floor(cy0 * h));
+      const y1 = Math.min(h - 1, Math.max(y0 + 1, Math.floor(cy1 * h)));
+
+      for (let c = 0; c < fCols; c++) {
+        const cx0 = 0.03 + (c / fCols) * 0.94;
+        const cx1 = 0.03 + ((c + 1) / fCols) * 0.94;
+        const cellBox = { x: cx0, y: cy0, w: cx1 - cx0, h: cy1 - cy0 };
+        if (coveredBoxes.some((b) => boxesOverlap(cellBox, b, -0.01))) continue;
+
+        const uMid = (cx0 + cx1) * 0.5;
+        const rawSideBg =
+          uMid < markers.leftCornerX
+            ? palette.leftWallRgb
+            : uMid > markers.rightCornerX
+              ? palette.rightWallRgb
+              : palette.wallRgb;
+        const localWallBg =
+          rgbDistance(rawSideBg, palette.wallRgb) > 65 ? palette.wallRgb : rawSideBg;
+
+        const x0 = Math.max(1, Math.floor(cx0 * w));
+        const x1 = Math.min(w - 1, Math.max(x0 + 1, Math.floor(cx1 * w)));
+        let fgCount = 0;
+        let total = 0;
+
+        for (let y = y0; y < y1; y += 2) {
+          const yNorm = y / h;
+          const refBg = yNorm < floorY ? localWallBg : palette.floorRgb;
+          for (let x = x0; x < x1; x += 2) {
+            total += 1;
+            const idx = (y * w + x) * 4;
+            const px: RGB = { r: rgba[idx], g: rgba[idx + 1], b: rgba[idx + 2] };
+            const distBg = rgbDistance(px, refBg);
+            const idxR = (y * w + (x + 1)) * 4;
+            const idxD = ((y + 1) * w + x) * 4;
+            const edge =
+              Math.abs(rgba[idxR] - px.r) +
+              Math.abs(rgba[idxD] - px.r);
+            if ((distBg >= 28 || (distBg >= 20 && edge >= 22)) && rgbLuminance(px) < 238) {
+              fgCount += 1;
             }
-
-            found.push({
-              type,
-              label,
-              x: proj.roomX,
-              z: proj.roomZ,
-              widthM: type === 'plant' ? clamp(proj.estWidthM, 0.38, 0.58) : clamp(proj.estWidthM, 0.4, 2.2),
-              depthM,
-              heightM:
-                type === 'desk'
-                  ? clamp(proj.estHeightM, 0.72, 0.84)
-                  : clamp(proj.estHeightM, 0.45, 2.15),
-              rotationDeg: proj.rotationDeg,
-              primaryColor: type === 'plant' ? '#366942' : colors.primaryColor,
-              secondaryColor: type === 'plant' ? '#c2a383' : colors.secondaryColor,
-              inferred: false,
-              confidence: 0.76,
-            });
-            coveredBoxes.push(candidateBox);
-            furnitureAdded += 1;
           }
         }
-        runStart = -1;
+        if (total > 0 && fgCount / total >= 0.34) {
+          fgGrid[r][c] = true;
+        }
       }
+    }
+
+    const visitedFg: boolean[][] = Array.from({ length: fRows }, () => Array(fCols).fill(false));
+    const clusters: Array<{ bx: number; by: number; bw: number; bh: number; cells: number }> = [];
+    for (let r = 0; r < fRows; r++) {
+      for (let c = 0; c < fCols; c++) {
+        if (!fgGrid[r][c] || visitedFg[r][c]) continue;
+        const stack: Array<[number, number]> = [[r, c]];
+        visitedFg[r][c] = true;
+        let minR = r;
+        let maxR = r;
+        let minC = c;
+        let maxC = c;
+        let cells = 0;
+        while (stack.length > 0) {
+          const [cr, cc] = stack.pop()!;
+          cells += 1;
+          minR = Math.min(minR, cr);
+          maxR = Math.max(maxR, cr);
+          minC = Math.min(minC, cc);
+          maxC = Math.max(maxC, cc);
+          for (const [dr, dc] of [
+            [1, 0],
+            [-1, 0],
+            [0, 1],
+            [0, -1],
+          ]) {
+            const nr = cr + dr;
+            const nc = cc + dc;
+            if (
+              nr >= 0 &&
+              nr < fRows &&
+              nc >= 0 &&
+              nc < fCols &&
+              fgGrid[nr][nc] &&
+              !visitedFg[nr][nc]
+            ) {
+              visitedFg[nr][nc] = true;
+              stack.push([nr, nc]);
+            }
+          }
+        }
+        const spanC = maxC - minC + 1;
+        const spanR = maxR - minR + 1;
+        if (cells >= 4 && spanC >= 2 && spanR >= 2 && spanC <= 14) {
+          clusters.push({
+            bx: 0.03 + (minC / fCols) * 0.94,
+            by: bandTop + (minR / fRows) * (bandBot - bandTop),
+            bw: (spanC / fCols) * 0.94,
+            bh: (spanR / fRows) * (bandBot - bandTop),
+            cells,
+          });
+        }
+      }
+    }
+
+    clusters.sort((a, b) => b.cells - a.cells);
+    let furnitureAdded = 0;
+    for (const cl of clusters) {
+      if (furnitureAdded >= 6) break;
+      const candidateBox = { x: cl.bx, y: cl.by, w: cl.bw, h: cl.bh };
+      if (coveredBoxes.some((b) => boxesOverlap(candidateBox, b, -0.02))) continue;
+
+      // Measure green foliage ratio inside cluster for plant classification
+      let greenHits = 0;
+      let pxTotal = 0;
+      const gx0 = clamp(Math.floor(cl.bx * w), 0, w - 1);
+      const gx1 = clamp(Math.ceil((cl.bx + cl.bw) * w), gx0 + 1, w);
+      const gy0 = clamp(Math.floor(cl.by * h), 0, h - 1);
+      const gy1 = clamp(Math.ceil((cl.by + cl.bh) * h), gy0 + 1, h);
+      for (let y = gy0; y < gy1; y += 2) {
+        for (let x = gx0; x < gx1; x += 2) {
+          const idx = (y * w + x) * 4;
+          pxTotal += 1;
+          if (rgba[idx + 1] > rgba[idx] + 10 && rgba[idx + 1] > rgba[idx + 2] + 10) {
+            greenHits += 1;
+          }
+        }
+      }
+      const greenAvg = pxTotal > 0 ? greenHits / pxTotal : 0;
+
+      const proj = projectBoxToRoomCoords(candidateBox, input);
+      const colors = sampleBoxColors(rgba, w, h, cl.bx, cl.by, cl.bw, cl.bh, '#7a5c44', '#2e333c');
+
+      let type: RoomReplicaObjectType = 'cabinet';
+      let label = 'Storage Cabinet';
+      let depthM = 0.5;
+      if (greenAvg >= 0.14 && proj.estWidthM <= 1.15) {
+        type = 'plant';
+        label = 'Indoor Plant';
+        depthM = 0.44;
+      } else if (proj.estWidthM >= 1.75 && proj.estHeightM <= 1.05) {
+        type = 'sofa';
+        label = 'Room Sofa';
+        depthM = 0.86;
+      } else if (proj.estWidthM >= 0.95 && proj.estHeightM <= 1.35) {
+        type = 'desk';
+        label = 'Work Desk';
+        depthM = 0.65;
+      } else if (proj.estHeightM >= 1.42) {
+        type = proj.estWidthM >= 1.0 ? 'wardrobe' : 'bookshelf';
+        label = type === 'wardrobe' ? 'Wardrobe' : 'Bookshelf';
+        depthM = type === 'wardrobe' ? 0.56 : 0.36;
+      } else if (proj.estWidthM <= 0.78) {
+        type = 'chair';
+        label = 'Accent Chair';
+        depthM = 0.54;
+      } else {
+        type = 'table';
+        label = 'Side Table';
+        depthM = 0.62;
+      }
+
+      found.push({
+        type,
+        label,
+        x: proj.roomX,
+        z: proj.roomZ,
+        widthM: type === 'plant' ? clamp(proj.estWidthM, 0.38, 0.58) : clamp(proj.estWidthM, 0.4, 2.2),
+        depthM,
+        heightM:
+          type === 'desk'
+            ? clamp(proj.estHeightM, 0.72, 0.84)
+            : clamp(proj.estHeightM, 0.45, 2.15),
+        rotationDeg: proj.rotationDeg,
+        primaryColor: type === 'plant' ? '#366942' : colors.primaryColor,
+        secondaryColor: type === 'plant' ? '#c2a383' : colors.secondaryColor,
+        inferred: false,
+        confidence: 0.78,
+      });
+      coveredBoxes.push(candidateBox);
+      furnitureAdded += 1;
     }
   }
 
@@ -864,6 +1075,8 @@ const COCO_FURNITURE_CLASSES = new Set([
   'keyboard',
   'mouse',
   'book',
+  'bottle',
+  'cup',
   'refrigerator',
   'oven',
   'microwave',
@@ -871,6 +1084,71 @@ const COCO_FURNITURE_CLASSES = new Set([
   'vase',
   'bench',
 ]);
+
+const DESK_CUE_CLASSES = new Set(['laptop', 'keyboard', 'mouse', 'bottle', 'cup']);
+
+function computeBoxIoU(
+  a: { x: number; y: number; w: number; h: number },
+  b: { x: number; y: number; w: number; h: number }
+): number {
+  const xA = Math.max(a.x, b.x);
+  const yA = Math.max(a.y, b.y);
+  const xB = Math.min(a.x + a.w, b.x + b.w);
+  const yB = Math.min(a.y + a.h, b.y + b.h);
+  const inter = Math.max(0, xB - xA) * Math.max(0, yB - yA);
+  if (inter <= 0) return 0;
+  const areaA = a.w * a.h;
+  const areaB = b.w * b.h;
+  return inter / Math.max(1e-6, areaA + areaB - inter);
+}
+
+/**
+ * Class-aware Non-Maximum Suppression that merges duplicate overlapping detections
+ * across full-frame and overlapping side tiles, boosting consensus confidence when
+ * confirmed in multiple scales/crops.
+ */
+export function mergeTiledDetectionsWithNMS(
+  detections: RawObjectDetection[],
+  iouThreshold = 0.45
+): RawObjectDetection[] {
+  const normalized = detections
+    .map((d) => ({
+      ...d,
+      className: d.className.toLowerCase(),
+      x: clamp(d.x, 0, 0.98),
+      y: clamp(d.y, 0, 0.98),
+      w: clamp(d.w, 0.02, 1),
+      h: clamp(d.h, 0.02, 1),
+    }))
+    .sort((a, b) => b.score - a.score);
+
+  const kept: RawObjectDetection[] = [];
+  for (const det of normalized) {
+    let mergedIntoExisting = false;
+    for (let i = 0; i < kept.length; i++) {
+      const k = kept[i];
+      const sameFamily =
+        k.className === det.className ||
+        (DESK_CUE_CLASSES.has(k.className) && DESK_CUE_CLASSES.has(det.className));
+      if (!sameFamily) continue;
+
+      const iou = computeBoxIoU(k, det);
+      if (iou >= iouThreshold) {
+        // Multi-scale/multi-tile agreement boosts confidence!
+        kept[i] = {
+          ...k,
+          score: Math.min(0.99, Math.max(k.score, det.score) + 0.06),
+        };
+        mergedIntoExisting = true;
+        break;
+      }
+    }
+    if (!mergedIntoExisting) {
+      kept.push(det);
+    }
+  }
+  return kept;
+}
 
 /**
  * Converts raw COCO-SSD detections into contextually upgraded 3D room furniture
@@ -886,31 +1164,28 @@ function mapDetectionsToRoomObjects(
   objects: DraftReplicaObject[];
   coveredBoxes: Array<{ x: number; y: number; w: number; h: number }>;
 } {
-  const valid = detections
-    .filter((d) => COCO_FURNITURE_CLASSES.has(d.className.toLowerCase()) && d.score >= 0.28)
-    .map((d) => ({
-      ...d,
-      className: d.className.toLowerCase(),
-      x: clamp(d.x, 0, 0.98),
-      y: clamp(d.y, 0, 0.98),
-      w: clamp(d.w, 0.02, 1),
-      h: clamp(d.h, 0.02, 1),
-    }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 14);
+  const valid = mergeTiledDetectionsWithNMS(
+    detections.filter((d) => {
+      const cls = d.className.toLowerCase();
+      if (!COCO_FURNITURE_CLASSES.has(cls)) return false;
+      const minGate = DESK_CUE_CLASSES.has(cls) || cls === 'book' || cls === 'clock' || cls === 'vase'
+        ? 0.18
+        : 0.22;
+      return d.score >= minGate;
+    })
+  ).slice(0, 18);
 
-  const deskCueBoxes = valid.filter(
-    (d) => d.className === 'laptop' || d.className === 'keyboard' || d.className === 'mouse'
-  );
+  const deskCueBoxes = valid.filter((d) => DESK_CUE_CLASSES.has(d.className));
   const tableBoxes = valid.filter((d) => d.className === 'dining table');
   const bookBoxes = valid.filter((d) => d.className === 'book');
 
   const objects: DraftReplicaObject[] = [];
   const coveredBoxes: Array<{ x: number; y: number; w: number; h: number }> = [];
+  const coveredTableBoxes: Array<{ x: number; y: number; w: number; h: number }> = [];
   const consumedDeskCueIdx = new Set<number>();
 
   for (const det of valid) {
-    if (det.className === 'book' || det.className === 'mouse' || det.className === 'keyboard' || det.className === 'laptop') {
+    if (det.className === 'book' || DESK_CUE_CLASSES.has(det.className)) {
       continue; // Handled contextually below
     }
 
@@ -1079,12 +1354,31 @@ function mapDetectionsToRoomObjects(
       confidence: clamp(det.score, 0.52, 0.98),
     });
     coveredBoxes.push({ x: det.x, y: det.y, w: det.w, h: det.h });
+    if (type === 'desk' || type === 'table') {
+      coveredTableBoxes.push({ x: det.x, y: det.y, w: det.w, h: det.h });
+    }
   }
 
-  // Synthesize Work Desk beneath any unconsumed laptop/keyboard cluster
+  // Synthesize a Work Desk beneath each distinct unconsumed laptop/keyboard/device cluster
   for (let i = 0; i < deskCueBoxes.length; i++) {
     if (consumedDeskCueIdx.has(i)) continue;
     const cue = deskCueBoxes[i];
+    const cueCenterX = cue.x + cue.w / 2;
+
+    // Group nearby cues on the same desk so one workstation produces one crisp desk
+    consumedDeskCueIdx.add(i);
+    for (let j = i + 1; j < deskCueBoxes.length; j++) {
+      const otherCenterX = deskCueBoxes[j].x + deskCueBoxes[j].w / 2;
+      if (Math.abs(otherCenterX - cueCenterX) < 0.22) {
+        consumedDeskCueIdx.add(j);
+      }
+    }
+
+    // Only synthesize from pure bottle/cup if paired with laptop/keyboard/mouse or multiple cues
+    const isStrongCue =
+      cue.className === 'laptop' || cue.className === 'keyboard' || cue.className === 'mouse';
+    if (!isStrongCue) continue;
+
     // Expand downward to approximate the desk supporting the laptop/keyboard
     const deskBox = {
       x: clamp(cue.x - cue.w * 0.6, 0.04, 0.85),
@@ -1092,6 +1386,8 @@ function mapDetectionsToRoomObjects(
       w: clamp(cue.w * 2.2, 0.18, 0.44),
       h: clamp(Math.max(0.16, input.markers.floorY - (cue.y + cue.h * 0.4) + 0.04), 0.14, 0.35),
     };
+    if (coveredTableBoxes.some((b) => boxesOverlap(deskBox, b, -0.03))) continue;
+
     const proj = projectBoxToRoomCoords(deskBox, input);
     const colors = sampleBoxColors(
       rgba,
@@ -1119,8 +1415,7 @@ function mapDetectionsToRoomObjects(
       confidence: clamp(cue.score * 0.92, 0.55, 0.94),
     });
     coveredBoxes.push(deskBox);
-    // Only synthesize one desk per distinct cluster
-    break;
+    coveredTableBoxes.push(deskBox);
   }
 
   // If 2+ books detected close together, represent them cleanly as a Bookshelf
@@ -1385,8 +1680,8 @@ export function reconstructRoomLocallyFromPixels(
     input
   );
 
-  // Always run pure-CV architectural detectors (windows, doors, wall art, rugs)
-  // and enable foreground furniture silhouette detection if COCO-SSD found < 2 items
+  // Always run pure-CV architectural + uncovered-region furniture detectors
+  // so non-COCO fixtures (wardrobes, bookshelves, doors, mirrors, side cabinets) are never skipped!
   const cvObjects = detectArchitecturalAndFallbackObjects(
     rgba,
     width,
@@ -1394,7 +1689,7 @@ export function reconstructRoomLocallyFromPixels(
     palette,
     input,
     coveredBoxes,
-    cocoObjects.length < 2
+    true
   );
 
   const visibleObjects = [...cocoObjects, ...cvObjects];
@@ -1455,7 +1750,7 @@ interface CocoSsdModelLike {
 
 let cocoModelPromise: Promise<CocoSsdModelLike | null> | null = null;
 
-async function getLocalCocoSsdModel(timeoutMs = 5500): Promise<CocoSsdModelLike | null> {
+async function getLocalCocoSsdModel(timeoutMs = 9000): Promise<CocoSsdModelLike | null> {
   if (typeof window === 'undefined') return null;
 
   if (!cocoModelPromise) {
@@ -1464,8 +1759,13 @@ async function getLocalCocoSsdModel(timeoutMs = 5500): Promise<CocoSsdModelLike 
         const tf = await import('@tensorflow/tfjs');
         await tf.ready();
         const cocoSsd = await import('@tensorflow-models/coco-ssd');
-        const model = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
-        return model as unknown as CocoSsdModelLike;
+        try {
+          const model = await cocoSsd.load({ base: 'mobilenet_v2' });
+          return model as unknown as CocoSsdModelLike;
+        } catch {
+          const fallbackModel = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
+          return fallbackModel as unknown as CocoSsdModelLike;
+        }
       } catch {
         return null;
       }
@@ -1486,8 +1786,17 @@ async function getLocalCocoSsdModel(timeoutMs = 5500): Promise<CocoSsdModelLike 
 }
 
 /**
+ * Silently warms up TensorFlow.js + MobileNetV2 COCO-SSD in the background as soon
+ * as AR opens so object detection completes instantaneously on "Use This Fit".
+ */
+export function preloadLocalCocoSsdModel(): void {
+  if (typeof window === 'undefined') return;
+  void getLocalCocoSsdModel(15000);
+}
+
+/**
  * Full client-side browser scanner: decodes the captured camera frame or uploaded room photo,
- * runs on-device TensorFlow.js COCO-SSD object detection (with graceful instant pixel-CV fallback),
+ * runs multi-scale tiled on-device TensorFlow.js COCO-SSD object detection (with instant pixel-CV),
  * samples true room colors/materials, and builds the complete 3D RoomReplicaScene with zero API calls.
  */
 export async function scanRoomLocallyFromDataUrl(
@@ -1507,8 +1816,8 @@ export async function scanRoomLocallyFromDataUrl(
   const natW = Math.max(64, img.naturalWidth || 640);
   const natH = Math.max(64, img.naturalHeight || 480);
 
-  // Canvas 1: Crisp bounded canvas for on-device COCO-SSD object detection (max 512px)
-  const detScale = Math.min(1, 512 / Math.max(natW, natH));
+  // Canvas 1: Crisp 640px canvas for multi-scale on-device COCO-SSD object detection
+  const detScale = Math.min(1, 640 / Math.max(natW, natH));
   const detW = Math.max(64, Math.round(natW * detScale));
   const detH = Math.max(64, Math.round(natH * detScale));
   const detCanvas = document.createElement('canvas');
@@ -1535,20 +1844,54 @@ export async function scanRoomLocallyFromDataUrl(
 
   onStage?.(1);
 
-  // Run on-device COCO-SSD object detector (gracefully falls back to pixel-CV if offline/timed out)
+  // Run multi-scale tiled COCO-SSD (full frame + left/right overlapping tiles) merged with class-aware NMS
   let externalDetections: RawObjectDetection[] = [];
   try {
-    const model = await getLocalCocoSsdModel(5500);
+    const model = await getLocalCocoSsdModel(9000);
     if (model) {
-      const preds = await model.detect(detCanvas, 16, 0.28);
-      externalDetections = preds.map((p) => ({
-        className: p.class,
-        score: p.score,
-        x: p.bbox[0] / detW,
-        y: p.bbox[1] / detH,
-        w: p.bbox[2] / detW,
-        h: p.bbox[3] / detH,
-      }));
+      const collected: RawObjectDetection[] = [];
+      const fullPreds = await model.detect(detCanvas, 24, 0.2);
+      for (const p of fullPreds) {
+        collected.push({
+          className: p.class,
+          score: p.score,
+          x: p.bbox[0] / detW,
+          y: p.bbox[1] / detH,
+          w: p.bbox[2] / detW,
+          h: p.bbox[3] / detH,
+        });
+      }
+
+      const tiles = [
+        { rx: 0, ry: 0.08, rw: 0.62, rh: 0.88 },
+        { rx: 0.38, ry: 0.08, rw: 0.62, rh: 0.88 },
+      ];
+      const tileCanvas = document.createElement('canvas');
+      const tileCtx = tileCanvas.getContext('2d');
+      if (tileCtx) {
+        for (const t of tiles) {
+          const sx = Math.round(t.rx * detW);
+          const sy = Math.round(t.ry * detH);
+          const sw = Math.max(48, Math.round(t.rw * detW));
+          const sh = Math.max(48, Math.round(t.rh * detH));
+          tileCanvas.width = sw;
+          tileCanvas.height = sh;
+          tileCtx.drawImage(detCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
+          const tilePreds = await model.detect(tileCanvas, 16, 0.2);
+          for (const p of tilePreds) {
+            collected.push({
+              className: p.class,
+              score: p.score,
+              x: t.rx + (p.bbox[0] / sw) * t.rw,
+              y: t.ry + (p.bbox[1] / sh) * t.rh,
+              w: (p.bbox[2] / sw) * t.rw,
+              h: (p.bbox[3] / sh) * t.rh,
+            });
+          }
+        }
+      }
+
+      externalDetections = mergeTiledDetectionsWithNMS(collected);
     }
   } catch {
     externalDetections = [];

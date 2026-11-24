@@ -7,6 +7,7 @@ import {
   FileSpreadsheet,
   Package,
   Play,
+  Printer,
   RotateCcw,
   ShieldCheck,
   Smartphone,
@@ -34,8 +35,18 @@ interface ModalsProps {
   bom: BOMSummary;
   onExportCAD: (format: CadFormat) => Promise<{ filename: string; bytes: number }>;
   onGenerateUSDZUrl: () => Promise<string>;
+  onCaptureSnapshot: () => string | null;
   onLaunchAssemblyDemo: (mode: 'assemble' | 'dismantle') => void;
   onStartArCamera: () => void;
+}
+
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 export function Modals({
@@ -45,6 +56,7 @@ export function Modals({
   bom,
   onExportCAD,
   onGenerateUSDZUrl,
+  onCaptureSnapshot,
   onLaunchAssemblyDemo,
   onStartArCamera,
 }: ModalsProps) {
@@ -94,6 +106,123 @@ export function Modals({
     document.body.removeChild(a);
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     setExportStatus('Downloaded itemized Bill of Materials CSV.');
+  };
+
+  const handleDownloadSnapshot = () => {
+    const dataUrl = onCaptureSnapshot();
+    if (!dataUrl) {
+      setExportStatus('Unable to capture 3D viewport snapshot.');
+      return;
+    }
+    const a = document.createElement('a');
+    a.href = dataUrl;
+    a.download = `axispole-view-${config.finish}-${config.ceilingHeightCm}cm.png`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setExportStatus('Saved 3D viewport PNG snapshot.');
+  };
+
+  const handlePrintSpecSheet = () => {
+    const snapshotUrl = onCaptureSnapshot();
+    const win = window.open('', '_blank', 'width=920,height=780');
+    if (!win) {
+      setExportStatus('Pop-up blocked — allow pop-ups to print or save the PDF spec sheet.');
+      return;
+    }
+
+    const ceilingSummary =
+      config.ceilingType === 'vaulted'
+        ? `Tilted (${config.vaultAngleDeg}°)`
+        : 'Flat Level';
+    const snapshotHtml = snapshotUrl
+      ? `<div class="snapshot"><img id="spec-img" src="${snapshotUrl}" alt="3D Rig Snapshot" /></div>`
+      : '';
+    const rowsHtml = bom.items
+      .map(
+        (item) => `
+        <tr>
+          <td class="mono">${escapeHtml(item.sku)}</td>
+          <td><strong>${escapeHtml(item.name)}</strong><br/><span class="muted">${escapeHtml(item.material)}</span></td>
+          <td class="num mono">${item.quantity}</td>
+          <td class="num mono">${(item.unitWeightKg * item.quantity).toFixed(2)} kg</td>
+          <td class="num mono">${item.totalPriceUsd === 0 ? 'Included' : `$${item.totalPriceUsd}`}</td>
+        </tr>`
+      )
+      .join('');
+
+    const html = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>AxisPole Studio — Specification &amp; BOM</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #1c1917; margin: 28px; line-height: 1.45; }
+    .header { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 2px solid #1c1917; padding-bottom: 10px; margin-bottom: 18px; }
+    .header h1 { font-size: 20px; margin: 0; }
+    .header .date { font-size: 12px; color: #57534e; }
+    .specs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }
+    .spec-card { border: 1px solid #d6d3d1; border-radius: 8px; padding: 8px 10px; background: #fafaf9; }
+    .spec-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: #57534e; }
+    .spec-val { font-size: 13px; font-weight: 700; margin-top: 2px; }
+    .snapshot { margin-bottom: 18px; border: 1px solid #d6d3d1; border-radius: 10px; overflow: hidden; background: #0d0f16; text-align: center; }
+    .snapshot img { max-width: 100%; max-height: 360px; object-fit: contain; display: block; margin: 0 auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { border-bottom: 1px solid #e7e5e4; padding: 8px 10px; text-align: left; }
+    th { background: #f5f5f4; color: #44403c; font-weight: 600; }
+    .num { text-align: right; white-space: nowrap; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .muted { font-size: 11px; color: #57534e; }
+    tfoot td { background: #f5f5f4; font-weight: 700; border-top: 2px solid #d6d3d1; font-size: 13px; }
+    .note { margin-top: 14px; font-size: 11px; color: #57534e; }
+    @media print { body { margin: 12mm; } }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>AxisPole Studio — Configuration &amp; BOM Spec Sheet</h1>
+    <div class="date">${escapeHtml(new Date().toLocaleDateString())}</div>
+  </div>
+  <div class="specs">
+    <div class="spec-card"><div class="spec-label">Finish &amp; Diameter</div><div class="spec-val">${escapeHtml(finish.name)} · ${config.diameterMm}mm</div></div>
+    <div class="spec-card"><div class="spec-label">Room Dimensions</div><div class="spec-val">${config.roomWidthM.toFixed(1)}m × ${config.roomDepthM.toFixed(1)}m</div></div>
+    <div class="spec-card"><div class="spec-label">Ceiling Height</div><div class="spec-val">${escapeHtml(formatHeightMetricAndImperial(config.ceilingHeightCm))} · ${escapeHtml(ceilingSummary)}</div></div>
+    <div class="spec-card"><div class="spec-label">Base Mount</div><div class="spec-val">${escapeHtml(mount.name)}</div></div>
+  </div>
+  ${snapshotHtml}
+  <table>
+    <thead>
+      <tr><th>SKU</th><th>Component &amp; Alloy</th><th class="num">Qty</th><th class="num">Weight</th><th class="num">Price</th></tr>
+    </thead>
+    <tbody>${rowsHtml}</tbody>
+    <tfoot>
+      <tr><td colspan="3">Total Configured Rig</td><td class="num mono">${bom.totalWeightKg} kg</td><td class="num mono">$${bom.totalPriceUsd} USD</td></tr>
+    </tfoot>
+  </table>
+  <p class="note">Tolerance note: Verify ceiling joist location and clear floor radius (${(Math.min(config.roomWidthM, config.roomDepthM) / 2).toFixed(2)}m available) before final torque (18.0 N·m drawbolts).</p>
+</body>
+</html>`;
+
+    win.document.open();
+    win.document.write(html);
+    win.document.close();
+    setExportStatus('Opened printable / Save-as-PDF specification sheet.');
+
+    const triggerPrint = () => {
+      try {
+        win.focus();
+        win.print();
+      } catch {
+        // Ignore cross-browser print focus restrictions
+      }
+    };
+    const img = win.document.getElementById('spec-img') as HTMLImageElement | null;
+    if (img && !img.complete) {
+      img.onload = triggerPrint;
+      img.onerror = triggerPrint;
+    } else {
+      window.setTimeout(triggerPrint, 120);
+    }
   };
 
   const handlePrepareQuickLook = async () => {
@@ -458,14 +587,34 @@ export function Modals({
                     {bom.totalWeightKg} kg
                   </strong>
                 </div>
-                <button
-                  type="button"
-                  onClick={handleDownloadCSV}
-                  className="px-3.5 py-2 text-xs font-semibold rounded-lg border border-stone-300 bg-white hover:bg-stone-100 inline-flex items-center gap-1.5 whitespace-nowrap"
-                >
-                  <FileSpreadsheet className="w-3.5 h-3.5" aria-hidden="true" />
-                  <span>Download BOM CSV</span>
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleDownloadSnapshot}
+                    data-testid="bom-save-png-button"
+                    className="px-3 py-2 text-xs font-semibold rounded-lg border border-stone-300 bg-white hover:bg-stone-100 inline-flex items-center gap-1.5 whitespace-nowrap"
+                  >
+                    <Camera className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Save 3D PNG</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handlePrintSpecSheet}
+                    data-testid="bom-print-spec-button"
+                    className="px-3 py-2 text-xs font-semibold rounded-lg border border-stone-300 bg-white hover:bg-stone-100 inline-flex items-center gap-1.5 whitespace-nowrap"
+                  >
+                    <Printer className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Print / PDF Spec</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDownloadCSV}
+                    className="px-3.5 py-2 text-xs font-semibold rounded-lg border border-stone-300 bg-white hover:bg-stone-100 inline-flex items-center gap-1.5 whitespace-nowrap"
+                  >
+                    <FileSpreadsheet className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Download BOM CSV</span>
+                  </button>
+                </div>
               </div>
 
               <div className="rounded-lg border border-stone-200 bg-white overflow-x-auto">

@@ -49,10 +49,13 @@ import {
   type SurfaceCalibrationResult,
 } from '../utils/arSurfaceCalibration';
 import {
-  captureVideoFrameDataUrl,
+  captureBestVideoFrameDataUrl,
   compressImageFileToDataUrl,
 } from '../utils/roomReplica';
-import { scanRoomLocallyFromDataUrl } from '../utils/localRoomScanner';
+import {
+  preloadLocalCocoSsdModel,
+  scanRoomLocallyFromDataUrl,
+} from '../utils/localRoomScanner';
 import type { ARScanPhase } from '../three/arPointCloudMesh';
 import {
   BASE_MOUNTS,
@@ -184,6 +187,11 @@ export function ARMeasurementOverlay({
       userAdjustedFloor,
     ]
   );
+
+  // Pre-warm on-device TensorFlow.js MobileNetV2 COCO-SSD model silently on AR entry
+  useEffect(() => {
+    preloadLocalCocoSsdModel();
+  }, []);
 
   // Sync aspect ratio & vertical FOV to viewport orientation on mount & resize
   useEffect(() => {
@@ -487,7 +495,7 @@ export function ARMeasurementOverlay({
   const handleUseThisFitWithReplica = useCallback(async () => {
     setReplicaError(null);
     const snapshotDataUrl =
-      captureVideoFrameDataUrl(videoRef.current, 1024, 0.86) ?? uploadedPhotoUrl;
+      (await captureBestVideoFrameDataUrl(videoRef.current, 1024, 0.88)) ?? uploadedPhotoUrl;
 
     if (!snapshotDataUrl) {
       setReplicaError(

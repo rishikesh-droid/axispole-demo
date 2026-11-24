@@ -358,6 +358,82 @@ export function captureVideoFrameDataUrl(
   }
 }
 
+function measureCanvasSharpness(ctx: CanvasRenderingContext2D, w: number, h: number): number {
+  const data = ctx.getImageData(0, 0, w, h).data;
+  let lapSum = 0;
+  for (let y = 1; y < h - 1; y += 2) {
+    for (let x = 1; x < w - 1; x += 2) {
+      const i = (y * w + x) * 4;
+      const iL = (y * w + (x - 1)) * 4;
+      const iR = (y * w + (x + 1)) * 4;
+      const iU = ((y - 1) * w + x) * 4;
+      const iD = ((y + 1) * w + x) * 4;
+      const c = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      const l = 0.299 * data[iL] + 0.587 * data[iL + 1] + 0.114 * data[iL + 2];
+      const r = 0.299 * data[iR] + 0.587 * data[iR + 1] + 0.114 * data[iR + 2];
+      const u = 0.299 * data[iU] + 0.587 * data[iU + 1] + 0.114 * data[iU + 2];
+      const d = 0.299 * data[iD] + 0.587 * data[iD + 1] + 0.114 * data[iD + 2];
+      lapSum += Math.abs(4 * c - l - r - u - d);
+    }
+  }
+  return lapSum;
+}
+
+/**
+ * Grabs two consecutive video frames ~70ms apart and returns the sharper JPEG
+ * (reduces handheld motion blur so on-device COCO-SSD & pixel CV detect smaller objects).
+ */
+export async function captureBestVideoFrameDataUrl(
+  video: HTMLVideoElement | null,
+  maxDim = 1024,
+  quality = 0.88
+): Promise<string | null> {
+  if (!video || video.readyState < 2 || video.videoWidth < 64 || video.videoHeight < 64) {
+    return null;
+  }
+  try {
+    const scale = Math.min(1, maxDim / Math.max(video.videoWidth, video.videoHeight));
+    const w = Math.max(64, Math.round(video.videoWidth * scale));
+    const h = Math.max(64, Math.round(video.videoHeight * scale));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+
+    const scoreW = 96;
+    const scoreH = 72;
+    const sCanvas = document.createElement('canvas');
+    sCanvas.width = scoreW;
+    sCanvas.height = scoreH;
+    const sCtx = sCanvas.getContext('2d', { willReadFrequently: true });
+
+    ctx.drawImage(video, 0, 0, w, h);
+    const firstUrl = canvas.toDataURL('image/jpeg', quality);
+    if (!sCtx) return firstUrl;
+
+    sCtx.drawImage(video, 0, 0, scoreW, scoreH);
+    const firstSharpness = measureCanvasSharpness(sCtx, scoreW, scoreH);
+
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, 70);
+    });
+
+    if (video.readyState < 2) return firstUrl;
+    ctx.drawImage(video, 0, 0, w, h);
+    sCtx.drawImage(video, 0, 0, scoreW, scoreH);
+    const secondSharpness = measureCanvasSharpness(sCtx, scoreW, scoreH);
+
+    if (secondSharpness >= firstSharpness) {
+      return canvas.toDataURL('image/jpeg', quality);
+    }
+    return firstUrl;
+  } catch {
+    return captureVideoFrameDataUrl(video, maxDim, quality);
+  }
+}
+
 /**
  * Compresses an uploaded room photo File into a bounded JPEG data URL
  * so desktop/camera-less users can also generate an on-device 3D room replica.
