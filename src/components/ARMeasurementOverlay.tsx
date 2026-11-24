@@ -52,6 +52,7 @@ import {
   captureVideoFrameDataUrl,
   compressImageFileToDataUrl,
 } from '../utils/roomReplica';
+import { scanRoomLocallyFromDataUrl } from '../utils/localRoomScanner';
 import type { ARScanPhase } from '../three/arPointCloudMesh';
 import {
   BASE_MOUNTS,
@@ -90,9 +91,9 @@ const FINISH_ORDER: PoleFinishId[] = ['brass', 'stainless', 'powder-black', 'sil
 type DragHandleId = 'ceiling' | 'floor' | 'pole' | `floor-pin-${number}`;
 
 const REPLICA_STAGES = [
-  'Capturing live room frame & AR geometry…',
-  'Detecting visible desks, chairs, walls & lighting…',
-  'Extrapolating unseen room zones & layout…',
+  'Sampling walls, floor, ceiling & room lighting…',
+  'Identifying furniture & fixtures on device…',
+  'Projecting 3D objects & completing unseen zones…',
   'Constructing 3D Room Replica…',
 ];
 
@@ -210,16 +211,11 @@ export function ARMeasurementOverlay({
     return () => window.clearTimeout(t);
   }, [tapWarning]);
 
-  // Cycle informative progress step labels while Gemini Vision builds the 3D Room Replica
+  // Reset progress stage when replica builder closes
   useEffect(() => {
     if (!isBuildingReplica) {
       setReplicaStageIdx(0);
-      return;
     }
-    const id = window.setInterval(() => {
-      setReplicaStageIdx((prev) => Math.min(REPLICA_STAGES.length - 1, prev + 1));
-    }, 1600);
-    return () => window.clearInterval(id);
   }, [isBuildingReplica]);
 
   // Helper: analyze either the live camera video OR an uploaded room photo at 160x200
@@ -485,8 +481,8 @@ export function ARMeasurementOverlay({
 
   /**
    * "Use This Fit": Captures the live camera scene (or uploaded room photo) + AR metrics,
-   * sends it to /api/analyze-room (Gemini Vision) to reconstruct visible furniture AND
-   * extrapolate unseen room zones, then transitions directly to the 3D Room Replica!
+   * runs 100% on-device object detection (TensorFlow.js COCO-SSD + pixel CV surface & fixture
+   * sampling) with zero API keys or external servers, then opens the 3D Room Replica.
    */
   const handleUseThisFitWithReplica = useCallback(async () => {
     setReplicaError(null);
@@ -511,39 +507,24 @@ export function ARMeasurementOverlay({
         ? surfaceCalibration.rawDepthM
         : measurement.roomDepthM;
 
-      const res = await fetch('/api/analyze-room', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          imageDataUrl: snapshotDataUrl,
-          ceilingHeightCm: measurement.ceilingHeightCm,
+      const { scene } = await scanRoomLocallyFromDataUrl(
+        snapshotDataUrl,
+        {
+          markers: markersRef.current,
           roomWidthM: displayW,
           roomDepthM: displayD,
+          ceilingHeightCm: measurement.ceilingHeightCm,
           distanceM: measurement.distanceM,
           poleOffsetXM: measurement.poleOffsetXM,
           floorAccuracyPct: liveAccuracy.floorAccuracyPct,
           ceilingAccuracyPct: liveAccuracy.ceilingAccuracyPct,
           overallAccuracyPct: liveAccuracy.overallAccuracyPct,
-        }),
-      });
+        },
+        (stageIdx) => setReplicaStageIdx(stageIdx)
+      );
 
-      const payload = (await res.json().catch(() => ({}))) as {
-        scene?: RoomReplicaScene;
-        error?: string;
-      };
-
-      if (!res.ok || !payload.scene) {
-        throw new Error(
-          payload.error || 'Could not reconstruct room scene. Please retry or apply dimensions only.'
-        );
-      }
-
-      const replicaScene: RoomReplicaScene = {
-        ...payload.scene,
-        previewDataUrl: snapshotDataUrl,
-      };
       setIsBuildingReplica(false);
-      onApplyRoomReplica(measurement, replicaScene);
+      onApplyRoomReplica(measurement, scene);
     } catch (err) {
       setIsBuildingReplica(false);
       setReplicaError(

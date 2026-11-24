@@ -145,7 +145,7 @@ function normalizeLabel(rawLabel: unknown, type: RoomReplicaObjectType): string 
 }
 
 /**
- * Sanitizes, bounds-clamps, and collision-checks a Gemini Vision room reconstruction
+ * Sanitizes, bounds-clamps, and collision-checks an on-device room reconstruction
  * against the AR-measured room dimensions and pole anchor position.
  */
 export function sanitizeRoomReplicaScene(
@@ -332,7 +332,7 @@ export function sanitizeRoomReplicaScene(
 
 /**
  * Captures the current HTMLVideoElement camera feed as a crisp JPEG data URL
- * suitable for Gemini Vision room reconstruction.
+ * suitable for on-device room reconstruction.
  */
 export function captureVideoFrameDataUrl(
   video: HTMLVideoElement | null,
@@ -360,7 +360,7 @@ export function captureVideoFrameDataUrl(
 
 /**
  * Compresses an uploaded room photo File into a bounded JPEG data URL
- * so desktop/camera-less users can also generate a real Gemini Vision 3D room replica.
+ * so desktop/camera-less users can also generate an on-device 3D room replica.
  */
 export async function compressImageFileToDataUrl(
   file: File,
