@@ -417,12 +417,18 @@ export default function App() {
       );
       const nextLighting =
         replica.lightingMood === 'dim' ? 'mood-neon' : 'studio-daylight';
+      const nextMount =
+        clampedHeightCm >= 224 && clampedHeightCm <= 335
+          ? 'tension'
+          : clampedHeightCm > 335
+            ? 'permanent-ceiling'
+            : result.recommendedMount;
 
       handleChangeConfig({
         ceilingHeightCm: clampedHeightCm,
         roomWidthM: replica.roomWidthM,
         roomDepthM: replica.roomDepthM,
-        mount: result.recommendedMount,
+        mount: nextMount,
         environment: 'replica',
         lighting: nextLighting,
       });

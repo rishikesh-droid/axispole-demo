@@ -260,6 +260,8 @@ export interface RoomReplicaObject {
   widthM: number;
   depthM: number;
   heightM: number;
+  /** Optional height above floor in meters for wall-mounted upper cabinets/shelves (default 0) */
+  elevationM?: number;
   rotationDeg: number;
   primaryColor: string;
   secondaryColor: string;

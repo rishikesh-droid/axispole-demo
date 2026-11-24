@@ -241,6 +241,22 @@ export function sanitizeRoomReplicaScene(
     let x = clampFinite(rec.x, -halfW + marginX, halfW - marginX, 0);
     let z = clampFinite(rec.z, -halfD + marginZ, halfD - marginZ, -halfD + marginZ);
 
+    const isElevatedWallUnit =
+      (type === 'cabinet' || type === 'bookshelf') &&
+      typeof rec.elevationM === 'number' &&
+      Number.isFinite(rec.elevationM) &&
+      rec.elevationM >= 0.45;
+    const elevationM = isElevatedWallUnit
+      ? Number(
+          clampFinite(
+            rec.elevationM,
+            0.45,
+            Math.max(0.5, ceilingHeightM - heightM - 0.04),
+            1.35
+          ).toFixed(2)
+        )
+      : 0;
+
     // Snap wall-mounted fixtures cleanly onto back wall (z = -halfD) or left wall (x = -halfW)
     // so they never float in mid-air or obstruct the open front-right cutaway camera.
     if (isWallItem) {
@@ -255,8 +271,8 @@ export function sanitizeRoomReplicaScene(
         z = clampFinite(z, -halfD + widthM / 2 + 0.12, halfD - widthM / 2 - 0.12, 0);
         rotationDeg = 90;
       }
-    } else if (!isFloorFlat) {
-      // Ensure freestanding furniture never clips through the pole vertical axis at (poleX, poleZ)
+    } else if (!isFloorFlat && elevationM < 1.25) {
+      // Ensure floor-level freestanding furniture never clips through the pole vertical axis at (poleX, poleZ)
       const dx = x - poleX;
       const dz = z - poleZ;
       const clearanceX = effHalfX + poleClearRadius;
@@ -295,12 +311,58 @@ export function sanitizeRoomReplicaScene(
       widthM,
       depthM,
       heightM,
+      ...(elevationM > 0.02 ? { elevationM } : {}),
       rotationDeg: Math.round(rotationDeg),
       primaryColor: sanitizeHexColor(rec.primaryColor, defs.primary),
       secondaryColor: sanitizeHexColor(rec.secondaryColor, defs.secondary),
       inferred,
       confidence,
     });
+  }
+
+  // Resolve desk/table vs chair overlap: keep pulled-out chairs cleanly IN FRONT of their desk
+  // instead of tucked inside or pinned behind the desk against the back wall.
+  const desksAndTables = objects.filter((o) => o.type === 'desk' || o.type === 'table');
+  for (const ch of objects) {
+    if (ch.type !== 'chair' && ch.type !== 'office-chair') continue;
+    for (const d of desksAndTables) {
+      const rotRad = (d.rotationDeg * Math.PI) / 180;
+      const dHalfX = Math.abs(Math.cos(rotRad)) * (d.widthM / 2) + Math.abs(Math.sin(rotRad)) * (d.depthM / 2);
+      const dHalfZ = Math.abs(Math.sin(rotRad)) * (d.widthM / 2) + Math.abs(Math.cos(rotRad)) * (d.depthM / 2);
+      const latOverlap = Math.abs(ch.x - d.x) < dHalfX + ch.widthM * 0.38;
+      if (!latOverlap) continue;
+
+      const deskFrontEdgeZ = d.z + dHalfZ;
+      const desiredMinChairZ = deskFrontEdgeZ + ch.depthM * 0.42;
+      // If chair overlaps desk footprint from the front or sits behind the desk front edge while laterally aligned
+      if (ch.z < desiredMinChairZ && ch.z >= d.z - dHalfZ - 0.35) {
+        const candidateZ = clampFinite(
+          desiredMinChairZ,
+          -halfD + ch.depthM / 2 + 0.04,
+          halfD - ch.depthM / 2 - 0.04,
+          ch.z
+        );
+        // Only adjust if it doesn't land directly on top of the pole center
+        const hitsPole =
+          Math.abs(ch.x - poleX) < ch.widthM / 2 + poleClearRadius * 0.72 &&
+          Math.abs(candidateZ - poleZ) < ch.depthM / 2 + poleClearRadius * 0.72;
+        if (!hitsPole) {
+          ch.z = Number(candidateZ.toFixed(2));
+        } else {
+          // Shift slightly left/right of pole center while staying pulled forward
+          const sideSign = ch.x <= poleX ? -1 : 1;
+          ch.x = Number(
+            clampFinite(
+              poleX + sideSign * (ch.widthM / 2 + poleClearRadius * 0.78),
+              -halfW + ch.widthM / 2 + 0.06,
+              halfW - ch.widthM / 2 - 0.06,
+              ch.x
+            ).toFixed(2)
+          );
+          ch.z = Number(candidateZ.toFixed(2));
+        }
+      }
+    }
   }
 
   const visibleObjectCount = objects.filter((o) => !o.inferred).length;
@@ -331,27 +393,60 @@ export function sanitizeRoomReplicaScene(
 }
 
 /**
+ * Computes the center-cropped source rectangle (sx, sy, sw, sh) equivalent to CSS `object-cover`
+ * so camera video and uploaded photo pixels align 1:1 with the viewport & AR marker coordinates.
+ */
+export function computeObjectCoverCrop(
+  srcW: number,
+  srcH: number,
+  targetAspect?: number
+): { sx: number; sy: number; sw: number; sh: number; outAspect: number } {
+  const safeW = Math.max(1, srcW);
+  const safeH = Math.max(1, srcH);
+  const srcAspect = safeW / safeH;
+  if (!targetAspect || !Number.isFinite(targetAspect) || targetAspect <= 0.1) {
+    return { sx: 0, sy: 0, sw: safeW, sh: safeH, outAspect: srcAspect };
+  }
+  const clampedTarget = Math.max(0.32, Math.min(2.6, targetAspect));
+  if (Math.abs(srcAspect - clampedTarget) <= 0.03) {
+    return { sx: 0, sy: 0, sw: safeW, sh: safeH, outAspect: srcAspect };
+  }
+  if (srcAspect > clampedTarget) {
+    // Source is wider than target -> crop left & right evenly
+    const sw = Math.max(32, Math.round(safeH * clampedTarget));
+    const sx = Math.max(0, Math.round((safeW - sw) * 0.5));
+    return { sx, sy: 0, sw, sh: safeH, outAspect: sw / safeH };
+  }
+  // Source is taller than target -> crop top & bottom evenly
+  const sh = Math.max(32, Math.round(safeW / clampedTarget));
+  const sy = Math.max(0, Math.round((safeH - sh) * 0.5));
+  return { sx: 0, sy, sw: safeW, sh, outAspect: safeW / sh };
+}
+
+/**
  * Captures the current HTMLVideoElement camera feed as a crisp JPEG data URL
- * suitable for on-device room reconstruction.
+ * cropped identically to the viewport's object-cover framing.
  */
 export function captureVideoFrameDataUrl(
   video: HTMLVideoElement | null,
   maxDim = 1024,
-  quality = 0.86
+  quality = 0.86,
+  targetAspect?: number
 ): string | null {
   if (!video || video.readyState < 2 || video.videoWidth < 64 || video.videoHeight < 64) {
     return null;
   }
   try {
-    const scale = Math.min(1, maxDim / Math.max(video.videoWidth, video.videoHeight));
-    const w = Math.max(64, Math.round(video.videoWidth * scale));
-    const h = Math.max(64, Math.round(video.videoHeight * scale));
+    const crop = computeObjectCoverCrop(video.videoWidth, video.videoHeight, targetAspect);
+    const scale = Math.min(1, maxDim / Math.max(crop.sw, crop.sh));
+    const w = Math.max(64, Math.round(crop.sw * scale));
+    const h = Math.max(64, Math.round(crop.sh * scale));
     const canvas = document.createElement('canvas');
     canvas.width = w;
     canvas.height = h;
     const ctx = canvas.getContext('2d');
     if (!ctx) return null;
-    ctx.drawImage(video, 0, 0, w, h);
+    ctx.drawImage(video, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, w, h);
     return canvas.toDataURL('image/jpeg', quality);
   } catch {
     return null;
@@ -380,21 +475,23 @@ function measureCanvasSharpness(ctx: CanvasRenderingContext2D, w: number, h: num
 }
 
 /**
- * Grabs two consecutive video frames ~70ms apart and returns the sharper JPEG
- * (reduces handheld motion blur so on-device COCO-SSD & pixel CV detect smaller objects).
+ * Grabs two consecutive video frames ~70ms apart and returns the sharper JPEG,
+ * matching the viewport's object-cover crop so (u, v) aligns 1:1 with AR markers.
  */
 export async function captureBestVideoFrameDataUrl(
   video: HTMLVideoElement | null,
   maxDim = 1024,
-  quality = 0.88
+  quality = 0.88,
+  targetAspect?: number
 ): Promise<string | null> {
   if (!video || video.readyState < 2 || video.videoWidth < 64 || video.videoHeight < 64) {
     return null;
   }
   try {
-    const scale = Math.min(1, maxDim / Math.max(video.videoWidth, video.videoHeight));
-    const w = Math.max(64, Math.round(video.videoWidth * scale));
-    const h = Math.max(64, Math.round(video.videoHeight * scale));
+    const crop = computeObjectCoverCrop(video.videoWidth, video.videoHeight, targetAspect);
+    const scale = Math.min(1, maxDim / Math.max(crop.sw, crop.sh));
+    const w = Math.max(64, Math.round(crop.sw * scale));
+    const h = Math.max(64, Math.round(crop.sh * scale));
 
     const canvas = document.createElement('canvas');
     canvas.width = w;
@@ -409,11 +506,11 @@ export async function captureBestVideoFrameDataUrl(
     sCanvas.height = scoreH;
     const sCtx = sCanvas.getContext('2d', { willReadFrequently: true });
 
-    ctx.drawImage(video, 0, 0, w, h);
+    ctx.drawImage(video, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, w, h);
     const firstUrl = canvas.toDataURL('image/jpeg', quality);
     if (!sCtx) return firstUrl;
 
-    sCtx.drawImage(video, 0, 0, scoreW, scoreH);
+    sCtx.drawImage(video, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, scoreW, scoreH);
     const firstSharpness = measureCanvasSharpness(sCtx, scoreW, scoreH);
 
     await new Promise<void>((resolve) => {
@@ -421,8 +518,8 @@ export async function captureBestVideoFrameDataUrl(
     });
 
     if (video.readyState < 2) return firstUrl;
-    ctx.drawImage(video, 0, 0, w, h);
-    sCtx.drawImage(video, 0, 0, scoreW, scoreH);
+    ctx.drawImage(video, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, w, h);
+    sCtx.drawImage(video, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, scoreW, scoreH);
     const secondSharpness = measureCanvasSharpness(sCtx, scoreW, scoreH);
 
     if (secondSharpness >= firstSharpness) {
@@ -430,7 +527,7 @@ export async function captureBestVideoFrameDataUrl(
     }
     return firstUrl;
   } catch {
-    return captureVideoFrameDataUrl(video, maxDim, quality);
+    return captureVideoFrameDataUrl(video, maxDim, quality, targetAspect);
   }
 }
 

@@ -274,3 +274,158 @@ test('reconstructRoomFromVisionAnalysis places right-side desk on the right, upg
   const win = result.scene.objects.find((o) => o.type === 'window');
   assert.ok(win, 'Should detect window from SegFormer windowpane mask');
 });
+
+test('reconstructRoomFromVisionAnalysis recovers open doorway (no false window), built-in desk, elevated wall cupboard, pulled-out chair, tile floor, and ceiling height', () => {
+  const width = 160;
+  const height = 120;
+  const markers: ARMarkerState = {
+    ...DEFAULT_AR_MARKERS,
+    aspect: 0.75,
+    vfovDeg: 68,
+    ceilingY: 0.29,
+    floorY: 0.8,
+    cameraHeightM: 1.42,
+    cameraPitchDeg: -3,
+  };
+  const distanceM = 3.04;
+  const rgba = new Uint8ClampedArray(width * height * 4);
+  const disparity = new Float32Array(width * height);
+  const wallMask = new Uint8Array(width * height);
+  const floorMask = new Uint8Array(width * height);
+  const ceilingMask = new Uint8Array(width * height);
+  const chairMask = new Uint8Array(width * height);
+  const falseWindowMask = new Uint8Array(width * height);
+
+  const dispFromDepth = (zM: number) => 12.0 / Math.max(0.45, zM) + 1.2;
+
+  for (let y = 0; y < height; y++) {
+    const v = (y + 0.5) / height;
+    for (let x = 0; x < width; x++) {
+      const u = (x + 0.5) / width;
+      const idx = y * width + x;
+
+      let r = 92;
+      let g = 92;
+      let b = 94;
+      let depthM = distanceM;
+
+      if (v < 0.23) {
+        ceilingMask[idx] = 255;
+        r = 168;
+        g = 166;
+        b = 163;
+        depthM = Math.max(1.5, distanceM * 0.72);
+      } else if (v >= 0.8) {
+        floorMask[idx] = 255;
+        // Neutral glossy grey tile
+        r = 144;
+        g = 139;
+        b = 138;
+        const fPt = screenToFloorPoint3D(u, v, markers);
+        depthM = fPt ? Math.max(0.9, -fPt.z) : distanceM * 0.75;
+      } else {
+        wallMask[idx] = 255;
+        depthM = distanceM;
+      }
+
+      // Upper 4-door dark-grey wall cabinets (v=0.31..0.44, u=0.04..0.60) with vertical seams & white shelf below
+      if (u >= 0.04 && u <= 0.60 && v >= 0.31 && v <= 0.44) {
+        const seam = Math.abs(u - 0.18) < 0.015 || Math.abs(u - 0.32) < 0.015 || Math.abs(u - 0.46) < 0.015;
+        r = seam ? 32 : 84;
+        g = seam ? 32 : 86;
+        b = seam ? 34 : 90;
+      } else if (u >= 0.04 && u <= 0.60 && v > 0.44 && v <= 0.49) {
+        // White open shelf under cabinets -> crisp horizontal trim step
+        r = 228;
+        g = 226;
+        b = 220;
+      }
+
+      // Built-in teal desk protruding from wall (u=0.04..0.60, v=0.60..0.78)
+      if (u >= 0.04 && u <= 0.60 && v >= 0.60 && v <= 0.78) {
+        r = v < 0.66 ? 104 : 38;
+        g = v < 0.66 ? 138 : 42;
+        b = v < 0.66 ? 132 : 46;
+        depthM = distanceM - 0.58;
+      }
+
+      // Black swivel chair pulled out in front of left bay of desk (u=0.14..0.28, v=0.62..0.79)
+      if (u >= 0.14 && u <= 0.28 && v >= 0.62 && v <= 0.79) {
+        wallMask[idx] = 0;
+        chairMask[idx] = 255;
+        r = 28;
+        g = 30;
+        b = 35;
+        depthM = distanceM - 0.98;
+      }
+
+      // Open doorway recess into bright corridor on the right (u=0.66..0.84, v=0.28..0.82)
+      // plus a hallucinated SegFormer windowpane mask overlapping it!
+      if (u >= 0.66 && u <= 0.84 && v >= 0.28 && v <= 0.82) {
+        wallMask[idx] = 0;
+        if (v >= 0.35 && v <= 0.65) falseWindowMask[idx] = 255;
+        r = 185;
+        g = 172;
+        b = 160;
+        depthM = distanceM + 2.4;
+      }
+
+      disparity[idx] = dispFromDepth(depthM);
+      rgba[idx * 4] = r;
+      rgba[idx * 4 + 1] = g;
+      rgba[idx * 4 + 2] = b;
+      rgba[idx * 4 + 3] = 255;
+    }
+  }
+
+  const vision: RoomVisionAnalysis = {
+    width,
+    height,
+    disparityMap: disparity,
+    disparityIsInverseDepth: true,
+    engine: 'segformer+depth-anything-v2',
+    segments: [
+      { label: 'wall', score: 0.95, width, height, mask: wallMask },
+      { label: 'floor', score: 0.96, width, height, mask: floorMask },
+      { label: 'ceiling', score: 0.94, width, height, mask: ceilingMask },
+      { label: 'windowpane', score: 0.78, width, height, mask: falseWindowMask },
+      { label: 'swivel chair', score: 0.86, width, height, mask: chairMask },
+    ],
+  };
+
+  const result = reconstructRoomFromVisionAnalysis(rgba, width, height, vision, {
+    markers,
+    roomWidthM: 3.0,
+    roomDepthM: 4.2,
+    ceilingHeightCm: 215,
+    distanceM,
+    poleOffsetXM: 0,
+    floorAccuracyPct: 86,
+    ceilingAccuracyPct: 84,
+    overallAccuracyPct: 85,
+    userAdjustedCeiling: false,
+    userAdjustedFloor: false,
+  });
+
+  // 1. Collapsed 215cm ceiling recovered to realistic >= 245cm
+  assert.ok(result.scene.ceilingHeightCm >= 245, `Expected ceiling recovery >= 245cm, got ${result.scene.ceilingHeightCm}`);
+  // 2. Glossy neutral floor classified as tile
+  assert.equal(result.scene.floorMaterial, 'tile');
+  // 3. Open doorway detected on right & hallucinated window removed
+  assert.equal(result.scene.objects.some((o) => o.type === 'window'), false, 'Must reject false window overlapping doorway recess');
+  const doorway = result.scene.objects.find((o) => o.type === 'door');
+  assert.ok(doorway && doorway.label === 'Open Doorway' && doorway.x > 0.2, `Expected Open Doorway on right, got ${JSON.stringify(doorway)}`);
+  // 4. Built-in Work Desk detected & Office Chair kept cleanly IN FRONT of desk
+  const desk = result.scene.objects.find((o) => o.type === 'desk');
+  const chair = result.scene.objects.find((o) => o.type === 'office-chair');
+  assert.ok(desk && desk.x < 0, `Expected Work Desk on left/center, got ${JSON.stringify(desk)}`);
+  assert.ok(chair, 'Expected Office Chair');
+  assert.ok(
+    chair.z >= desk.z + desk.depthM * 0.5,
+    `Chair (z=${chair.z}) must remain in front of desk front edge (${(desk.z + desk.depthM * 0.5).toFixed(2)})`
+  );
+  // 5. Elevated Wall Cupboard detected with elevationM >= 1.25
+  const cupboard = result.scene.objects.find((o) => o.type === 'cabinet');
+  assert.ok(cupboard && (cupboard.elevationM ?? 0) >= 1.25, `Expected elevated Wall Cupboard, got ${JSON.stringify(cupboard)}`);
+});
+

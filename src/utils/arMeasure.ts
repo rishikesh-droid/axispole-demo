@@ -80,7 +80,7 @@ export function clampARMarkers(
   // Horizon normalized Y in screen space: 0.5 + tan(pitch) / (2 * halfTan)
   const horizonY = 0.5 + Math.tan(pitchRad) / (2 * halfTan);
 
-  const maxFloorY = aspect < 0.85 ? 0.77 : 0.84;
+  const maxFloorY = aspect < 0.85 ? 0.85 : 0.86;
   const minFloorY = Math.min(maxFloorY - 0.05, Math.max(0.54, horizonY + 0.08));
   const floorY = Math.max(minFloorY, Math.min(maxFloorY, state.floorY));
   const maxCeilingY = Math.max(0.11, Math.min(floorY - 0.18, horizonY - 0.04));

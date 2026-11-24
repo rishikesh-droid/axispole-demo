@@ -234,15 +234,16 @@ export async function analyzeRoomWithVisionModels(
   }
 ): Promise<RoomVisionAnalysis | null> {
   const timeoutMs = opts?.timeoutMs ?? 28000;
+  const loadTimeoutMs = Math.max(timeoutMs, 45000);
 
   opts?.onStage?.('segment');
-  const segmenter = await withTimeout(loadSegmenter(), timeoutMs, null);
+  const segmenter = await withTimeout(loadSegmenter(), loadTimeoutMs, null);
   if (!segmenter) return null;
 
   let rawSegments: Array<{ label: string | null; score: number | null; mask: RawImageLike }> = [];
   try {
     rawSegments = await withTimeout(
-      segmenter(imageDataUrl, { threshold: 0.35, mask_threshold: 0.45 }),
+      segmenter(imageDataUrl, { threshold: 0.22, mask_threshold: 0.42 }),
       timeoutMs,
       []
     );
@@ -253,7 +254,7 @@ export async function analyzeRoomWithVisionModels(
   if (rawSegments.length === 0) return null;
 
   opts?.onStage?.('depth');
-  const depthEstimator = await withTimeout(loadDepthEstimator(), timeoutMs, null);
+  const depthEstimator = await withTimeout(loadDepthEstimator(), loadTimeoutMs, null);
   if (!depthEstimator) return null;
 
   let depthOut: {

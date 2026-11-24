@@ -4,7 +4,7 @@ import type {
   RoomReplicaObjectType,
   RoomReplicaScene,
 } from '../types/pole';
-import type { ARMarkerState } from './arMeasure';
+import { calculateARMeasurement, clampARMarkers, type ARMarkerState } from './arMeasure';
 import { screenToFloorPoint3D } from './arSurfaceCalibration';
 import { sanitizeRoomReplicaScene } from './roomReplica';
 import type { RoomVisionAnalysis, VisionSegment } from './roomVisionDetector';
@@ -20,6 +20,8 @@ export interface SpatialReconstructInput {
   ceilingAccuracyPct: number;
   overallAccuracyPct: number;
   previewDataUrl?: string;
+  userAdjustedCeiling?: boolean;
+  userAdjustedFloor?: boolean;
 }
 
 export interface SpatialDraftObject {
@@ -30,6 +32,7 @@ export interface SpatialDraftObject {
   widthM: number;
   depthM: number;
   heightM: number;
+  elevationM?: number;
   rotationDeg: number;
   primaryColor: string;
   secondaryColor: string;
@@ -160,7 +163,7 @@ export function mapAdeLabelToCategory(rawLabel: string): SemanticCategory {
   if (l === 'door' || l.includes('doorway')) return 'door';
   if (l.includes('mirror')) return 'mirror';
   if (l.includes('painting') || l.includes('poster') || l.includes('clock')) return 'wall-art';
-  if (l.includes('desk')) return 'desk';
+  if (l.includes('desk') || l === 'booth') return 'desk';
   if (l.includes('swivel chair')) return 'office-chair';
   if (l.includes('chair') || l.includes('armchair') || l.includes('stool')) return 'chair';
   if (l.includes('coffee table') || l === 'table' || l.includes('dining table') || l.includes('bench') || l.includes('ottoman')) return 'table';
@@ -214,26 +217,42 @@ export function calibrateDisparityMapToMeters(
   const strideX = Math.max(1, Math.floor(width / 28));
   const strideY = Math.max(1, Math.floor(height / 24));
 
-  for (let y = Math.floor(height * 0.45); y < Math.floor(height * 0.94); y += strideY) {
+  // Sample per-row clear floor medians strictly below the floor junction (avoids under-desk shadows!)
+  const floorStartFrac = clamp(markers.floorY + 0.02, 0.56, 0.88);
+  for (let y = Math.floor(height * floorStartFrac); y < Math.floor(height * 0.96); y += strideY) {
     const v = (y + 0.5) / height;
+    const rowDisps: number[] = [];
+    const rowInvZs: number[] = [];
     for (let x = Math.floor(width * 0.08); x < Math.floor(width * 0.92); x += strideX) {
       const idx = y * width + x;
-      const isFloor = floorMask ? floorMask[idx] >= 128 : v >= markers.floorY + 0.03;
+      const isFloor = floorMask ? floorMask[idx] >= 128 : v >= floorStartFrac;
       if (!isFloor) continue;
 
       const u = (x + 0.5) / width;
       const camZ = floorPointCamDepthM(u, v, markers);
       const disp = disparityMap[idx];
       if (camZ && Number.isFinite(disp)) {
-        samples.push({ d: disp, invZ: 1 / camZ });
+        rowDisps.push(disp);
+        rowInvZs.push(1 / camZ);
       }
+    }
+    if (rowDisps.length >= 3) {
+      rowDisps.sort((a, b) => a - b);
+      rowInvZs.sort((a, b) => a - b);
+      const medD = percentileSorted(rowDisps, 0.5);
+      const medInvZ = percentileSorted(rowInvZs, 0.5);
+      samples.push({ d: medD, invZ: medInvZ });
     }
   }
 
-  // Add a strong wall-distance anchor from central wall pixels
+  // Add a strong modal back-wall anchor (filtered against doorway recesses & foreground pillars)
   const wallDisps: number[] = [];
-  for (let y = Math.floor(height * (markers.ceilingY + 0.08)); y < Math.floor(height * (markers.floorY - 0.08)); y += strideY) {
-    for (let x = Math.floor(width * 0.3); x < Math.floor(width * 0.7); x += strideX) {
+  const wallU0 = Math.max(0.08, markers.leftCornerX);
+  const wallU1 = Math.min(0.92, markers.rightCornerX);
+  const wallV0 = clamp(markers.ceilingY + 0.04, 0.12, 0.55);
+  const wallV1 = clamp(markers.floorY - 0.12, wallV0 + 0.08, 0.8);
+  for (let y = Math.floor(height * wallV0); y < Math.floor(height * wallV1); y += strideY) {
+    for (let x = Math.floor(width * wallU0); x < Math.floor(width * wallU1); x += strideX) {
       const idx = y * width + x;
       if (!wallMask || wallMask[idx] >= 128) {
         const disp = disparityMap[idx];
@@ -241,13 +260,44 @@ export function calibrateDisparityMapToMeters(
       }
     }
   }
+  let wallModalDispOut = 0;
   if (wallDisps.length > 0) {
     wallDisps.sort((a, b) => a - b);
-    const wallMedDisp = percentileSorted(wallDisps, 0.5);
+    const rawQ50 = percentileSorted(wallDisps, 0.5);
+    // Filter out deep hallway recesses (< 0.62*q50) and foreground pillars (> 1.48*q50)
+    const cleanWall = wallDisps.filter((d) => d >= rawQ50 * 0.62 && d <= rawQ50 * 1.48);
+    const pool = cleanWall.length >= 4 ? cleanWall : wallDisps;
+    // Modal cluster around densest window (width = 18% of range)
+    let wallModalDisp = percentileSorted(pool, 0.45);
+    if (pool.length >= 8) {
+      const winHalf = Math.max(0.06, (pool[pool.length - 1] - pool[0]) * 0.12);
+      let bestCount = 0;
+      let bestSum = 0;
+      for (let i = 0; i < pool.length; i += Math.max(1, Math.floor(pool.length / 24))) {
+        const center = pool[i];
+        let cnt = 0;
+        let sum = 0;
+        for (let j = 0; j < pool.length; j++) {
+          if (Math.abs(pool[j] - center) <= winHalf) {
+            cnt++;
+            sum += pool[j];
+          }
+        }
+        if (cnt > bestCount) {
+          bestCount = cnt;
+          bestSum = sum;
+        }
+      }
+      if (bestCount >= 3) {
+        wallModalDisp = bestSum / bestCount;
+      }
+    }
+    wallModalDispOut = wallModalDisp;
     const safeWallDist = clamp(distanceM, 1.3, 6.8);
-    // Repeat lightly so wall anchor stabilizes sparse-floor rooms
-    for (let k = 0; k < 4; k++) {
-      samples.push({ d: wallMedDisp, invZ: 1 / safeWallDist });
+    // Stabilize affine curve with the back-wall anchor
+    const repeats = Math.max(3, Math.min(5, Math.ceil(samples.length * 0.35)));
+    for (let k = 0; k < repeats; k++) {
+      samples.push({ d: wallModalDisp, invZ: 1 / safeWallDist });
     }
   }
 
@@ -296,6 +346,16 @@ export function calibrateDisparityMapToMeters(
         a = first.slope;
         b = first.intercept;
       }
+    }
+  }
+
+  // Prevent affine shift bias from over-flattening wall/doorway/furniture depth relief
+  const safeWallDist = clamp(distanceM, 1.3, 6.8);
+  if (a > 1e-6 && wallModalDispOut > 0.15 && b > 0.52 / safeWallDist) {
+    const aMin = (0.48 / safeWallDist) / wallModalDispOut;
+    if (a < aMin) {
+      a = aMin;
+      b = 1 / safeWallDist - a * wallModalDispOut;
     }
   }
 
@@ -648,13 +708,45 @@ function samplePaletteFromMasks(
   const floorWarmth = floorRgb.r - floorRgb.b;
   const floorSat = rgbSaturation(floorRgb);
 
+  // Measure orthogonal grout seam gradients in clear lower floor rows
+  let floorGx = 0;
+  let floorGy = 0;
+  let floorEdgeN = 0;
+  const fy0 = clamp(Math.floor(Math.max(0.7, markers.floorY + 0.04) * rgbaH), 1, rgbaH - 2);
+  const fy1 = clamp(Math.floor(0.95 * rgbaH), fy0 + 2, rgbaH - 1);
+  const fx0 = clamp(Math.floor(0.12 * rgbaW), 1, rgbaW - 2);
+  const fx1 = clamp(Math.floor(0.88 * rgbaW), fx0 + 2, rgbaW - 1);
+  for (let y = fy0; y < fy1; y += 2) {
+    const my = Math.min(vh - 1, Math.floor((y / rgbaH) * vh));
+    for (let x = fx0; x < fx1; x += 2) {
+      const mx = Math.min(vw - 1, Math.floor((x / rgbaW) * vw));
+      if (floorSeg && floorSeg.mask[my * vw + mx] < 128) continue;
+      if (rugSeg && rugSeg.mask[my * vw + mx] >= 128) continue;
+      const iL = (y * rgbaW + (x - 1)) * 4;
+      const iR = (y * rgbaW + (x + 1)) * 4;
+      const iU = ((y - 1) * rgbaW + x) * 4;
+      const iD = ((y + 1) * rgbaW + x) * 4;
+      const lL = 0.299 * rgba[iL] + 0.587 * rgba[iL + 1] + 0.114 * rgba[iL + 2];
+      const lR = 0.299 * rgba[iR] + 0.587 * rgba[iR + 1] + 0.114 * rgba[iR + 2];
+      const lU = 0.299 * rgba[iU] + 0.587 * rgba[iU + 1] + 0.114 * rgba[iU + 2];
+      const lD = 0.299 * rgba[iD] + 0.587 * rgba[iD + 1] + 0.114 * rgba[iD + 2];
+      floorGx += Math.abs(lR - lL);
+      floorGy += Math.abs(lD - lU);
+      floorEdgeN++;
+    }
+  }
+  const avgFGx = floorEdgeN > 0 ? floorGx / floorEdgeN : 0;
+  const avgFGy = floorEdgeN > 0 ? floorGy / floorEdgeN : 0;
+
   let floorMaterial: RoomReplicaFloorMaterial = 'wood-light';
   if (rugCoversWholeFloor) {
     floorMaterial = 'carpet';
-  } else if (floorWarmth >= 16 && floorSat >= 0.14) {
+  } else if (floorWarmth >= 17 && floorSat >= 0.15) {
     floorMaterial = floorLum >= 120 ? 'wood-light' : 'wood-dark';
-  } else if (floorSat < 0.09) {
-    floorMaterial = floorLum > 165 ? 'tile' : 'concrete';
+  } else if (floorSat < 0.14 && floorWarmth < 18) {
+    floorMaterial = floorLum >= 124 ? 'tile' : 'concrete';
+  } else if (avgFGx >= 2.2 && avgFGy >= 2.2 && Math.min(avgFGx, avgFGy) / Math.max(0.5, Math.max(avgFGx, avgFGy)) >= 0.55 && floorLum >= 135 && floorSat < 0.18) {
+    floorMaterial = 'tile';
   } else {
     floorMaterial = floorLum >= 120 ? 'wood-light' : 'wood-dark';
   }
@@ -793,12 +885,16 @@ function fitOriented3DBox(
   }
 
   // Front-surface depth compensation: monocular camera only sees the front face of solid furniture,
-  // so expand thin depth to realistic object depth and shift center away from camera so front edge stays pinned!
+  // so expand thin depth to realistic object depth. For wall-anchored furniture (desks/sofas/cabinets),
+  // shift center away from camera so the visible front edge stays pinned. For freestanding chairs
+  // pulled out in front of a desk, preserve their forward Z so they never tuck backward into the desk!
   const minDepth = MIN_FOOTPRINT_DEPTH_M[type];
   if (minDepth && depthM < minDepth) {
-    const extraHalf = (minDepth - depthM) * 0.5;
-    cx += rxN * extraHalf;
-    cz += rzN * extraHalf;
+    if (type !== 'chair' && type !== 'office-chair') {
+      const extraHalf = (minDepth - depthM) * 0.5;
+      cx += rxN * extraHalf;
+      cz += rzN * extraHalf;
+    }
     depthM = minDepth;
   }
 
@@ -814,7 +910,7 @@ function fitOriented3DBox(
     heightM = 0.02;
   } else if (type === 'desk') {
     heightM = clamp(heightM, 0.68, 0.85);
-    widthM = clamp(widthM, 0.85, Math.min(roomWidthM * 0.65, 2.2));
+    widthM = clamp(widthM, 0.85, Math.min(roomWidthM * 0.68, 2.35));
   } else if (type === 'sofa') {
     heightM = clamp(heightM, 0.72, 1.02);
     widthM = clamp(widthM, 1.25, Math.min(roomWidthM * 0.72, 2.5));
@@ -862,11 +958,98 @@ export function reconstructRoomFromVisionAnalysis(
   input: SpatialReconstructInput
 ): { scene: RoomReplicaScene; detectorEngine: 'segformer+depth-v2+cv'; rawDetectionCount: number } {
   const { width: vw, height: vh, segments, disparityMap } = vision;
-  const { markers, roomWidthM, roomDepthM, ceilingHeightCm, distanceM } = input;
-  const ceilingM = ceilingHeightCm / 100;
-
   const wallSeg = segments.find((s) => mapAdeLabelToCategory(s.label) === 'wall');
   const floorSeg = segments.find((s) => mapAdeLabelToCategory(s.label) === 'floor');
+
+  const ceilingSeg = segments.find((s) => mapAdeLabelToCategory(s.label) === 'ceiling');
+
+  // If live tracking collapsed ceilingHeightCm <= 238 and user did not manually drag the handle,
+  // inspect Depth Anything V2's wall-to-ceiling transition + ceiling mask to recover the real ceiling height!
+  let markers = input.markers;
+  let roomWidthM = input.roomWidthM;
+  let roomDepthM = input.roomDepthM;
+  let ceilingHeightCm = input.ceilingHeightCm;
+  let distanceM = input.distanceM;
+
+  if (!input.userAdjustedCeiling && ceilingHeightCm <= 238) {
+    const colDisps: number[] = [];
+    for (let x = Math.floor(vw * 0.15); x < Math.floor(vw * 0.65); x += Math.max(1, Math.floor(vw / 18))) {
+      for (let y = Math.floor(vh * 0.34); y < Math.floor(vh * 0.56); y += Math.max(1, Math.floor(vh / 16))) {
+        const d = disparityMap[y * vw + x];
+        if (Number.isFinite(d)) colDisps.push(d);
+      }
+    }
+    if (colDisps.length >= 6) {
+      colDisps.sort((a, b) => a - b);
+      const midWallD = percentileSorted(colDisps, 0.5);
+      // Scan upward from 0.36 toward 0.10 to find where wall meets overhead ceiling slope
+      let recoveredCeilV = markers.ceilingY;
+      for (let y = Math.floor(vh * 0.36); y >= Math.floor(vh * 0.10); y--) {
+        let onWall = 0;
+        let tot = 0;
+        for (let x = Math.floor(vw * 0.18); x < Math.floor(vw * 0.62); x += Math.max(1, Math.floor(vw / 16))) {
+          tot++;
+          const d = disparityMap[y * vw + x];
+          if (Math.abs(d - midWallD) <= Math.max(0.14, midWallD * 0.22)) onWall++;
+        }
+        if (tot > 0 && onWall / tot >= 0.45) {
+          recoveredCeilV = y / vh;
+        } else {
+          break;
+        }
+      }
+      // Also check SegFormer ceiling bottom transition in center room columns
+      if (ceilingSeg) {
+        let segCeilEndV = -1;
+        for (let y = Math.floor(vh * 0.14); y < Math.floor(vh * 0.34); y++) {
+          let ceilHits = 0;
+          let tot = 0;
+          for (let x = Math.floor(vw * 0.15); x < Math.floor(vw * 0.6); x += Math.max(1, Math.floor(vw / 16))) {
+            tot++;
+            if (ceilingSeg.mask[y * vw + x] >= 128) ceilHits++;
+          }
+          if (tot > 0 && ceilHits / tot < 0.45) {
+            segCeilEndV = y / vh;
+            break;
+          }
+        }
+        if (segCeilEndV >= 0.15 && segCeilEndV <= 0.32) {
+          recoveredCeilV = Math.max(recoveredCeilV, segCeilEndV);
+        }
+      }
+      // Also detect true baseboard/floor start via floorSeg
+      let recoveredFloorV = markers.floorY;
+      if (floorSeg && !input.userAdjustedFloor) {
+        for (let y = Math.floor(vh * 0.62); y < Math.floor(vh * 0.86); y++) {
+          let floorHits = 0;
+          let tot = 0;
+          for (let x = Math.floor(vw * 0.12); x < Math.floor(vw * 0.75); x += Math.max(1, Math.floor(vw / 16))) {
+            tot++;
+            if (floorSeg.mask[y * vw + x] >= 128) floorHits++;
+          }
+          if (tot > 0 && floorHits / tot >= 0.55) {
+            recoveredFloorV = y / vh;
+            break;
+          }
+        }
+      }
+      const nextM = clampARMarkers({
+        ...markers,
+        ceilingY: recoveredCeilV < markers.ceilingY - 0.015 ? recoveredCeilV : markers.ceilingY,
+        floorY: Math.max(markers.floorY, recoveredFloorV),
+      });
+      const refined = calculateARMeasurement(nextM);
+      if (recoveredCeilV < markers.ceilingY - 0.015 || (markers.ceilingY <= 0.31 && ceilingHeightCm <= 228)) {
+        markers = nextM;
+        ceilingHeightCm = Math.max(245, refined.ceilingHeightCm);
+        distanceM = Math.max(distanceM, refined.distanceM);
+        roomWidthM = refined.roomWidthM;
+        roomDepthM = refined.roomDepthM;
+      }
+    }
+  }
+
+  const ceilingM = ceilingHeightCm / 100;
 
   // 1. Calibrate relative disparity into metric camera depth (meters)
   const depthMeters = calibrateDisparityMapToMeters(
@@ -879,28 +1062,56 @@ export function reconstructRoomFromVisionAnalysis(
     distanceM
   );
 
-  // 2. Find back wall world Z & room center X offset to map camera world -> studio room frame
+  // 2. Find true modal back wall world Z (filtering out deep doorway recesses & foreground pillars)
   const wallWorldZs: number[] = [];
   const wallWorldXs: number[] = [];
   const stepX = Math.max(1, Math.floor(vw / 24));
   const stepY = Math.max(1, Math.floor(vh / 18));
 
-  for (let y = Math.floor(vh * (markers.ceilingY + 0.06)); y < Math.floor(vh * (markers.floorY - 0.06)); y += stepY) {
+  for (
+    let y = Math.floor(vh * clamp(markers.ceilingY + 0.05, 0.1, 0.55));
+    y < Math.floor(vh * clamp(markers.floorY - 0.08, 0.45, 0.82));
+    y += stepY
+  ) {
     const v = (y + 0.5) / vh;
-    for (let x = Math.floor(vw * 0.1); x < Math.floor(vw * 0.9); x += stepX) {
+    for (
+      let x = Math.floor(vw * clamp(markers.leftCornerX, 0.06, 0.35));
+      x < Math.floor(vw * clamp(markers.rightCornerX, 0.65, 0.94));
+      x += stepX
+    ) {
       const idx = y * vw + x;
       if (wallSeg && wallSeg.mask[idx] < 128) continue;
       const u = (x + 0.5) / vw;
       const wPt = unprojectPixelWorld(u, v, depthMeters[idx], markers);
-      wallWorldZs.push(wPt.z);
-      wallWorldXs.push(wPt.x);
+      if (depthMeters[idx] <= distanceM * 1.48 && depthMeters[idx] >= distanceM * 0.58) {
+        wallWorldZs.push(wPt.z);
+        wallWorldXs.push(wPt.x);
+      }
     }
   }
 
   let backWallZWorld = -distanceM;
-  if (wallWorldZs.length >= 4) {
-    wallWorldZs.sort((a, b) => a - b); // most negative = farthest back wall
-    backWallZWorld = percentileSorted(wallWorldZs, 0.22);
+  if (wallWorldZs.length >= 6) {
+    const sortedZ = [...wallWorldZs].sort((a, b) => a - b);
+    // Find densest ±0.28m cluster representing the flat physical back wall (never deep hallway void)
+    let bestCnt = 0;
+    let bestSum = 0;
+    for (let i = 0; i < sortedZ.length; i++) {
+      const c = sortedZ[i];
+      let cnt = 0;
+      let sum = 0;
+      for (let j = 0; j < sortedZ.length; j++) {
+        if (Math.abs(sortedZ[j] - c) <= 0.28) {
+          cnt++;
+          sum += sortedZ[j];
+        }
+      }
+      if (cnt > bestCnt) {
+        bestCnt = cnt;
+        bestSum = sum;
+      }
+    }
+    backWallZWorld = bestCnt >= 3 ? bestSum / bestCnt : percentileSorted(sortedZ, 0.45);
   }
 
   let centerXOffset = 0;
@@ -908,7 +1119,6 @@ export function reconstructRoomFromVisionAnalysis(
     wallWorldXs.sort((a, b) => a - b);
     const minWX = percentileSorted(wallWorldXs, 0.05);
     const maxWX = percentileSorted(wallWorldXs, 0.95);
-    // Only shift room center if both wall extremes are asymmetrically framed
     const midWX = (minWX + maxWX) * 0.5;
     if (Math.abs(midWX) > 0.25 && maxWX - minWX >= roomWidthM * 0.65) {
       centerXOffset = midWX;
@@ -939,8 +1149,9 @@ export function reconstructRoomFromVisionAnalysis(
 
     const blobs = extractDepthAwareInstances(seg.mask, vw, vh, depthMeters, cat, seg.score);
     for (const b of blobs) {
-      // Ignore ceiling-mounted pendant/chandelier lamps when expecting floor/table lamps
       if (cat === 'lamp' && b.maxV < markers.floorY - 0.16) continue;
+      // Reject foreground doorframe chairs/blobs clipped right at screen corner edge
+      if ((cat === 'chair' || cat === 'office-chair') && (b.maxU < 0.08 || b.minU > 0.92)) continue;
       allBlobs.push(b);
     }
   }
@@ -953,6 +1164,27 @@ export function reconstructRoomFromVisionAnalysis(
     draft: SpatialDraftObject;
     blob: InstanceBlob;
   }> = [];
+
+  const prettyLabel: Record<RoomReplicaObjectType, string> = {
+    desk: 'Work Desk',
+    chair: 'Accent Chair',
+    'office-chair': 'Office Chair',
+    table: 'Table',
+    sofa: 'Sofa',
+    bed: 'Bed',
+    bookshelf: 'Bookshelf',
+    cabinet: 'Storage Cabinet',
+    wardrobe: 'Wardrobe',
+    'tv-stand': 'Media Console & TV',
+    rug: 'Area Rug',
+    plant: 'Potted Plant',
+    lamp: 'Floor Lamp',
+    window: 'Window',
+    door: 'Room Door',
+    mirror: 'Wall Mirror',
+    'wall-art': 'Framed Wall Art',
+    'fitness-mat': 'Floor Mat',
+  };
 
   for (const blob of allBlobs) {
     const pts: CalibratedPoint3D[] = [];
@@ -972,29 +1204,42 @@ export function reconstructRoomFromVisionAnalysis(
 
     const type = blob.category;
     const box = fitOriented3DBox(pts, type, ceilingM, roomWidthM, roomDepthM);
+
+    // Refine flat floor mats / rugs directly on Y = 0 floor plane via pinhole ray intersection
+    if ((type === 'rug' || type === 'fitness-mat') && blob.minV >= markers.floorY - 0.04) {
+      const fLeft = screenToFloorPoint3D(blob.minU, (blob.minV + blob.maxV) * 0.5, markers);
+      const fRight = screenToFloorPoint3D(blob.maxU, (blob.minV + blob.maxV) * 0.5, markers);
+      const fFar = screenToFloorPoint3D((blob.minU + blob.maxU) * 0.5, blob.minV, markers);
+      const fNear = screenToFloorPoint3D((blob.minU + blob.maxU) * 0.5, blob.maxV, markers);
+      if (fLeft && fRight && fFar && fNear) {
+        const cx = ((fLeft.x + fRight.x) * 0.5) - centerXOffset;
+        const cz = ((fFar.z + fNear.z) * 0.5) - backWallZWorld - roomDepthM / 2;
+        const wM = clamp(Math.abs(fRight.x - fLeft.x), 0.55, roomWidthM * 0.75);
+        const dM = clamp(Math.abs(fNear.z - fFar.z), 0.45, roomDepthM * 0.72);
+        box.x = Number(cx.toFixed(2));
+        box.z = Number(cz.toFixed(2));
+        box.widthM = Number(wM.toFixed(2));
+        box.depthM = Number(dM.toFixed(2));
+      }
+    }
+
+    // Anchor floor-standing chair base onto Y=0 ground contact when casters are visible on floor
+    if ((type === 'chair' || type === 'office-chair') && blob.maxV >= markers.floorY - 0.03) {
+      const baseFloorPt = screenToFloorPoint3D(
+        (blob.minU + blob.maxU) * 0.5,
+        clamp(blob.maxV - 0.01, markers.floorY, 0.96),
+        markers
+      );
+      if (baseFloorPt) {
+        const floorZ = baseFloorPt.z - backWallZWorld - roomDepthM / 2;
+        const floorX = baseFloorPt.x - centerXOffset;
+        box.x = Number((box.x * 0.55 + floorX * 0.45).toFixed(2));
+        box.z = Number(Math.max(box.z, box.z * 0.45 + floorZ * 0.55).toFixed(2));
+      }
+    }
+
     const fb = DEFAULT_FALLBACK_COLORS[type];
     const colors = sampleMaskColors(rgba, rgbaW, rgbaH, blob.pixels, fb.p, fb.s);
-
-    const prettyLabel: Record<RoomReplicaObjectType, string> = {
-      desk: 'Work Desk',
-      chair: 'Accent Chair',
-      'office-chair': 'Office Chair',
-      table: 'Table',
-      sofa: 'Sofa',
-      bed: 'Bed',
-      bookshelf: 'Bookshelf',
-      cabinet: 'Storage Cabinet',
-      wardrobe: 'Wardrobe',
-      'tv-stand': 'Media Console & TV',
-      rug: 'Area Rug',
-      plant: 'Potted Plant',
-      lamp: 'Floor Lamp',
-      window: 'Window',
-      door: 'Room Door',
-      mirror: 'Wall Mirror',
-      'wall-art': 'Framed Wall Art',
-      'fitness-mat': 'Floor Mat',
-    };
 
     rawObjects.push({
       blob,
@@ -1015,10 +1260,604 @@ export function reconstructRoomFromVisionAnalysis(
     });
   }
 
-  // 5. Contextual upgrades in 3D space:
+  // =========================================================================
+  // 5. 3D RGB-D WALL-PLANE STRUCTURAL EXTRACTOR
+  // Recovers real architectural & built-in elements missed by compact semantic models:
+  //   A) Open Doorways (deep floor-reaching depth recesses -> never false windows!)
+  //   B) Built-In Protruding Desks / Workstations (continuous forward residual)
+  //   C) Clipped Foreground Office Chair Recovery (when chair hugs cropped edge)
+  //   D) Overhead Wall Cabinets / Cupboards (upper-wall framed storage bands)
+  // =========================================================================
+  const gW = 48;
+  const gH = 36;
+  const wallDepthAnchorM = clamp(Math.abs(backWallZWorld), 1.4, 6.8);
+  const gridPt: Array<CalibratedPoint3D | null> = new Array(gW * gH).fill(null);
+  const gridRawDisp = new Float32Array(gW * gH);
+
+  // Estimate modal raw disparity of physical back wall so recess/protrusion tests never break under affine bias
+  const rawWallPool: number[] = [];
+  for (let y = Math.floor(vh * clamp(markers.ceilingY + 0.05, 0.14, 0.45)); y < Math.floor(vh * clamp(markers.floorY - 0.1, 0.45, 0.78)); y += stepY) {
+    for (let x = Math.floor(vw * 0.08); x < Math.floor(vw * 0.88); x += stepX) {
+      const idx = y * vw + x;
+      if (!wallSeg || wallSeg.mask[idx] >= 128) {
+        const d = disparityMap[idx];
+        if (Number.isFinite(d)) rawWallPool.push(d);
+      }
+    }
+  }
+  rawWallPool.sort((a, b) => a - b);
+  const wallQ50Raw = percentileSorted(rawWallPool, 0.5);
+  const cleanRawWall = rawWallPool.filter((d) => d >= wallQ50Raw * 0.62 && d <= wallQ50Raw * 1.48);
+  const rawPool = cleanRawWall.length >= 4 ? cleanRawWall : rawWallPool;
+  let wallModalRawDisp = percentileSorted(rawPool, 0.48);
+  if (rawPool.length >= 8) {
+    const wh = Math.max(0.05, (rawPool[rawPool.length - 1] - rawPool[0]) * 0.12);
+    let bCnt = 0;
+    let bSum = 0;
+    for (let i = 0; i < rawPool.length; i += Math.max(1, Math.floor(rawPool.length / 20))) {
+      let c = 0;
+      let s = 0;
+      for (let j = 0; j < rawPool.length; j++) {
+        if (Math.abs(rawPool[j] - rawPool[i]) <= wh) {
+          c++;
+          s += rawPool[j];
+        }
+      }
+      if (c > bCnt) {
+        bCnt = c;
+        bSum = s;
+      }
+    }
+    if (bCnt >= 3) wallModalRawDisp = bSum / bCnt;
+  }
+
+  for (let gy = 0; gy < gH; gy++) {
+    const v = (gy + 0.5) / gH;
+    const sy = clamp(Math.floor(v * vh), 0, vh - 1);
+    for (let gx = 0; gx < gW; gx++) {
+      const u = (gx + 0.5) / gW;
+      const sx = clamp(Math.floor(u * vw), 0, vw - 1);
+      const d = depthMeters[sy * vw + sx];
+      gridPt[gy * gW + gx] = toRoomPoint(u, v, d);
+      gridRawDisp[gy * gW + gx] = disparityMap[sy * vw + sx];
+    }
+  }
+
+  // A) Detect DEEP FLOOR-REACHING OPEN DOORWAY RECESSES (deep void behind backWallZWorld)
+  const doorwayGrid = new Uint8Array(gW * gH);
+  const doorTopRow = Math.floor(clamp(markers.ceilingY + 0.04, 0.12, 0.45) * gH);
+  const doorBotRow = Math.ceil(clamp(markers.floorY + 0.08, 0.6, 0.94) * gH);
+  for (let gy = doorTopRow; gy <= Math.min(gH - 1, doorBotRow); gy++) {
+    for (let gx = 0; gx < gW; gx++) {
+      const pt = gridPt[gy * gW + gx];
+      if (!pt) continue;
+      const rawD = gridRawDisp[gy * gW + gx];
+      if (wallModalRawDisp >= 0.3 && rawD > wallModalRawDisp * 1.42) continue; // ignore foreground pillar
+      const deepByMeters = pt.z < -roomDepthM / 2 - 0.52 || pt.camDepthM > wallDepthAnchorM * 1.2;
+      const deepByDisp = wallModalRawDisp >= 0.35 && rawD <= wallModalRawDisp * 0.72;
+      if (deepByMeters || deepByDisp) {
+        doorwayGrid[gy * gW + gx] = 1;
+      }
+    }
+  }
+
+  const visitedDoor = new Uint8Array(gW * gH);
+  const doorwayBoxes: Array<{ minU: number; maxU: number; minV: number; maxV: number; x: number; w: number }> = [];
+  for (let gy = doorTopRow; gy <= Math.min(gH - 1, doorBotRow); gy++) {
+    for (let gx = 0; gx < gW; gx++) {
+      const start = gy * gW + gx;
+      if (!doorwayGrid[start] || visitedDoor[start]) continue;
+      const stack = [start];
+      visitedDoor[start] = 1;
+      let minGx = gx;
+      let maxGx = gx;
+      let minGy = gy;
+      let maxGy = gy;
+      const cells: number[] = [];
+      while (stack.length > 0) {
+        const cur = stack.pop()!;
+        cells.push(cur);
+        const cx = cur % gW;
+        const cy = Math.floor(cur / gW);
+        minGx = Math.min(minGx, cx);
+        maxGx = Math.max(maxGx, cx);
+        minGy = Math.min(minGy, cy);
+        maxGy = Math.max(maxGy, cy);
+        for (const [nx, ny] of [
+          [cx + 1, cy],
+          [cx - 1, cy],
+          [cx, cy + 1],
+          [cx, cy - 1],
+        ]) {
+          if (nx < 0 || nx >= gW || ny < doorTopRow || ny > Math.min(gH - 1, doorBotRow)) continue;
+          const nIdx = ny * gW + nx;
+          if (doorwayGrid[nIdx] && !visitedDoor[nIdx]) {
+            visitedDoor[nIdx] = 1;
+            stack.push(nIdx);
+          }
+        }
+      }
+
+      const maxV = (maxGy + 1) / gH;
+      const minV = minGy / gH;
+      const minU = minGx / gW;
+      const maxU = (maxGx + 1) / gW;
+      const spanV = maxV - minV;
+      // Doorway must have vertical stature and extend down toward floor level
+      if (cells.length >= 10 && spanV >= 0.22 && maxV >= markers.floorY - 0.16 && maxU - minU <= 0.48) {
+        const leftWallPt = unprojectPixelWorld(Math.max(0.04, minU), (minV + maxV) * 0.5, wallDepthAnchorM, markers);
+        const rightWallPt = unprojectPixelWorld(Math.min(0.96, maxU), (minV + maxV) * 0.5, wallDepthAnchorM, markers);
+        const doorX = clamp(((leftWallPt.x + rightWallPt.x) * 0.5) - centerXOffset, -roomWidthM / 2 + 0.45, roomWidthM / 2 - 0.45);
+        const doorW = clamp(Math.abs(rightWallPt.x - leftWallPt.x) * 1.12, 0.85, 1.35);
+        const doorH = clamp(
+          (spanV / Math.max(0.24, markers.floorY - markers.ceilingY)) * ceilingM,
+          1.92,
+          Math.min(2.3, ceilingM - 0.14)
+        );
+        const samplePx = cells.map((idx) => ({
+          u: ((idx % gW) + 0.5) / gW,
+          v: (Math.floor(idx / gW) + 0.5) / gH,
+        }));
+        const doorColors = sampleMaskColors(rgba, rgbaW, rgbaH, samplePx, '#b9b4ab', palette.trimColor);
+        const alreadyHasDoor = rawObjects.some(
+          (o) => o.draft.type === 'door' && Math.abs(o.draft.x - doorX) < 0.75
+        );
+        if (!alreadyHasDoor) {
+          rawObjects.push({
+            blob: {
+              category: 'door',
+              score: 0.88,
+              pixels: samplePx.map((p) => ({
+                x: clamp(Math.floor(p.u * vw), 0, vw - 1),
+                y: clamp(Math.floor(p.v * vh), 0, vh - 1),
+                u: p.u,
+                v: p.v,
+              })),
+              minU,
+              maxU,
+              minV,
+              maxV,
+            },
+            draft: {
+              type: 'door',
+              label: 'Open Doorway',
+              x: Number(doorX.toFixed(2)),
+              z: Number((-roomDepthM / 2 + 0.05).toFixed(2)),
+              widthM: Number(doorW.toFixed(2)),
+              depthM: 0.08,
+              heightM: Number(doorH.toFixed(2)),
+              rotationDeg: 0,
+              primaryColor: doorColors.primaryColor,
+              secondaryColor: palette.trimColor,
+              inferred: false,
+              confidence: 0.88,
+            },
+          });
+        }
+        doorwayBoxes.push({ minU, maxU, minV, maxV, x: doorX, w: doorW });
+      }
+    }
+  }
+
+  // Remove any hallucinated windows that overlap an open doorway, touch the floor, or contain a deep doorway void
+  for (let i = rawObjects.length - 1; i >= 0; i--) {
+    const item = rawObjects[i];
+    if (item.draft.type !== 'window') continue;
+    const touchesFloor = item.blob.maxV >= markers.floorY - 0.14;
+    const overlapsDoorway = doorwayBoxes.some(
+      (d) => item.blob.maxU > d.minU - 0.08 && item.blob.minU < d.maxU + 0.08
+    );
+    let minWinDisp = Infinity;
+    for (let k = 0; k < item.blob.pixels.length; k += Math.max(1, Math.floor(item.blob.pixels.length / 40))) {
+      const p = item.blob.pixels[k];
+      const d = disparityMap[p.y * vw + p.x];
+      if (d < minWinDisp) minWinDisp = d;
+    }
+    const hasDeepVoid = wallModalRawDisp >= 0.35 && minWinDisp <= wallModalRawDisp * 0.68;
+    if (touchesFloor || overlapsDoorway || hasDeepVoid) {
+      rawObjects.splice(i, 1);
+    }
+  }
+
+  // B) Detect BUILT-IN PROTRUDING DESKS / COUNTERS on lower-mid wall (e.g. laminate desk bands)
+  const hasExistingDesk = rawObjects.some((o) => o.draft.type === 'desk');
+  const wallSpan = Math.max(0.24, markers.floorY - markers.ceilingY);
+  const deskBandTopV = clamp(markers.ceilingY + wallSpan * 0.42, 0.44, markers.floorY - 0.18);
+  const deskBandBotV = clamp(markers.floorY + 0.03, deskBandTopV + 0.12, 0.88);
+  const deskRow0 = Math.floor(deskBandTopV * gH);
+  const deskRow1 = Math.min(gH - 1, Math.ceil(deskBandBotV * gH));
+  const upperWallRefRow0 = Math.floor(clamp(markers.ceilingY + wallSpan * 0.16, 0.2, deskBandTopV - 0.14) * gH);
+  const upperWallRefRow1 = Math.max(upperWallRefRow0 + 1, Math.floor(clamp(deskBandTopV - 0.04, 0.3, 0.65) * gH));
+
+  if (!hasExistingDesk) {
+    // Compare each column's depth protrusion in the tabletop strip against the bare wall directly above it
+    const protrudingCols = new Uint8Array(gW);
+    const colDeskTopRow = new Int16Array(gW).fill(-1);
+    const colDeskDepth = new Float32Array(gW);
+
+    for (let gx = 0; gx < gW; gx++) {
+      const u = (gx + 0.5) / gW;
+      if (doorwayBoxes.some((d) => u >= d.minU - 0.02 && u <= d.maxU + 0.02)) continue;
+      if (u > 0.86) continue;
+
+      const refDepths: number[] = [];
+      const refRawDisps: number[] = [];
+      for (let ry = upperWallRefRow0; ry < upperWallRefRow1; ry++) {
+        const pt = gridPt[ry * gW + gx];
+        const rawD = gridRawDisp[ry * gW + gx];
+        if (pt && pt.camDepthM >= wallDepthAnchorM * 0.68 && pt.camDepthM <= wallDepthAnchorM * 1.35) {
+          refDepths.push(pt.camDepthM);
+          refRawDisps.push(rawD);
+        }
+      }
+      if (refDepths.length < 2) continue;
+      refDepths.sort((a, b) => a - b);
+      refRawDisps.sort((a, b) => a - b);
+      const colWallDepth = percentileSorted(refDepths, 0.5);
+      const colWallDisp = percentileSorted(refRawDisps, 0.5);
+      // Skip foreground pillar columns sitting much closer than the back wall
+      if (colWallDepth < wallDepthAnchorM * 0.78) continue;
+
+      // Scan downward from deskRow0 to find the TOPMOST protruding tabletop lip (avoids under-desk shadows!)
+      let topRow = -1;
+      let topDepth = colWallDepth;
+      for (let gy = deskRow0; gy <= deskRow1; gy++) {
+        const pt = gridPt[gy * gW + gx];
+        if (!pt) continue;
+        const rawD = gridRawDisp[gy * gW + gx];
+        const protMeters = colWallDepth - pt.camDepthM;
+        const protRelDisp = (rawD - colWallDisp) / Math.max(0.35, colWallDisp);
+        if (
+          (protMeters >= 0.16 || protRelDisp >= 0.14) &&
+          pt.camDepthM >= wallDepthAnchorM * 0.55 &&
+          pt.y >= 0.38 &&
+          pt.y <= 1.12
+        ) {
+          topRow = gy;
+          topDepth = pt.camDepthM;
+          break;
+        }
+      }
+      if (topRow >= 0) {
+        protrudingCols[gx] = 1;
+        colDeskTopRow[gx] = topRow;
+        colDeskDepth[gx] = topDepth;
+      }
+    }
+
+    // Bridge short column gaps (e.g. chair back, monitor, or vertical divider up to 8 cols wide)
+    const bridged = new Uint8Array(protrudingCols);
+    let lastActive = -1;
+    for (let gx = 0; gx < gW; gx++) {
+      if (protrudingCols[gx]) {
+        if (lastActive >= 0 && gx - lastActive <= 8) {
+          let crossesDoor = false;
+          for (let k = lastActive + 1; k < gx; k++) {
+            const u = (k + 0.5) / gW;
+            if (doorwayBoxes.some((d) => u >= d.minU && u <= d.maxU)) crossesDoor = true;
+          }
+          if (!crossesDoor) {
+            for (let k = lastActive + 1; k < gx; k++) {
+              bridged[k] = 1;
+              if (colDeskTopRow[k] < 0) {
+                colDeskTopRow[k] = Math.round((colDeskTopRow[lastActive] + colDeskTopRow[gx]) * 0.5);
+                colDeskDepth[k] = (colDeskDepth[lastActive] + colDeskDepth[gx]) * 0.5;
+              }
+            }
+          }
+        }
+        lastActive = gx;
+      }
+    }
+
+    // Find widest contiguous horizontal desk span
+    let runStart = -1;
+    let bestSpanStart = -1;
+    let bestSpanEnd = -1;
+    for (let gx = 0; gx <= gW; gx++) {
+      const on = gx < gW && bridged[gx] === 1;
+      if (on && runStart < 0) runStart = gx;
+      if (!on && runStart >= 0) {
+        if (gx - 1 - runStart > bestSpanEnd - bestSpanStart) {
+          bestSpanStart = runStart;
+          bestSpanEnd = gx - 1;
+        }
+        runStart = -1;
+      }
+    }
+
+    const spanCols = bestSpanEnd - bestSpanStart + 1;
+    if (bestSpanStart >= 0 && spanCols >= 10) {
+      const uMin = bestSpanStart / gW;
+      const uMax = (bestSpanEnd + 1) / gW;
+      const activeRows: number[] = [];
+      const activeDepths: number[] = [];
+      const topSamplePx: Array<{ u: number; v: number }> = [];
+      const underSamplePx: Array<{ u: number; v: number }> = [];
+
+      for (let gx = bestSpanStart; gx <= bestSpanEnd; gx++) {
+        if (colDeskTopRow[gx] >= 0) {
+          activeRows.push(colDeskTopRow[gx]);
+          activeDepths.push(colDeskDepth[gx]);
+          if (protrudingCols[gx]) {
+            const u = (gx + 0.5) / gW;
+            const vTop = (colDeskTopRow[gx] + 0.5) / gH;
+            const px = clamp(Math.floor(u * rgbaW), 0, rgbaW - 1);
+            const py = clamp(Math.floor(vTop * rgbaH), 0, rgbaH - 1);
+            const i = (py * rgbaW + px) * 4;
+            const lum = 0.299 * rgba[i] + 0.587 * rgba[i + 1] + 0.114 * rgba[i + 2];
+            // Sample sunlit tabletop band (skip dark black chairs / under-desk cavity)
+            if (lum >= 55) {
+              topSamplePx.push({ u, v: vTop });
+            }
+            underSamplePx.push({ u, v: Math.min(markers.floorY - 0.02, vTop + 0.08) });
+          }
+        }
+      }
+      activeRows.sort((a, b) => a - b);
+      activeDepths.sort((a, b) => a - b);
+      const medDepth = percentileSorted(activeDepths, 0.5);
+      const medTopV = (percentileSorted(activeRows, 0.45) + 0.5) / gH;
+
+      const leftW = unprojectPixelWorld(uMin, medTopV, medDepth, markers);
+      const rightW = unprojectPixelWorld(uMax, medTopV, medDepth, markers);
+      const deskX = ((leftW.x + rightW.x) * 0.5) - centerXOffset;
+      const deskWidthM = clamp(Math.abs(rightW.x - leftW.x), 1.05, Math.min(roomWidthM * 0.72, 2.5));
+      const deskDepthM = 0.65;
+      const deskZ = -roomDepthM / 2 + deskDepthM / 2 + 0.03;
+
+      const deskPrimary = sampleMaskColors(rgba, rgbaW, rgbaH, topSamplePx, '#6c8b84', '#2b2f35');
+      const deskUnder = sampleMaskColors(rgba, rgbaW, rgbaH, underSamplePx, '#2b2f35', '#2b2f35');
+
+      const allDeskPx = topSamplePx.map((p) => ({
+        x: clamp(Math.floor(p.u * vw), 0, vw - 1),
+        y: clamp(Math.floor(p.v * vh), 0, vh - 1),
+        u: p.u,
+        v: p.v,
+      }));
+      rawObjects.push({
+        blob: {
+          category: 'desk',
+          score: 0.87,
+          pixels: allDeskPx,
+          minU: uMin,
+          maxU: uMax,
+          minV: Math.max(0.45, medTopV - 0.04),
+          maxV: clamp(markers.floorY, medTopV + 0.08, 0.88),
+        },
+        draft: {
+          type: 'desk',
+          label: 'Work Desk',
+          x: Number(deskX.toFixed(2)),
+          z: Number(deskZ.toFixed(2)),
+          widthM: Number(deskWidthM.toFixed(2)),
+          depthM: deskDepthM,
+          heightM: 0.76,
+          rotationDeg: 0,
+          primaryColor: deskPrimary.primaryColor,
+          secondaryColor: deskUnder.primaryColor,
+          inferred: false,
+          confidence: 0.87,
+        },
+      });
+    }
+  }
+
+  // C) Recover CLIPPED FOREGROUND OFFICE CHAIR IN FRONT OF DESK (when SegFormer misses a partially cropped chair)
+  const hasChair = rawObjects.some((o) => o.draft.type === 'chair' || o.draft.type === 'office-chair');
+  const firstDesk = rawObjects.find((o) => o.draft.type === 'desk');
+  if (!hasChair && firstDesk) {
+    const chairCells: Array<{ u: number; v: number; pt: CalibratedPoint3D }> = [];
+    const chRow0 = Math.floor(clamp(markers.floorY - 0.22, 0.48, 0.75) * gH);
+    const chRow1 = Math.min(gH - 1, Math.ceil(clamp(markers.floorY + 0.02, 0.65, 0.88) * gH));
+    for (let gy = chRow0; gy <= chRow1; gy++) {
+      for (let gx = 0; gx < Math.floor(gW * 0.75); gx++) {
+        const u = (gx + 0.5) / gW;
+        if (doorwayBoxes.some((d) => u >= d.minU - 0.02 && u <= d.maxU + 0.02)) continue;
+        const pt = gridPt[gy * gW + gx];
+        const rawD = gridRawDisp[gy * gW + gx];
+        if (!pt || wallModalRawDisp <= 0.25) continue;
+        const px = clamp(Math.floor(u * rgbaW), 0, rgbaW - 1);
+        const py = clamp(Math.floor(((gy + 0.5) / gH) * rgbaH), 0, rgbaH - 1);
+        const i = (py * rgbaW + px) * 4;
+        const lum = 0.299 * rgba[i] + 0.587 * rgba[i + 1] + 0.114 * rgba[i + 2];
+        // Distinct foreground protruding chair cushion/backrest in front of wall/desk
+        if (rawD >= wallModalRawDisp * 1.24 && lum < 85 && pt.y >= 0.1 && pt.y <= 1.05) {
+          chairCells.push({ u, v: (gy + 0.5) / gH, pt });
+        }
+      }
+    }
+    if (chairCells.length >= 6) {
+      const xs = chairCells.map((c) => c.pt.x).sort((a, b) => a - b);
+      const zs = chairCells.map((c) => c.pt.z).sort((a, b) => a - b);
+      const cx = percentileSorted(xs, 0.5);
+      const cz = Math.max(firstDesk.draft.z + firstDesk.draft.depthM * 0.5 + 0.3, percentileSorted(zs, 0.65));
+      const chCols = sampleMaskColors(rgba, rgbaW, rgbaH, chairCells, '#23262e', '#4c525f');
+      rawObjects.push({
+        blob: {
+          category: 'office-chair',
+          score: 0.79,
+          pixels: chairCells.map((c) => ({
+            x: clamp(Math.floor(c.u * vw), 0, vw - 1),
+            y: clamp(Math.floor(c.v * vh), 0, vh - 1),
+            u: c.u,
+            v: c.v,
+          })),
+          minU: Math.min(...chairCells.map((c) => c.u)),
+          maxU: Math.max(...chairCells.map((c) => c.u)),
+          minV: Math.min(...chairCells.map((c) => c.v)),
+          maxV: Math.max(...chairCells.map((c) => c.v)),
+        },
+        draft: {
+          type: 'office-chair',
+          label: 'Office Chair',
+          x: Number(cx.toFixed(2)),
+          z: Number(cz.toFixed(2)),
+          widthM: 0.54,
+          depthM: 0.56,
+          heightM: 0.88,
+          rotationDeg: 0,
+          primaryColor: chCols.primaryColor,
+          secondaryColor: chCols.secondaryColor,
+          inferred: false,
+          confidence: 0.79,
+        },
+      });
+    }
+  }
+
+  // D) Detect OVERHEAD BUILT-IN WALL CABINETS (framed cohesive storage block in upper wall band)
+  const hasExistingCabinet = rawObjects.some((o) => o.draft.type === 'cabinet' || o.draft.type === 'wardrobe');
+  if (!hasExistingCabinet && markers.ceilingY < 0.36) {
+    const cabRow0 = Math.max(1, Math.floor((markers.ceilingY + wallSpan * 0.08) * gH));
+    const cabRow1 = Math.max(cabRow0 + 2, Math.floor((markers.ceilingY + wallSpan * 0.42) * gH));
+    // Sample ceiling above and shelf/backsplash below to confirm framed cabinet unit
+    const refUpperCols: RGB[] = [];
+    for (let x = Math.floor(rgbaW * 0.15); x < Math.floor(rgbaW * 0.65); x += 4) {
+      const cy = clamp(Math.floor(Math.max(0.05, markers.ceilingY - 0.025) * rgbaH), 1, rgbaH - 2);
+      const i = (cy * rgbaW + x) * 4;
+      refUpperCols.push({ r: rgba[i], g: rgba[i + 1], b: rgba[i + 2] });
+    }
+    const avgCeilR = refUpperCols.reduce((a, c) => a + c.r, 0) / Math.max(1, refUpperCols.length);
+    const avgCeilG = refUpperCols.reduce((a, c) => a + c.g, 0) / Math.max(1, refUpperCols.length);
+    const avgCeilB = refUpperCols.reduce((a, c) => a + c.b, 0) / Math.max(1, refUpperCols.length);
+
+    const cabCols = new Uint8Array(gW);
+    for (let gx = 0; gx < gW; gx++) {
+      const u = (gx + 0.5) / gW;
+      if (u > 0.86 || doorwayBoxes.some((d) => u >= d.minU - 0.02 && u <= d.maxU + 0.02)) continue;
+      let horizSeamStrength = 0;
+      let bandContrastCount = 0;
+      let pts = 0;
+      const px = clamp(Math.floor(u * rgbaW), 1, rgbaW - 2);
+      for (let gy = cabRow0; gy <= cabRow1; gy++) {
+        const pt = gridPt[gy * gW + gx];
+        if (!pt || pt.camDepthM < wallDepthAnchorM * 0.68 || pt.camDepthM > wallDepthAnchorM * 1.28) continue;
+        const py = clamp(Math.floor(((gy + 0.5) / gH) * rgbaH), 2, rgbaH - 3);
+        const i = (py * rgbaW + px) * 4;
+        const iUp = ((py - 2) * rgbaW + px) * 4;
+        const iDn = ((py + 2) * rgbaW + px) * 4;
+        const lumUp = 0.299 * rgba[iUp] + 0.587 * rgba[iUp + 1] + 0.114 * rgba[iUp + 2];
+        const lumDn = 0.299 * rgba[iDn] + 0.587 * rgba[iDn + 1] + 0.114 * rgba[iDn + 2];
+        horizSeamStrength = Math.max(horizSeamStrength, Math.abs(lumDn - lumUp));
+        const colDist = Math.hypot(rgba[i] - avgCeilR, rgba[i + 1] - avgCeilG, rgba[i + 2] - avgCeilB);
+        if (colDist >= 24) bandContrastCount++;
+        pts++;
+      }
+      // Also check bright lower border / shelf transition just below cabRow1
+      const belowY = clamp(Math.floor(((cabRow1 + 1.5) / gH) * rgbaH), 1, rgbaH - 2);
+      const midY = clamp(Math.floor((((cabRow0 + cabRow1) * 0.5) / gH) * rgbaH), 1, rgbaH - 2);
+      const iMid = (midY * rgbaW + px) * 4;
+      const iBel = (belowY * rgbaW + px) * 4;
+      const lowerEdge = Math.hypot(rgba[iMid] - rgba[iBel], rgba[iMid + 1] - rgba[iBel + 1], rgba[iMid + 2] - rgba[iBel + 2]);
+      if (pts >= 3 && bandContrastCount >= Math.ceil(pts * 0.5) && (horizSeamStrength >= 16 || lowerEdge >= 28)) {
+        cabCols[gx] = 1;
+      }
+    }
+
+    let cRunStart = -1;
+    let bestCabStart = -1;
+    let bestCabEnd = -1;
+    for (let gx = 0; gx <= gW; gx++) {
+      const on = gx < gW && cabCols[gx] === 1;
+      if (on && cRunStart < 0) cRunStart = gx;
+      if (!on && cRunStart >= 0) {
+        if (gx - 1 - cRunStart > bestCabEnd - bestCabStart) {
+          bestCabStart = cRunStart;
+          bestCabEnd = gx - 1;
+        }
+        cRunStart = -1;
+      }
+    }
+
+    if (bestCabStart >= 0 && bestCabEnd - bestCabStart + 1 >= 10) {
+      const u0 = bestCabStart / gW;
+      const u1 = (bestCabEnd + 1) / gW;
+      const v0 = cabRow0 / gH;
+      const v1 = cabRow1 / gH;
+
+      // Count distinct vertical door seams inside the horizontal cabinet span so plain empty walls never trigger!
+      let verticalDoorSeams = 0;
+      const midCabY = clamp(Math.floor(((v0 + v1) * 0.5) * rgbaH), 1, rgbaH - 2);
+      const sx0 = clamp(Math.floor((u0 + 0.03) * rgbaW), 2, rgbaW - 3);
+      const sx1 = clamp(Math.floor((u1 - 0.03) * rgbaW), sx0 + 4, rgbaW - 3);
+      let lastSeamX = -99;
+      for (let x = sx0; x <= sx1; x++) {
+        const iC = (midCabY * rgbaW + x) * 4;
+        const iL = (midCabY * rgbaW + (x - 2)) * 4;
+        const iR = (midCabY * rgbaW + (x + 2)) * 4;
+        const lC = 0.299 * rgba[iC] + 0.587 * rgba[iC + 1] + 0.114 * rgba[iC + 2];
+        const lL = 0.299 * rgba[iL] + 0.587 * rgba[iL + 1] + 0.114 * rgba[iL + 2];
+        const lR = 0.299 * rgba[iR] + 0.587 * rgba[iR + 1] + 0.114 * rgba[iR + 2];
+        const grooveContrast = Math.abs(lC - (lL + lR) * 0.5);
+        if ((Math.abs(lR - lL) >= 14 || grooveContrast >= 14) && x - lastSeamX >= Math.max(8, rgbaW * 0.04)) {
+          verticalDoorSeams++;
+          lastSeamX = x;
+        }
+      }
+
+      const lw = unprojectPixelWorld(u0, (v0 + v1) * 0.5, wallDepthAnchorM, markers);
+      const rw = unprojectPixelWorld(u1, (v0 + v1) * 0.5, wallDepthAnchorM, markers);
+      const cabX = ((lw.x + rw.x) * 0.5) - centerXOffset;
+      const cabW = clamp(Math.abs(rw.x - lw.x), 0.95, Math.min(roomWidthM * 0.72, 2.5));
+      const cabH = clamp(((v1 - v0) / wallSpan) * ceilingM, 0.58, 1.05);
+      const elevM = clamp(ceilingM - ((v0 - markers.ceilingY) / wallSpan) * ceilingM - cabH, 1.25, ceilingM - cabH - 0.12);
+
+      const cabPx: Array<{ u: number; v: number }> = [];
+      for (let gx = bestCabStart; gx <= bestCabEnd; gx++) {
+        for (let gy = cabRow0; gy <= cabRow1; gy++) {
+          cabPx.push({ u: (gx + 0.5) / gW, v: (gy + 0.5) / gH });
+        }
+      }
+      const cabColors = sampleMaskColors(rgba, rgbaW, rgbaH, cabPx, '#585a5e', '#262930');
+      const wallHex = palette.wallColor;
+      const wr = parseInt(wallHex.slice(1, 3), 16);
+      const wg = parseInt(wallHex.slice(3, 5), 16);
+      const wb = parseInt(wallHex.slice(5, 7), 16);
+      const cr = parseInt(cabColors.primaryColor.slice(1, 3), 16);
+      const cg = parseInt(cabColors.primaryColor.slice(3, 5), 16);
+      const cb = parseInt(cabColors.primaryColor.slice(5, 7), 16);
+      const differsFromWall = Math.hypot(cr - wr, cg - wg, cb - wb) >= 24;
+      if (differsFromWall || verticalDoorSeams >= 2) {
+        rawObjects.push({
+          blob: {
+            category: 'cabinet',
+            score: 0.82,
+            pixels: cabPx.map((p) => ({
+              x: clamp(Math.floor(p.u * vw), 0, vw - 1),
+              y: clamp(Math.floor(p.v * vh), 0, vh - 1),
+              u: p.u,
+              v: p.v,
+            })),
+            minU: u0,
+            maxU: u1,
+            minV: v0,
+            maxV: v1,
+          },
+          draft: {
+            type: 'cabinet',
+            label: 'Wall Cupboard',
+            x: Number(cabX.toFixed(2)),
+            z: Number((-roomDepthM / 2 + 0.22).toFixed(2)),
+            widthM: Number(cabW.toFixed(2)),
+            depthM: 0.4,
+            heightM: Number(cabH.toFixed(2)),
+            elevationM: Number(elevM.toFixed(2)),
+            rotationDeg: 0,
+            primaryColor: cabColors.primaryColor,
+            secondaryColor: cabColors.secondaryColor,
+            inferred: false,
+            confidence: 0.82,
+          },
+        });
+      }
+    }
+  }
+
+  // 6. Contextual upgrades in 3D space:
   //    - Table near/beneath a monitor cue -> Work Desk
   //    - Unpaired monitor cue -> synthesize Work Desk at that 3D spot
-  //    - Chair within 1.15m of a desk -> Office Chair
+  //    - Chair within edge clearance of a desk -> Office Chair (and keep it IN FRONT of desk)
   const consumedMonitors = new Set<number>();
   for (const item of rawObjects) {
     if (item.draft.type === 'table') {
@@ -1095,8 +1934,8 @@ export function reconstructRoomFromVisionAnalysis(
 
   const desks = rawObjects.filter((o) => o.draft.type === 'desk');
   for (const item of rawObjects) {
-    if (item.draft.type === 'chair') {
-      const nearDesk = desks.some(
+    if (item.draft.type === 'chair' || item.draft.type === 'office-chair') {
+      const matchedDesk = desks.find(
         (d) =>
           edgeGapXZ(
             item.draft.x,
@@ -1110,9 +1949,16 @@ export function reconstructRoomFromVisionAnalysis(
             d.draft.rotationDeg
           ) <= 0.65
       );
-      if (nearDesk) {
-        item.draft.type = 'office-chair';
-        item.draft.label = 'Office Chair';
+      if (matchedDesk) {
+        if (item.draft.type === 'chair') {
+          item.draft.type = 'office-chair';
+          item.draft.label = 'Office Chair';
+        }
+        // Keep pulled-out office chairs cleanly IN FRONT of their desk
+        const deskFrontZ = matchedDesk.draft.z + matchedDesk.draft.depthM * 0.5;
+        if (item.draft.z < deskFrontZ + item.draft.depthM * 0.42) {
+          item.draft.z = Number((deskFrontZ + item.draft.depthM * 0.48).toFixed(2));
+        }
       }
     }
   }

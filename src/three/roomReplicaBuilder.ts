@@ -392,27 +392,39 @@ function buildBookshelf(obj: RoomReplicaObject): THREE.Group {
 function buildCabinetOrWardrobe(obj: RoomReplicaObject): THREE.Group {
   const g = new THREE.Group();
   const { widthM: W, depthM: D, heightM: H } = obj;
+  const isWallMounted = (obj.elevationM ?? 0) >= 0.35;
   const bodyMat = makeMat(obj.primaryColor, 0.6, 0.06);
   const trimMat = makeMat(obj.secondaryColor, 0.4, 0.55);
 
-  const plinthH = 0.07;
-  const plinth = new THREE.Mesh(new THREE.BoxGeometry(W - 0.04, plinthH, D - 0.05), trimMat);
-  plinth.position.y = plinthH / 2;
+  const plinthH = isWallMounted ? 0 : 0.07;
+  if (plinthH > 0) {
+    const plinth = new THREE.Mesh(new THREE.BoxGeometry(W - 0.04, plinthH, D - 0.05), trimMat);
+    plinth.position.y = plinthH / 2;
+    g.add(plinth);
+  }
+
   const body = new THREE.Mesh(new THREE.BoxGeometry(W, H - plinthH, D - 0.025), bodyMat);
   body.position.set(0, plinthH + (H - plinthH) / 2, -0.01);
-  g.add(plinth, body);
+  g.add(body);
 
-  // Twin recessed front doors with vertical handles
-  const doorW = W / 2 - 0.014;
+  // Recessed front doors (2..5 bays scaled to width) with vertical handles
+  const doorCount = W >= 1.8 ? 4 : W >= 1.3 ? 3 : 2;
+  const doorW = W / doorCount - 0.012;
   const doorH = H - plinthH - 0.03;
-  for (const sx of [-1, 1]) {
+  for (let i = 0; i < doorCount; i++) {
+    const dx = -W / 2 + (i + 0.5) * (W / doorCount);
     const door = new THREE.Mesh(new THREE.BoxGeometry(doorW, doorH, 0.02), bodyMat);
-    door.position.set(sx * (doorW / 2 + 0.005), plinthH + doorH / 2 + 0.015, D / 2 - 0.01);
+    door.position.set(dx, plinthH + doorH / 2 + 0.015, D / 2 - 0.01);
+    const handleSide = i % 2 === 0 ? 1 : -1;
     const handle = new THREE.Mesh(
-      new THREE.BoxGeometry(0.014, Math.min(0.24, doorH * 0.24), 0.022),
+      new THREE.BoxGeometry(0.014, Math.min(0.2, doorH * 0.24), 0.022),
       trimMat
     );
-    handle.position.set(sx * 0.045, plinthH + doorH * 0.54, D / 2 + 0.012);
+    handle.position.set(
+      dx + handleSide * Math.max(0.025, doorW * 0.34),
+      isWallMounted ? doorH * 0.24 : plinthH + doorH * 0.54,
+      D / 2 + 0.012
+    );
     g.add(door, handle);
   }
 
@@ -604,6 +616,29 @@ function buildWindow(obj: RoomReplicaObject, ceilingHeightM: number): THREE.Grou
 function buildDoor(obj: RoomReplicaObject): THREE.Group {
   const g = new THREE.Group();
   const { widthM: W, heightM: H } = obj;
+  const isOpenDoorway = obj.label.toLowerCase().includes('doorway');
+
+  if (isOpenDoorway) {
+    const jambMat = makeMat(obj.secondaryColor, 0.55, 0.08);
+    const corridorMat = makeMat(obj.primaryColor, 0.85, 0.02, {
+      emissive: obj.primaryColor,
+      emissiveIntensity: 0.28,
+    });
+    const jambW = 0.065;
+    for (const sx of [-1, 1]) {
+      const sideJamb = new THREE.Mesh(new THREE.BoxGeometry(jambW, H, 0.08), jambMat);
+      sideJamb.position.set(sx * (W / 2 + jambW / 2), H / 2, 0.02);
+      g.add(sideJamb);
+    }
+    const header = new THREE.Mesh(new THREE.BoxGeometry(W + jambW * 2, jambW, 0.08), jambMat);
+    header.position.set(0, H + jambW / 2, 0.02);
+    const passageBackdrop = new THREE.Mesh(new THREE.PlaneGeometry(W, H), corridorMat);
+    passageBackdrop.position.set(0, H / 2, 0.004);
+    g.add(header, passageBackdrop);
+    enableShadows(g, false, true);
+    return g;
+  }
+
   const leafMat = makeMat(obj.primaryColor, 0.58, 0.05);
   const jambMat = makeMat(obj.secondaryColor, 0.5, 0.15);
   const handleMat = makeMat('#c8a96e', 0.25, 0.85);
@@ -724,7 +759,7 @@ function buildReplicaObjectMesh(obj: RoomReplicaObject, ceilingHeightM: number):
   }
 
   meshGroup.name = `Replica_${obj.type}_${obj.id}`;
-  meshGroup.position.set(obj.x, 0, obj.z);
+  meshGroup.position.set(obj.x, obj.elevationM ?? 0, obj.z);
   meshGroup.rotation.y = THREE.MathUtils.degToRad(obj.rotationDeg);
   meshGroup.userData.inferred = obj.inferred;
   return meshGroup;

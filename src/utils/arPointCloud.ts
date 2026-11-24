@@ -1,4 +1,5 @@
 import { calculateARMeasurement, clampARMarkers, type ARMarkerState } from './arMeasure';
+import { computeObjectCoverCrop } from './roomReplica';
 
 export type PointCloudCategory =
   | 'ceiling'
@@ -508,9 +509,9 @@ export function analyzeFrameForPointCloud(
     };
   };
 
-  // Scan CEILING cornice band (rows 7%..44%)
+  // Scan CEILING cornice band (rows 7%..34%, preventing mid-wall shelves/cabinets from hijacking ceiling)
   const ceilStart = Math.max(4, Math.floor(height * 0.07));
-  const ceilEnd = Math.min(height - 20, Math.floor(height * 0.44));
+  const ceilEnd = Math.min(height - 20, Math.floor(height * 0.34));
   const ceilRes = detectHorizontalPlane(ceilStart, ceilEnd, 'above', currentMarkers.ceilingY);
 
   // Scan FLOOR baseboard band (rows 54%..88%)
@@ -1061,7 +1062,8 @@ let sharedScanCtx: CanvasRenderingContext2D | null = null;
 export function extractVideoFrameRGBA(
   video: HTMLVideoElement | null,
   sampleW = 160,
-  sampleH = 200
+  sampleH = 200,
+  targetAspect?: number
 ): Uint8ClampedArray | null {
   if (!video || video.readyState < 2 || video.videoWidth < 32 || video.videoHeight < 32) {
     return null;
@@ -1080,7 +1082,8 @@ export function extractVideoFrameRGBA(
     }
     if (!sharedScanCtx) return null;
 
-    sharedScanCtx.drawImage(video, 0, 0, sampleW, sampleH);
+    const crop = computeObjectCoverCrop(video.videoWidth, video.videoHeight, targetAspect);
+    sharedScanCtx.drawImage(video, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, sampleW, sampleH);
     return sharedScanCtx.getImageData(0, 0, sampleW, sampleH).data;
   } catch {
     return null;

@@ -51,6 +51,7 @@ import {
 import {
   captureBestVideoFrameDataUrl,
   compressImageFileToDataUrl,
+  computeObjectCoverCrop,
 } from '../utils/roomReplica';
 import {
   preloadLocalRoomModels,
@@ -226,10 +227,10 @@ export function ARMeasurementOverlay({
     }
   }, [isBuildingReplica]);
 
-  // Helper: analyze either the live camera video OR an uploaded room photo at 160x200
+  // Helper: analyze either the live camera video OR an uploaded room photo at 160x200 cropped to viewport aspect
   const analyzeSourceFrame = useCallback(
     async (curMarkers: ARMarkerState) => {
-      const rgba = extractVideoFrameRGBA(videoRef.current, 160, 200);
+      const rgba = extractVideoFrameRGBA(videoRef.current, 160, 200, curMarkers.aspect);
       if (rgba) {
         return analyzeFrameForPointCloud(rgba, 160, 200, curMarkers);
       }
@@ -246,7 +247,12 @@ export function ARMeasurementOverlay({
           canvas.height = 200;
           const ctx = canvas.getContext('2d', { willReadFrequently: true });
           if (ctx) {
-            ctx.drawImage(img, 0, 0, 160, 200);
+            const crop = computeObjectCoverCrop(
+              img.naturalWidth || 640,
+              img.naturalHeight || 480,
+              curMarkers.aspect
+            );
+            ctx.drawImage(img, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, 160, 200);
             const data = ctx.getImageData(0, 0, 160, 200).data;
             return analyzeFrameForPointCloud(data, 160, 200, curMarkers);
           }
@@ -268,7 +274,12 @@ export function ARMeasurementOverlay({
     let cancelled = false;
     const tickPassive = async () => {
       if (cancelled || draggingRef.current !== null) return;
-      const rgba = extractVideoFrameRGBA(videoRef.current, 160, 200);
+      const rgba = extractVideoFrameRGBA(
+        videoRef.current,
+        160,
+        200,
+        markersRef.current.aspect
+      );
       if (!rgba) return;
       const frame = analyzeFrameForPointCloud(rgba, 160, 200, markersRef.current);
       if (cancelled || !frame.detected) return;
@@ -461,7 +472,12 @@ export function ARMeasurementOverlay({
       canvas.height = 200;
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
       if (ctx) {
-        ctx.drawImage(img, 0, 0, 160, 200);
+        const crop = computeObjectCoverCrop(
+          img.naturalWidth || 640,
+          img.naturalHeight || 480,
+          markersRef.current.aspect
+        );
+        ctx.drawImage(img, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, 160, 200);
         const rgba = ctx.getImageData(0, 0, 160, 200).data;
         const frame = analyzeFrameForPointCloud(rgba, 160, 200, markersRef.current);
         let acc = createRoomScanAccumulator(markersRef.current);
@@ -494,8 +510,10 @@ export function ARMeasurementOverlay({
    */
   const handleUseThisFitWithReplica = useCallback(async () => {
     setReplicaError(null);
+    const curMarkers = markersRef.current;
     const snapshotDataUrl =
-      (await captureBestVideoFrameDataUrl(videoRef.current, 1024, 0.88)) ?? uploadedPhotoUrl;
+      (await captureBestVideoFrameDataUrl(videoRef.current, 1024, 0.88, curMarkers.aspect)) ??
+      uploadedPhotoUrl;
 
     if (!snapshotDataUrl) {
       setReplicaError(
@@ -518,7 +536,7 @@ export function ARMeasurementOverlay({
       const { scene } = await scanRoomLocallyFromDataUrl(
         snapshotDataUrl,
         {
-          markers: markersRef.current,
+          markers: curMarkers,
           roomWidthM: displayW,
           roomDepthM: displayD,
           ceilingHeightCm: measurement.ceilingHeightCm,
@@ -527,6 +545,8 @@ export function ARMeasurementOverlay({
           floorAccuracyPct: liveAccuracy.floorAccuracyPct,
           ceilingAccuracyPct: liveAccuracy.ceilingAccuracyPct,
           overallAccuracyPct: liveAccuracy.overallAccuracyPct,
+          userAdjustedCeiling,
+          userAdjustedFloor,
         },
         (stageIdx) => setReplicaStageIdx(stageIdx)
       );
@@ -547,6 +567,8 @@ export function ARMeasurementOverlay({
     surfaceCalibration,
     measurement,
     liveAccuracy,
+    userAdjustedCeiling,
+    userAdjustedFloor,
     onApplyRoomReplica,
   ]);
 

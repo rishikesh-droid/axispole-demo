@@ -6,7 +6,7 @@ import type {
 } from '../types/pole';
 import type { ARMarkerState } from './arMeasure';
 import { screenToFloorPoint3D } from './arSurfaceCalibration';
-import { sanitizeRoomReplicaScene } from './roomReplica';
+import { computeObjectCoverCrop, sanitizeRoomReplicaScene } from './roomReplica';
 import {
   analyzeRoomWithVisionModels,
   preloadRoomVisionModels,
@@ -40,6 +40,8 @@ export interface LocalRoomScanInput {
   externalDetections?: RawObjectDetection[];
   /** Opt-in: add plausible furniture for unseen areas (off by default to keep the replica faithful). */
   includeUnseenCompletions?: boolean;
+  userAdjustedCeiling?: boolean;
+  userAdjustedFloor?: boolean;
 }
 
 export interface LocalRoomScanResult {
@@ -384,12 +386,12 @@ export function sampleRoomPaletteAndMaterials(
   const floorSat = rgbSaturation(floorRgb);
 
   let floorMaterial: RoomReplicaFloorMaterial = 'wood-light';
-  if (floorWarmth >= 16 && floorSat >= 0.14) {
+  if (floorWarmth >= 17 && floorSat >= 0.15) {
     floorMaterial = floorLum >= 120 ? 'wood-light' : 'wood-dark';
   } else if (strongEdgeRatio >= 0.085 && Math.min(meanGx, meanGy) > 4.5) {
     floorMaterial = 'tile';
-  } else if (floorSat < 0.09 && meanGx < 6 && meanGy < 6) {
-    floorMaterial = floorLum > 165 ? 'tile' : 'concrete';
+  } else if (floorSat < 0.14 && floorWarmth < 18) {
+    floorMaterial = floorLum >= 124 ? 'tile' : 'concrete';
   } else if (meanGx + meanGy >= 7 && strongEdgeRatio < 0.08) {
     floorMaterial = 'carpet';
   } else {
@@ -557,7 +559,7 @@ function detectArchitecturalAndFallbackObjects(
       const rgb = sampleTrimmedMedianRgb(rgba, w, h, cx0, cy0, cx1, cy1, { stride: 1 });
       const lum = rgbLuminance(rgb);
       const sat = rgbSaturation(rgb);
-      if (lum >= Math.max(226, wallLum + 30) && sat <= 0.3) {
+      if (lum >= Math.max(205, wallLum + 34) && sat <= 0.3) {
         brightGrid[r][c] = true;
       }
     }
@@ -603,13 +605,27 @@ function detectArchitecturalAndFallbackObjects(
         const by = winTop + (minR / rows) * (winBot - winTop);
         const bh = ((maxR - minR + 1) / rows) * (winBot - winTop);
 
-        // A real window is a bright pane framed by darker wall on (almost) all sides.
-        // Large bright wall planes touching the image edge/ceiling are NOT windows.
+        // A real window is a bright pane framed by darker wall on (almost) all sides,
+        // including wall/sill underneath it. If brightness continues down to floorY, it is an open doorway!
         const innerLum = rgbLuminance(
           sampleTrimmedMedianRgb(rgba, w, h, bx, by, bx + bw, by + bh, { stride: 1 })
         );
+        const belowPassageLum = rgbLuminance(
+          sampleTrimmedMedianRgb(
+            rgba,
+            w,
+            h,
+            bx + bw * 0.15,
+            clamp(by + bh, 0.1, 0.94),
+            bx + bw * 0.85,
+            clamp(floorY + 0.02, by + bh + 0.04, 0.96),
+            { stride: 1 }
+          )
+        );
+        const reachesFloor = by + bh >= floorY - 0.14 || belowPassageLum >= innerLum - 26;
+
         const ring = 0.035;
-        const gap = 0.025; // skip the coarse grid-edge uncertainty before sampling the frame
+        const gap = 0.025;
         const sides: Array<[number, number, number, number]> = [
           [bx - gap - ring, by, bx - gap, by + bh],
           [bx + bw + gap, by, bx + bw + gap + ring, by + bh],
@@ -621,6 +637,41 @@ function detectArchitecturalAndFallbackObjects(
           if (sx0 < 0.01 || sy0 < 0.01 || sx1 > 0.99 || sy1 > 0.99) continue;
           const sideLum = rgbLuminance(sampleTrimmedMedianRgb(rgba, w, h, sx0, sy0, sx1, sy1, { stride: 1 }));
           if (sideLum <= innerLum - 24) framedSides += 1;
+        }
+        if (reachesFloor) {
+          // Bright passage reaching the floor framed on left & right by darker jambs -> Open Doorway
+          const leftSideDark =
+            bx - gap - ring >= 0.01 &&
+            rgbLuminance(sampleTrimmedMedianRgb(rgba, w, h, bx - gap - ring, by, bx - gap, by + bh, { stride: 1 })) <=
+              innerLum - 22;
+          const rightSideDark =
+            bx + bw + gap + ring <= 0.99 &&
+            rgbLuminance(
+              sampleTrimmedMedianRgb(rgba, w, h, bx + bw + gap, by, bx + bw + gap + ring, by + bh, { stride: 1 })
+            ) <=
+              innerLum - 22;
+          if (leftSideDark && rightSideDark && bw <= 0.36) {
+            const proj = projectBoxToRoomCoords({ x: bx, y: by, w: bw, h: Math.max(bh, floorY - by) }, input);
+            const isLeft = bx + bw / 2 < markers.leftCornerX;
+            found.push({
+              type: 'door',
+              label: 'Open Doorway',
+              x: isLeft ? -input.roomWidthM / 2 + 0.05 : proj.roomX,
+              z: isLeft ? proj.roomZ : -input.roomDepthM / 2 + 0.05,
+              widthM: clamp(proj.estWidthM, 0.78, 1.35),
+              depthM: 0.08,
+              heightM: clamp(proj.estHeightM, 1.85, 2.25),
+              rotationDeg: isLeft ? 90 : 0,
+              primaryColor: rgbToHex(
+                sampleTrimmedMedianRgb(rgba, w, h, bx, by, bx + bw, by + bh, { stride: 1 })
+              ),
+              secondaryColor: palette.trimColor,
+              inferred: false,
+              confidence: 0.84,
+            });
+            coveredBoxes.push({ x: bx, y: by, w: bw, h: Math.max(bh, floorY - by) });
+          }
+          continue;
         }
         if (framedSides < 3 || bw > 0.42) continue;
 
@@ -960,7 +1011,7 @@ function detectArchitecturalAndFallbackObjects(
     const rugRgb = sampleTrimmedMedianRgb(rgba, w, h, bx, by, bx + bw, by + bh, { stride: 1 });
     const rugDist = rgbDistance(rugRgb, palette.floorRgb);
     const compact = bw < 0.62 && rugCells / ((rugMaxC - rugMinC + 1) * (rugMaxR - rugMinR + 1)) >= 0.6;
-    if (rugDist < 48 || !compact) return found;
+    if (rugDist < 34 || !compact) return found;
     const proj = projectBoxToRoomCoords({ x: bx, y: by, w: bw, h: bh }, input);
     const colors = sampleBoxColors(rgba, w, h, bx, by, bw, bh, '#b7ab9a', '#6d655c');
     const isMat = bw / Math.max(0.05, bh) >= 3.2 && proj.estWidthM < 1.95;
@@ -1822,11 +1873,12 @@ export async function scanRoomLocallyFromDataUrl(
 
   const natW = Math.max(64, img.naturalWidth || 640);
   const natH = Math.max(64, img.naturalHeight || 480);
+  const crop = computeObjectCoverCrop(natW, natH, input.markers.aspect);
 
-  // Canvas 1: Compact 512px canvas matching SegFormer-B0 & Depth Anything V2 optimal mobile resolution
-  const detScale = Math.min(1, 512 / Math.max(natW, natH));
-  const detW = Math.max(64, Math.round(natW * detScale));
-  const detH = Math.max(64, Math.round(natH * detScale));
+  // Canvas 1: Compact 512px canvas cropped 1:1 to viewport object-cover framing
+  const detScale = Math.min(1, 512 / Math.max(crop.sw, crop.sh));
+  const detW = Math.max(64, Math.round(crop.sw * detScale));
+  const detH = Math.max(64, Math.round(crop.sh * detScale));
   const detCanvas = document.createElement('canvas');
   detCanvas.width = detW;
   detCanvas.height = detH;
@@ -1834,7 +1886,7 @@ export async function scanRoomLocallyFromDataUrl(
   if (!detCtx) {
     throw new Error('Browser canvas unavailable to analyze room frame.');
   }
-  detCtx.drawImage(img, 0, 0, detW, detH);
+  detCtx.drawImage(img, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, detW, detH);
   const detDataUrl = detCanvas.toDataURL('image/jpeg', 0.88);
   const detRgba = detCtx.getImageData(0, 0, detW, detH).data;
 
@@ -1856,10 +1908,10 @@ export async function scanRoomLocallyFromDataUrl(
     return reconstructed;
   }
 
-  // Offline / model-unavailable fallback: deterministic pixel CV at 160x120
+  // Offline / model-unavailable fallback: deterministic pixel CV at 160px cropped to viewport aspect
   onStage?.(1);
   const cvW = 160;
-  const cvH = 120;
+  const cvH = Math.max(120, Math.round(cvW / Math.max(0.4, crop.outAspect)));
   const cvCanvas = document.createElement('canvas');
   cvCanvas.width = cvW;
   cvCanvas.height = cvH;
@@ -1867,7 +1919,7 @@ export async function scanRoomLocallyFromDataUrl(
   if (!cvCtx) {
     throw new Error('Browser canvas unavailable to sample room surfaces.');
   }
-  cvCtx.drawImage(img, 0, 0, cvW, cvH);
+  cvCtx.drawImage(img, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, cvW, cvH);
   const cvRgba = cvCtx.getImageData(0, 0, cvW, cvH).data;
 
   onStage?.(2);

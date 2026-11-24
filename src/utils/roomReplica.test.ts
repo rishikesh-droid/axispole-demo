@@ -135,3 +135,95 @@ test('sanitizeRoomReplicaScene clamps room bounds, clears pole collision zone, s
   assert.equal(rug.x, 0);
   assert.equal(rug.z, 0);
 });
+
+test('sanitizeRoomReplicaScene preserves elevated wall cupboards without pole-axis nudging and pushes tucked chairs cleanly in front of desks', async () => {
+  const { computeObjectCoverCrop } = await import('./roomReplica.ts');
+
+  const scene = sanitizeRoomReplicaScene(
+    {
+      roomType: 'Home Office',
+      summary: 'Built-in study with upper cupboards and front chair.',
+      floorMaterial: 'tile',
+      floorColor: '#98918d',
+      wallColor: '#5c5c5c',
+      accentWallColor: '#5c5c5c',
+      ceilingColor: '#989391',
+      trimColor: '#d0cdc7',
+      lightingMood: 'neutral',
+      objects: [
+        {
+          type: 'desk',
+          label: 'Work Desk',
+          x: -0.4,
+          z: -1.65,
+          widthM: 1.8,
+          depthM: 0.65,
+          heightM: 0.76,
+          rotationDeg: 0,
+          primaryColor: '#6c8b84',
+          secondaryColor: '#2b2f35',
+          inferred: false,
+          confidence: 0.9,
+        },
+        {
+          // Intentionally tucked inside desk footprint -> must be separated IN FRONT of desk!
+          type: 'office-chair',
+          label: 'Office Chair',
+          x: -0.6,
+          z: -1.7,
+          widthM: 0.56,
+          depthM: 0.56,
+          heightM: 0.92,
+          rotationDeg: 0,
+          primaryColor: '#23262e',
+          secondaryColor: '#4c525f',
+          inferred: false,
+          confidence: 0.88,
+        },
+        {
+          // Elevated wall cupboard directly behind/above pole axis -> elevationM >= 1.25 stays on wall
+          type: 'cabinet',
+          label: 'Wall Cupboard',
+          x: 0.0,
+          z: -0.1,
+          widthM: 1.6,
+          depthM: 0.4,
+          heightM: 0.78,
+          elevationM: 1.48,
+          rotationDeg: 0,
+          primaryColor: '#585a5e',
+          secondaryColor: '#2b2f35',
+          inferred: false,
+          confidence: 0.85,
+        },
+      ],
+    },
+    {
+      roomWidthM: 3.4,
+      roomDepthM: 4.0,
+      ceilingHeightCm: 265,
+      poleOffsetXM: 0,
+      floorAccuracyPct: 90,
+      ceilingAccuracyPct: 90,
+      overallAccuracyPct: 90,
+    }
+  );
+
+  const desk = scene.objects.find((o) => o.type === 'desk')!;
+  const chair = scene.objects.find((o) => o.type === 'office-chair')!;
+  const cupboard = scene.objects.find((o) => o.type === 'cabinet')!;
+
+  assert.ok(
+    chair.z >= desk.z + desk.depthM * 0.5 + chair.depthM * 0.35,
+    `Tucked chair (z=${chair.z}) must be pushed in front of desk (frontZ=${(desk.z + desk.depthM * 0.5).toFixed(2)})`
+  );
+  assert.equal(cupboard.elevationM, 1.48);
+  assert.equal(cupboard.x, 0, 'Overhead wall cabinet >= 1.25m elevation should not be nudged horizontally away from pole');
+
+  // Verify portrait center-crop matching CSS object-cover
+  const portraitCrop = computeObjectCoverCrop(3060, 4080, 0.46);
+  assert.equal(portraitCrop.sy, 0);
+  assert.equal(portraitCrop.sh, 4080);
+  assert.ok(Math.abs(portraitCrop.sw / portraitCrop.sh - 0.46) < 0.01);
+});
+

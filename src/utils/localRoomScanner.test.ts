@@ -191,3 +191,67 @@ test('replica stays faithful: detected sofa + 2 plants, no hallucinated doors/cu
   });
   assert.ok(withCompletions.scene.inferredObjectCount >= 1, 'Opt-in completions still available');
 });
+
+test('pixel-cv classifies neutral bright floor as tile and converts floor-reaching bright corridor into Open Doorway (not window)', () => {
+  const w = 160;
+  const h = 120;
+  const rgba = new Uint8ClampedArray(w * h * 4);
+  const ceilPx = Math.floor(h * 0.22);
+  const floorPx = Math.floor(h * 0.78);
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const idx = (y * w + x) * 4;
+      let r = 88;
+      let g = 88;
+      let b = 90;
+
+      if (y < ceilPx) {
+        r = 160;
+        g = 158;
+        b = 156;
+      } else if (y >= floorPx) {
+        // Glossy neutral grey tile
+        r = 145;
+        g = 140;
+        b = 139;
+      }
+
+      // Bright hallway opening extending all the way down to floor level, framed by darker side jambs
+      if (x >= Math.floor(w * 0.64) && x <= Math.floor(w * 0.80) && y >= Math.floor(h * 0.28) && y <= floorPx) {
+        r = 228;
+        g = 224;
+        b = 216;
+      }
+
+      rgba[idx] = r;
+      rgba[idx + 1] = g;
+      rgba[idx + 2] = b;
+      rgba[idx + 3] = 255;
+    }
+  }
+
+  const markers = { ...DEFAULT_AR_MARKERS, aspect: 0.75, ceilingY: 0.22, floorY: 0.78 };
+  const result = reconstructRoomLocallyFromPixels(rgba, w, h, {
+    markers,
+    roomWidthM: 3.4,
+    roomDepthM: 4.0,
+    ceilingHeightCm: 260,
+    distanceM: 2.9,
+    poleOffsetXM: 0,
+    floorAccuracyPct: 90,
+    ceilingAccuracyPct: 90,
+    overallAccuracyPct: 90,
+    externalDetections: [],
+  });
+
+  assert.equal(result.scene.floorMaterial, 'tile');
+  assert.equal(
+    result.scene.objects.some((o) => o.type === 'window'),
+    false,
+    'Floor-reaching bright hallway must NOT be misclassified as a window'
+  );
+  const door = result.scene.objects.find((o) => o.type === 'door');
+  assert.ok(door && door.label === 'Open Doorway', `Expected Open Doorway, got ${JSON.stringify(result.scene.objects)}`);
+});
+
