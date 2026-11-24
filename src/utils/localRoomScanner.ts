@@ -6,14 +6,12 @@ import type {
 } from '../types/pole';
 import type { ARMarkerState } from './arMeasure';
 import { screenToFloorPoint3D } from './arSurfaceCalibration';
-import {
-  detectOpenVocabObjects,
-  OPEN_VOCAB_CLASS_NAMES,
-  preloadOpenVocabDetector,
-  suppressCrossClassDuplicates,
-  type OpenVocabPrompt,
-} from './openVocabDetector';
 import { sanitizeRoomReplicaScene } from './roomReplica';
+import {
+  analyzeRoomWithVisionModels,
+  preloadRoomVisionModels,
+} from './roomVisionDetector';
+import { reconstructRoomFromVisionAnalysis } from './spatialRoomReconstructor';
 
 export interface RawObjectDetection {
   className: string;
@@ -42,15 +40,11 @@ export interface LocalRoomScanInput {
   externalDetections?: RawObjectDetection[];
   /** Opt-in: add plausible furniture for unseen areas (off by default to keep the replica faithful). */
   includeUnseenCompletions?: boolean;
-  /** Optional custom open-vocabulary prompts to detect user-defined room objects. */
-  customPrompts?: readonly OpenVocabPrompt[];
-  /** Internal flag indicating whether OWL-ViT open-vocabulary detections contributed. */
-  openVocabUsed?: boolean;
 }
 
 export interface LocalRoomScanResult {
   scene: RoomReplicaScene;
-  detectorEngine: 'owlvit+coco+cv' | 'coco-ssd+cv' | 'pixel-cv';
+  detectorEngine: 'segformer+depth-v2+cv' | 'external+cv' | 'pixel-cv';
   rawDetectionCount: number;
 }
 
@@ -1102,7 +1096,7 @@ function mapDetectionsToRoomObjects(
   const valid = mergeTiledDetectionsWithNMS(
     detections.filter((d) => {
       const cls = d.className.toLowerCase();
-      if (!COCO_FURNITURE_CLASSES.has(cls) && !OPEN_VOCAB_CLASS_NAMES.has(cls)) return false;
+      if (!COCO_FURNITURE_CLASSES.has(cls)) return false;
       const minGate =
         DESK_CUE_CLASSES.has(cls) || cls === 'book' || cls === 'clock' || cls === 'vase'
           ? 0.14
@@ -1754,11 +1748,7 @@ export function reconstructRoomLocallyFromPixels(
 
   const allObjects = [...visibleObjects, ...unseenCompletions];
   const engine: LocalRoomScanResult['detectorEngine'] =
-    rawDetections.length > 0
-      ? input.openVocabUsed
-        ? 'owlvit+coco+cv'
-        : 'coco-ssd+cv'
-      : 'pixel-cv';
+    rawDetections.length > 0 ? 'external+cv' : 'pixel-cv';
 
   const summary =
     visibleObjects.length > 0
@@ -1798,72 +1788,27 @@ export function reconstructRoomLocallyFromPixels(
 }
 
 // ============================================================================
-// BROWSER-SIDE LAZY ON-DEVICE COCO-SSD LOADER (ZERO API KEY, ZERO SERVER)
+// LIGHTWEIGHT ON-DEVICE ROOM VISION SCANNER (SegFormer-B0 + Depth Anything V2)
 // ============================================================================
 
-interface CocoSsdModelLike {
-  detect: (
-    img: HTMLCanvasElement | HTMLImageElement | HTMLVideoElement,
-    maxNumBoxes?: number,
-    minScore?: number
-  ) => Promise<Array<{ bbox: [number, number, number, number]; class: string; score: number }>>;
-}
-
-let cocoModelPromise: Promise<CocoSsdModelLike | null> | null = null;
-
-async function getLocalCocoSsdModel(timeoutMs = 9000): Promise<CocoSsdModelLike | null> {
-  if (typeof window === 'undefined') return null;
-
-  if (!cocoModelPromise) {
-    cocoModelPromise = (async () => {
-      try {
-        const tf = await import('@tensorflow/tfjs');
-        await tf.ready();
-        const cocoSsd = await import('@tensorflow-models/coco-ssd');
-        try {
-          const model = await cocoSsd.load({ base: 'mobilenet_v2' });
-          return model as unknown as CocoSsdModelLike;
-        } catch {
-          const fallbackModel = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
-          return fallbackModel as unknown as CocoSsdModelLike;
-        }
-      } catch {
-        return null;
-      }
-    })();
-  }
-
-  let timeoutId: number | undefined;
-  const timeoutPromise = new Promise<null>((resolve) => {
-    timeoutId = window.setTimeout(() => resolve(null), timeoutMs);
-  });
-
-  try {
-    const model = await Promise.race([cocoModelPromise, timeoutPromise]);
-    return model;
-  } finally {
-    if (timeoutId !== undefined) window.clearTimeout(timeoutId);
-  }
-}
-
 /**
- * Silently warms up both on-device OWL-ViT (open-vocabulary) and MobileNetV2 COCO-SSD
- * in the background as soon as AR opens so object detection is ready on "Use This Fit".
+ * Silently warms up SegFormer-B0 (ADE20K room + furniture segmentation) and
+ * Depth Anything V2 Small sequentially on AR entry.
  */
-export function preloadLocalCocoSsdModel(): void {
+export function preloadLocalRoomModels(): void {
   if (typeof window === 'undefined') return;
-  void getLocalCocoSsdModel(15000);
-  preloadOpenVocabDetector();
+  preloadRoomVisionModels();
 }
 
 /**
  * Full client-side browser scanner: decodes the captured camera frame or uploaded room photo,
- * runs open-vocabulary OWL-ViT + multi-scale tiled COCO-SSD object detection in parallel,
- * samples true room colors/materials, and builds the complete 3D RoomReplicaScene with zero API keys.
+ * runs lightweight SegFormer-B0 semantic segmentation + Depth Anything V2 Small depth estimation,
+ * fits 3D oriented bounding boxes in calibrated room coordinates, and falls back to deterministic
+ * pixel CV when offline.
  */
 export async function scanRoomLocallyFromDataUrl(
   imageDataUrl: string,
-  input: Omit<LocalRoomScanInput, 'externalDetections' | 'previewDataUrl' | 'openVocabUsed'>,
+  input: Omit<LocalRoomScanInput, 'externalDetections' | 'previewDataUrl'>,
   onStage?: (stageIndex: number) => void
 ): Promise<LocalRoomScanResult> {
   onStage?.(0);
@@ -1878,8 +1823,8 @@ export async function scanRoomLocallyFromDataUrl(
   const natW = Math.max(64, img.naturalWidth || 640);
   const natH = Math.max(64, img.naturalHeight || 480);
 
-  // Canvas 1: Crisp 640px canvas for OWL-ViT + multi-scale tiled COCO-SSD object detection
-  const detScale = Math.min(1, 640 / Math.max(natW, natH));
+  // Canvas 1: Compact 512px canvas matching SegFormer-B0 & Depth Anything V2 optimal mobile resolution
+  const detScale = Math.min(1, 512 / Math.max(natW, natH));
   const detW = Math.max(64, Math.round(natW * detScale));
   const detH = Math.max(64, Math.round(natH * detScale));
   const detCanvas = document.createElement('canvas');
@@ -1891,8 +1836,28 @@ export async function scanRoomLocallyFromDataUrl(
   }
   detCtx.drawImage(img, 0, 0, detW, detH);
   const detDataUrl = detCanvas.toDataURL('image/jpeg', 0.88);
+  const detRgba = detCtx.getImageData(0, 0, detW, detH).data;
 
-  // Canvas 2: Fast 160x120 pixel buffer for deterministic surface, color, and architectural CV
+  // Run lightweight SegFormer-B0 -> Depth Anything V2 Small sequentially
+  const vision = await analyzeRoomWithVisionModels(detDataUrl, detW, detH, {
+    timeoutMs: 28000,
+    onStage: (stage) => {
+      onStage?.(stage === 'segment' ? 0 : 1);
+    },
+  });
+
+  if (vision) {
+    onStage?.(2);
+    const reconstructed = reconstructRoomFromVisionAnalysis(detRgba, detW, detH, vision, {
+      ...input,
+      previewDataUrl: imageDataUrl,
+    });
+    onStage?.(3);
+    return reconstructed;
+  }
+
+  // Offline / model-unavailable fallback: deterministic pixel CV at 160x120
+  onStage?.(1);
   const cvW = 160;
   const cvH = 120;
   const cvCanvas = document.createElement('canvas');
@@ -1905,82 +1870,13 @@ export async function scanRoomLocallyFromDataUrl(
   cvCtx.drawImage(img, 0, 0, cvW, cvH);
   const cvRgba = cvCtx.getImageData(0, 0, cvW, cvH).data;
 
-  onStage?.(1);
-
-  // Run open-vocabulary OWL-ViT + multi-scale tiled COCO-SSD in parallel on-device
-  const runCocoTiled = async (): Promise<RawObjectDetection[]> => {
-    try {
-      const model = await getLocalCocoSsdModel(9000);
-      if (!model) return [];
-      const collected: RawObjectDetection[] = [];
-      const fullPreds = await model.detect(detCanvas, 24, 0.22);
-      for (const p of fullPreds) {
-        collected.push({
-          className: p.class,
-          score: p.score,
-          x: p.bbox[0] / detW,
-          y: p.bbox[1] / detH,
-          w: p.bbox[2] / detW,
-          h: p.bbox[3] / detH,
-        });
-      }
-
-      const tiles = [
-        { rx: 0, ry: 0.08, rw: 0.62, rh: 0.88 },
-        { rx: 0.38, ry: 0.08, rw: 0.62, rh: 0.88 },
-      ];
-      const tileCanvas = document.createElement('canvas');
-      const tileCtx = tileCanvas.getContext('2d');
-      if (tileCtx) {
-        for (const t of tiles) {
-          const sx = Math.round(t.rx * detW);
-          const sy = Math.round(t.ry * detH);
-          const sw = Math.max(48, Math.round(t.rw * detW));
-          const sh = Math.max(48, Math.round(t.rh * detH));
-          tileCanvas.width = sw;
-          tileCanvas.height = sh;
-          tileCtx.drawImage(detCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
-          const tilePreds = await model.detect(tileCanvas, 16, 0.22);
-          for (const p of tilePreds) {
-            collected.push({
-              className: p.class,
-              score: p.score,
-              x: t.rx + (p.bbox[0] / sw) * t.rw,
-              y: t.ry + (p.bbox[1] / sh) * t.rh,
-              w: (p.bbox[2] / sw) * t.rw,
-              h: (p.bbox[3] / sh) * t.rh,
-            });
-          }
-        }
-      }
-      return mergeTiledDetectionsWithNMS(collected);
-    } catch {
-      return [];
-    }
-  };
-
-  const [owlDetections, cocoDetections] = await Promise.all([
-    detectOpenVocabObjects(detDataUrl, detW, detH, {
-      timeoutMs: 35000,
-      customPrompts: input.customPrompts,
-    }),
-    runCocoTiled(),
-  ]);
-
-  const externalDetections = suppressCrossClassDuplicates(
-    mergeTiledDetectionsWithNMS([...owlDetections, ...cocoDetections]),
-    0.72
-  );
-
   onStage?.(2);
-
-  const result = reconstructRoomLocallyFromPixels(cvRgba, cvW, cvH, {
+  const fallback = reconstructRoomLocallyFromPixels(cvRgba, cvW, cvH, {
     ...input,
     previewDataUrl: imageDataUrl,
-    externalDetections,
-    openVocabUsed: owlDetections.length > 0,
+    externalDetections: [],
   });
-
   onStage?.(3);
-  return result;
+  return fallback;
 }
+

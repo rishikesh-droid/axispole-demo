@@ -53,7 +53,7 @@ import {
   compressImageFileToDataUrl,
 } from '../utils/roomReplica';
 import {
-  preloadLocalCocoSsdModel,
+  preloadLocalRoomModels,
   scanRoomLocallyFromDataUrl,
 } from '../utils/localRoomScanner';
 import type { ARScanPhase } from '../three/arPointCloudMesh';
@@ -94,9 +94,9 @@ const FINISH_ORDER: PoleFinishId[] = ['brass', 'stainless', 'powder-black', 'sil
 type DragHandleId = 'ceiling' | 'floor' | 'pole' | `floor-pin-${number}`;
 
 const REPLICA_STAGES = [
-  'Sampling walls, floor, ceiling & room lighting…',
-  'Identifying furniture & fixtures on device…',
-  'Projecting 3D objects & completing unseen zones…',
+  'Segmenting walls, floor & furniture on device…',
+  'Estimating 3D room depth map…',
+  'Fitting 3D object positions, sizes & angles…',
   'Constructing 3D Room Replica…',
 ];
 
@@ -188,9 +188,9 @@ export function ARMeasurementOverlay({
     ]
   );
 
-  // Pre-warm on-device TensorFlow.js MobileNetV2 COCO-SSD model silently on AR entry
+  // Pre-warm lightweight SegFormer-B0 + Depth Anything V2 Small sequentially on AR entry
   useEffect(() => {
-    preloadLocalCocoSsdModel();
+    preloadLocalRoomModels();
   }, []);
 
   // Sync aspect ratio & vertical FOV to viewport orientation on mount & resize
@@ -489,8 +489,8 @@ export function ARMeasurementOverlay({
 
   /**
    * "Use This Fit": Captures the live camera scene (or uploaded room photo) + AR metrics,
-   * runs 100% on-device object detection (TensorFlow.js COCO-SSD + pixel CV surface & fixture
-   * sampling) with zero API keys or external servers, then opens the 3D Room Replica.
+   * runs lightweight on-device SegFormer-B0 + Depth Anything V2 Small spatial reconstruction
+   * (with pixel-CV offline fallback), then opens the 3D Room Replica.
    */
   const handleUseThisFitWithReplica = useCallback(async () => {
     setReplicaError(null);
