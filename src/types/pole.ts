@@ -21,7 +21,10 @@ export type CameraFocusId =
   | 'base-hub'
   | 'x-joint'
   | 'top-mount'
-  | 'compare-pair';
+  | 'compare-pair'
+  | 'replica-match';
+
+export type ReplicaRenderMode = 'wireframe' | 'blueprint' | 'textured';
 
 export type CameraMotionMode = 'manual' | 'orbit' | 'crane';
 
@@ -40,7 +43,22 @@ export type HardwarePartId =
 
 export type DockTabId = 'configure' | 'assembly' | 'space';
 
+export type ViewportMode = '3d' | 'floor-plan';
+
+export type SidebarDensity = 'full' | 'minimal';
+
+export type FloorPlanUnit = 'm' | 'ft';
+
 export type ModalId = 'none' | 'installation' | 'maintenance' | 'bom' | 'export-ar';
+
+export interface PoleContextMenuState {
+  screenX: number;
+  screenY: number;
+  source: ViewportMode;
+  poleId: string | null;
+  worldX?: number;
+  worldZ?: number;
+}
 
 export interface PoleInstance {
   id: string;
@@ -305,6 +323,68 @@ export interface RoomReplicaObject {
   textLabel?: string;
 }
 
+export interface MeasuredRoomObject3D {
+  id: string;
+  label: string;
+  x: number;
+  y: number;
+  z: number;
+  widthM: number;
+  depthM: number;
+  heightM: number;
+  minY: number;
+  maxY: number;
+  confidence: number;
+  source: 'semantic' | 'depth-cluster';
+}
+
+export interface ReplicaCameraPose {
+  pos: [number, number, number];
+  target: [number, number, number];
+  vfovDeg: number;
+  imageAspect: number;
+}
+
+export interface ReplicaDepthMeshData {
+  gridW: number;
+  gridH: number;
+  /** Flat XYZ vertex positions in AxisPole metric world space (length = gridW * gridH * 3) */
+  positions: Float32Array;
+  /** Flat UV coordinates (length = gridW * gridH * 2) */
+  uvs: Float32Array;
+  /** Depth-discontinuity-pruned surface triangle indices */
+  indices: Uint32Array;
+  /** Clean untextured occlusion-cliff skirt triangle indices for watertight 3D furniture volumes */
+  skirtIndices?: Uint32Array;
+  /** 3D structural quad wireframe line segments (pairs of XYZ vertices) */
+  wireframePositions: Float32Array;
+  /** 3D foreground/curvature emphasis quad mesh segments (sofa, pots, columns) */
+  foregroundWirePositions: Float32Array;
+  /** Sharp 3D depth-silhouette and normal-crease architectural contour segments */
+  silhouettePositions: Float32Array;
+  /** Crisp pure-white architectural CAD ink linework texture (data URL) */
+  cadEdgeDataUrl: string;
+  /** Dark-mode cyan architectural blueprint texture (data URL) */
+  blueprintEdgeDataUrl: string;
+  /** Full-color captured room frame texture matching mesh UVs (data URL) */
+  sourcePhotoDataUrl: string;
+  /** Calibrated camera capture pose for 1:1 photo-matched 3D perspective */
+  cameraPose: ReplicaCameraPose;
+  /** Metric floor footprint bounds of reconstructed mesh */
+  bounds: {
+    minX: number;
+    maxX: number;
+    minY: number;
+    maxY: number;
+    minZ: number;
+    maxZ: number;
+  };
+  /** Depth reconstruction engine used */
+  depthEngine: 'depth-anything-v2' | 'geometric-depth';
+  /** Measured 3D object volumes (W x D x H in meters) */
+  measuredObjects: MeasuredRoomObject3D[];
+}
+
 export interface RoomReplicaScene {
   roomType: string;
   summary: string;
@@ -330,6 +410,7 @@ export interface RoomReplicaScene {
   ceilingAccuracyPct: number;
   overallAccuracyPct: number;
   previewDataUrl?: string;
+  depthMesh?: ReplicaDepthMeshData;
 }
 
 

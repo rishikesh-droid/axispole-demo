@@ -6,7 +6,16 @@ import type {
 } from '../types/pole';
 import type { ARMarkerState } from './arMeasure';
 import { screenToFloorPoint3D } from './arSurfaceCalibration';
-import { computeObjectCoverCrop, sanitizeRoomReplicaScene } from './roomReplica';
+import {
+  bilateralSmoothDepth,
+  buildMetricDepthMesh,
+  calibrateDisparityToMetricDepth,
+  estimateHeuristicDepthMap,
+  measuredObjectsToReplicaObjects,
+  renderCadTexturesFromRgba,
+  resampleFloatField,
+} from './depthMeshReconstructor';
+import { sanitizeRoomReplicaScene } from './roomReplica';
 import {
   analyzeRoomWithVisionModels,
   preloadRoomVisionModels,
@@ -1871,64 +1880,180 @@ export async function scanRoomLocallyFromDataUrl(
     el.src = imageDataUrl;
   });
 
+  // Preserve full native image aspect ratio so ceiling, floor, and foreground furniture are never cropped away
   const natW = Math.max(64, img.naturalWidth || 640);
   const natH = Math.max(64, img.naturalHeight || 480);
-  const crop = computeObjectCoverCrop(natW, natH, input.markers.aspect);
+  const imgAspect = natW / natH;
 
-  // Canvas 1: Compact 512px canvas cropped 1:1 to viewport object-cover framing
-  const detScale = Math.min(1, 512 / Math.max(crop.sw, crop.sh));
-  const detW = Math.max(64, Math.round(crop.sw * detScale));
-  const detH = Math.max(64, Math.round(crop.sh * detScale));
+  // Canvas 1: High-resolution architectural CAD & photo texture canvas (max 1024px edge)
+  const cadScale = Math.min(1, 1024 / Math.max(natW, natH));
+  const cadW = Math.max(128, Math.round(natW * cadScale));
+  const cadH = Math.max(128, Math.round(natH * cadScale));
+  const cadCanvas = document.createElement('canvas');
+  cadCanvas.width = cadW;
+  cadCanvas.height = cadH;
+  const cadCtx = cadCanvas.getContext('2d', { willReadFrequently: true });
+  if (!cadCtx) {
+    throw new Error('Browser canvas unavailable to analyze room frame.');
+  }
+  cadCtx.drawImage(img, 0, 0, natW, natH, 0, 0, cadW, cadH);
+  const cadRgba = cadCtx.getImageData(0, 0, cadW, cadH).data;
+  const sourcePhotoDataUrl = cadCanvas.toDataURL('image/jpeg', 0.9);
+
+  // Canvas 2: Bounded 512px inference canvas for Depth Anything V2 + SegFormer-B0
+  const detScale = Math.min(1, 512 / Math.max(natW, natH));
+  const detW = Math.max(64, Math.round(natW * detScale));
+  const detH = Math.max(64, Math.round(natH * detScale));
   const detCanvas = document.createElement('canvas');
   detCanvas.width = detW;
   detCanvas.height = detH;
   const detCtx = detCanvas.getContext('2d', { willReadFrequently: true });
   if (!detCtx) {
-    throw new Error('Browser canvas unavailable to analyze room frame.');
+    throw new Error('Browser canvas unavailable to run room vision inference.');
   }
-  detCtx.drawImage(img, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, detW, detH);
+  detCtx.drawImage(img, 0, 0, natW, natH, 0, 0, detW, detH);
   const detDataUrl = detCanvas.toDataURL('image/jpeg', 0.88);
   const detRgba = detCtx.getImageData(0, 0, detW, detH).data;
 
-  // Run lightweight SegFormer-B0 -> Depth Anything V2 Small sequentially
+  // Dense 3D wireframe mesh resolution preserving exact native aspect ratio (~13,000 vertices)
+  const maxGridDim = 132;
+  const gridW = imgAspect >= 1 ? maxGridDim : Math.max(72, Math.round(maxGridDim * imgAspect));
+  const gridH = imgAspect >= 1 ? Math.max(72, Math.round(maxGridDim / imgAspect)) : maxGridDim;
+
+  // Stage 0 -> 1: Run Depth Anything V2 Small FIRST (then optional SegFormer-B0)
   const vision = await analyzeRoomWithVisionModels(detDataUrl, detW, detH, {
-    timeoutMs: 28000,
+    timeoutMs: 22000,
     onStage: (stage) => {
-      onStage?.(stage === 'segment' ? 0 : 1);
+      onStage?.(stage === 'depth' ? 0 : 1);
     },
   });
 
-  if (vision) {
-    onStage?.(2);
-    const reconstructed = reconstructRoomFromVisionAnalysis(detRgba, detW, detH, vision, {
-      ...input,
-      previewDataUrl: imageDataUrl,
-    });
-    onStage?.(3);
-    return reconstructed;
-  }
-
-  // Offline / model-unavailable fallback: deterministic pixel CV at 160px cropped to viewport aspect
+  // Extract crisp architectural CAD hidden-line ink + blueprint textures from full-res room frame
   onStage?.(1);
-  const cvW = 160;
-  const cvH = Math.max(120, Math.round(cvW / Math.max(0.4, crop.outAspect)));
-  const cvCanvas = document.createElement('canvas');
-  cvCanvas.width = cvW;
-  cvCanvas.height = cvH;
-  const cvCtx = cvCanvas.getContext('2d', { willReadFrequently: true });
-  if (!cvCtx) {
-    throw new Error('Browser canvas unavailable to sample room surfaces.');
-  }
-  cvCtx.drawImage(img, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, cvW, cvH);
-  const cvRgba = cvCtx.getImageData(0, 0, cvW, cvH).data;
+  const { cadEdgeDataUrl, blueprintEdgeDataUrl } = renderCadTexturesFromRgba(cadRgba, cadW, cadH);
 
+  // Calibrate metric depth grid (neural Depth Anything V2 or deterministic 5-plane geometric depth fallback)
+  let depthMeters: Float32Array;
+  let backWallDepthM: number;
+  let vfovDeg: number;
+  let depthEngine: 'depth-anything-v2' | 'geometric-depth';
+
+  if (vision) {
+    const resampledDisp = resampleFloatField(vision.disparityMap, vision.width, vision.height, gridW, gridH);
+    const calibrated = calibrateDisparityToMetricDepth(
+      resampledDisp,
+      gridW,
+      gridH,
+      vision.disparityIsInverseDepth,
+      {
+        ceilingHeightCm: input.ceilingHeightCm,
+        distanceM: input.distanceM,
+        imageAspect: imgAspect,
+        markers: input.markers,
+      }
+    );
+    depthMeters = bilateralSmoothDepth(calibrated.depthMeters, gridW, gridH, 2, 1.5, 0.14);
+    backWallDepthM = calibrated.backWallDepthM;
+    vfovDeg = calibrated.vfovDeg;
+    depthEngine = 'depth-anything-v2';
+  } else {
+    const gridCanvas = document.createElement('canvas');
+    gridCanvas.width = gridW;
+    gridCanvas.height = gridH;
+    const gridCtx = gridCanvas.getContext('2d', { willReadFrequently: true });
+    if (!gridCtx) {
+      throw new Error('Browser canvas unavailable to estimate geometric depth.');
+    }
+    gridCtx.drawImage(img, 0, 0, natW, natH, 0, 0, gridW, gridH);
+    const gridRgba = gridCtx.getImageData(0, 0, gridW, gridH).data;
+    const heuristic = estimateHeuristicDepthMap(gridRgba, gridW, gridH, {
+      ceilingHeightCm: input.ceilingHeightCm,
+      distanceM: input.distanceM,
+      imageAspect: imgAspect,
+      markers: input.markers,
+    });
+    depthMeters = heuristic.depthMeters;
+    backWallDepthM = heuristic.backWallDepthM;
+    vfovDeg = heuristic.vfovDeg;
+    depthEngine = 'geometric-depth';
+  }
+
+  // Stage 2: Build true metric 3D architectural wireframe mesh & measure 3D object volumes (W x D x H)
   onStage?.(2);
-  const fallback = reconstructRoomLocallyFromPixels(cvRgba, cvW, cvH, {
-    ...input,
-    previewDataUrl: imageDataUrl,
-    externalDetections: [],
+  const depthMesh = buildMetricDepthMesh(depthMeters, gridW, gridH, {
+    ceilingHeightCm: input.ceilingHeightCm,
+    imageAspect: imgAspect,
+    vfovDeg,
+    backWallDepthM,
+    depthEngine,
+    cadEdgeDataUrl,
+    blueprintEdgeDataUrl,
+    sourcePhotoDataUrl,
+    segments: vision?.segments,
+    segWidth: vision?.width,
+    segHeight: vision?.height,
   });
+
+  // Derive metric room envelope from reconstructed 3D depth mesh
+  const meshSpanW = clamp(depthMesh.bounds.maxX - depthMesh.bounds.minX, 2.6, 6.8);
+  const meshSpanD = clamp(depthMesh.bounds.maxZ - depthMesh.bounds.minZ, 2.6, 6.8);
+  const finalRoomW = Number(clamp((meshSpanW * 0.65 + input.roomWidthM * 0.35), 2.6, 6.8).toFixed(2));
+  const finalRoomD = Number(clamp((meshSpanD * 0.65 + input.roomDepthM * 0.35), 2.6, 6.8).toFixed(2));
+
+  // Build base metadata / palette scene (for roomType, floor/wall colors, and 2D Floor Plan sync)
+  let baseResult: LocalRoomScanResult;
+  if (vision && vision.segments.length > 0) {
+    baseResult = reconstructRoomFromVisionAnalysis(detRgba, detW, detH, vision, {
+      ...input,
+      roomWidthM: finalRoomW,
+      roomDepthM: finalRoomD,
+      previewDataUrl: sourcePhotoDataUrl,
+    });
+  } else {
+    const cvW = 160;
+    const cvH = Math.max(120, Math.round(cvW / Math.max(0.45, imgAspect)));
+    const cvCanvas = document.createElement('canvas');
+    cvCanvas.width = cvW;
+    cvCanvas.height = cvH;
+    const cvCtx = cvCanvas.getContext('2d', { willReadFrequently: true });
+    if (!cvCtx) {
+      throw new Error('Browser canvas unavailable to sample room surfaces.');
+    }
+    cvCtx.drawImage(img, 0, 0, natW, natH, 0, 0, cvW, cvH);
+    const cvRgba = cvCtx.getImageData(0, 0, cvW, cvH).data;
+    baseResult = reconstructRoomLocallyFromPixels(cvRgba, cvW, cvH, {
+      ...input,
+      roomWidthM: finalRoomW,
+      roomDepthM: finalRoomD,
+      previewDataUrl: sourcePhotoDataUrl,
+      externalDetections: [],
+    });
+  }
+
+  const measuredReplicaObjects = measuredObjectsToReplicaObjects(depthMesh.measuredObjects);
+  const mergedObjects =
+    measuredReplicaObjects.length > 0 ? measuredReplicaObjects : baseResult.scene.objects;
+
+  const scene: RoomReplicaScene = {
+    ...baseResult.scene,
+    roomWidthM: finalRoomW,
+    roomDepthM: finalRoomD,
+    objects: mergedObjects,
+    visibleObjectCount: mergedObjects.filter((o) => !o.inferred).length,
+    inferredObjectCount: mergedObjects.filter((o) => o.inferred).length,
+    previewDataUrl: sourcePhotoDataUrl,
+    summary:
+      depthEngine === 'depth-anything-v2'
+        ? `3D CAD depth mesh (${gridW}×${gridH} grid) of ${finalRoomW.toFixed(1)}×${finalRoomD.toFixed(1)}m room with ${depthMesh.measuredObjects.length} measured 3D volumes.`
+        : `3D architectural wireframe (${gridW}×${gridH} grid) of ${finalRoomW.toFixed(1)}×${finalRoomD.toFixed(1)}m room with ${depthMesh.measuredObjects.length} measured 3D volumes.`,
+    depthMesh,
+  };
+
   onStage?.(3);
-  return fallback;
+  return {
+    scene,
+    detectorEngine: depthEngine === 'depth-anything-v2' ? 'segformer+depth-v2+cv' : 'pixel-cv',
+    rawDetectionCount: depthMesh.measuredObjects.length,
+  };
 }
 

@@ -1,5 +1,8 @@
 import * as THREE from 'three';
 import type {
+  MeasuredRoomObject3D,
+  ReplicaDepthMeshData,
+  ReplicaRenderMode,
   RoomArchitecturalFeature,
   RoomReplicaObject,
   RoomReplicaScene,
@@ -10,7 +13,10 @@ export interface RoomReplicaRigHandle {
   update: (
     sceneData: RoomReplicaScene | null,
     visible: boolean,
-    showInferred: boolean
+    showInferred: boolean,
+    renderMode?: ReplicaRenderMode,
+    showDimensions?: boolean,
+    maxAnisotropy?: number
   ) => void;
   dispose: () => void;
 }
@@ -1217,21 +1223,327 @@ function buildReplicaObjectMesh(obj: RoomReplicaObject, ceilingHeightM: number):
   return meshGroup;
 }
 
+function makeDimensionTagSprite(
+  obj: MeasuredRoomObject3D,
+  isDarkTheme: boolean
+): THREE.Sprite {
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 112;
+  const ctx = canvas.getContext('2d');
+  if (ctx) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // Crisp architectural dimension callout badge
+    ctx.fillStyle = isDarkTheme ? 'rgba(10, 18, 34, 0.92)' : 'rgba(255, 255, 255, 0.95)';
+    ctx.strokeStyle = isDarkTheme ? 'rgba(56, 189, 248, 0.85)' : 'rgba(15, 23, 42, 0.75)';
+    ctx.lineWidth = 4;
+    const r = 14;
+    ctx.beginPath();
+    ctx.roundRect(10, 10, canvas.width - 20, canvas.height - 20, r);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = isDarkTheme ? '#e0f2fe' : '#0f172a';
+    ctx.font = '700 28px "Plus Jakarta Sans", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(obj.label.slice(0, 24), canvas.width / 2, 42);
+
+    ctx.fillStyle = isDarkTheme ? '#38bdf8' : '#0369a1';
+    ctx.font = '600 24px "JetBrains Mono", monospace';
+    ctx.fillText(
+      `W ${obj.widthM.toFixed(2)}m · D ${obj.depthM.toFixed(2)}m · H ${obj.heightM.toFixed(2)}m`,
+      canvas.width / 2,
+      78
+    );
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+
+  const mat = new THREE.SpriteMaterial({
+    map: tex,
+    transparent: true,
+    depthTest: false,
+    depthWrite: false,
+  });
+  const sprite = new THREE.Sprite(mat);
+  sprite.scale.set(0.56, 0.124, 1);
+  sprite.position.set(obj.x, Math.max(0.72, obj.maxY + 0.14), obj.z);
+  sprite.renderOrder = 25;
+  return sprite;
+}
+
+function buildMetricFloorTileGrid(
+  bounds: ReplicaDepthMeshData['bounds'],
+  roomW: number,
+  roomD: number,
+  renderMode: ReplicaRenderMode
+): THREE.Group {
+  const floorGroup = new THREE.Group();
+  floorGroup.name = 'Replica_MetricFloorGrid';
+
+  const isBp = renderMode === 'blueprint';
+  const minX = Math.min(bounds.minX, -roomW * 0.5) - 0.35;
+  const maxX = Math.max(bounds.maxX, roomW * 0.5) + 0.35;
+  const minZ = Math.min(bounds.minZ, -roomD * 0.5) - 0.25;
+  const maxZ = Math.max(bounds.maxZ, roomD * 0.5) + 0.35;
+
+  const spanX = Math.max(2.4, maxX - minX);
+  const spanZ = Math.max(2.4, maxZ - minZ);
+  const cx = (minX + maxX) * 0.5;
+  const cz = (minZ + maxZ) * 0.5;
+
+  // Clean grounding floor sheet under the pole & room footprint (zero void on orbit!)
+  const baseGeo = new THREE.PlaneGeometry(spanX, spanZ);
+  baseGeo.rotateX(-Math.PI / 2);
+  const baseMat = new THREE.MeshBasicMaterial({
+    color: isBp ? 0x0b1324 : 0xfafbfd,
+    transparent: renderMode === 'textured',
+    opacity: renderMode === 'textured' ? 0.65 : 1.0,
+    polygonOffset: true,
+    polygonOffsetFactor: 4,
+    polygonOffsetUnits: 4,
+  });
+  const basePlane = new THREE.Mesh(baseGeo, baseMat);
+  basePlane.position.set(cx, Math.min(-0.028, bounds.minY - 0.008), cz);
+  floorGroup.add(basePlane);
+
+  // Crisp 0.60m architectural floor tile grid (matches architectural CAD floor tiles!)
+  const tileSize = 0.6;
+  const gridVerts: number[] = [];
+  const startX = Math.floor(minX / tileSize) * tileSize;
+  const endX = Math.ceil(maxX / tileSize) * tileSize;
+  const startZ = Math.floor(minZ / tileSize) * tileSize;
+  const endZ = Math.ceil(maxZ / tileSize) * tileSize;
+
+  for (let x = startX; x <= endX + 1e-4; x += tileSize) {
+    gridVerts.push(x, 0.003, startZ, x, 0.003, endZ);
+  }
+  for (let z = startZ; z <= endZ + 1e-4; z += tileSize) {
+    gridVerts.push(startX, 0.003, z, endX, 0.003, z);
+  }
+
+  const gridGeo = new THREE.BufferGeometry();
+  gridGeo.setAttribute('position', new THREE.Float32BufferAttribute(gridVerts, 3));
+  const gridMat = new THREE.LineBasicMaterial({
+    color: isBp ? 0x38bdf8 : 0x64748b,
+    transparent: true,
+    opacity: isBp ? 0.34 : 0.32,
+    depthWrite: false,
+  });
+  const gridLines = new THREE.LineSegments(gridGeo, gridMat);
+  gridLines.renderOrder = 3;
+  floorGroup.add(gridLines);
+
+  // Clean outer architectural floor border
+  const borderVerts = [
+    startX, 0.004, startZ, endX, 0.004, startZ,
+    endX, 0.004, startZ, endX, 0.004, endZ,
+    endX, 0.004, endZ, startX, 0.004, endZ,
+    startX, 0.004, endZ, startX, 0.004, startZ,
+  ];
+  const borderGeo = new THREE.BufferGeometry();
+  borderGeo.setAttribute('position', new THREE.Float32BufferAttribute(borderVerts, 3));
+  const borderMat = new THREE.LineBasicMaterial({
+    color: isBp ? 0x7dd3fc : 0x1e293b,
+    transparent: true,
+    opacity: isBp ? 0.55 : 0.45,
+    depthWrite: false,
+  });
+  floorGroup.add(new THREE.LineSegments(borderGeo, borderMat));
+
+  return floorGroup;
+}
+
+function buildDepthWireframeReplicaGroup(
+  sceneData: RoomReplicaScene,
+  depthMesh: ReplicaDepthMeshData,
+  renderMode: ReplicaRenderMode,
+  maxAnisotropy: number,
+  onTextureReady?: () => void
+): THREE.Group {
+  const root = new THREE.Group();
+  root.name = 'Replica_DepthCADWireframe';
+
+  const isBp = renderMode === 'blueprint';
+  const isTextured = renderMode === 'textured';
+
+  // 1. Hidden-line 3D depth-displaced architectural surface mesh
+  const surfGeo = new THREE.BufferGeometry();
+  surfGeo.setAttribute('position', new THREE.BufferAttribute(depthMesh.positions, 3));
+  surfGeo.setAttribute('uv', new THREE.BufferAttribute(depthMesh.uvs, 2));
+  surfGeo.setIndex(new THREE.BufferAttribute(depthMesh.indices, 1));
+  surfGeo.computeVertexNormals();
+
+  const texUrl = isBp
+    ? depthMesh.blueprintEdgeDataUrl
+    : isTextured
+      ? depthMesh.sourcePhotoDataUrl
+      : depthMesh.cadEdgeDataUrl;
+
+  const surfMat = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    side: THREE.FrontSide,
+    polygonOffset: true,
+    polygonOffsetFactor: 2,
+    polygonOffsetUnits: 2,
+  });
+
+  if (texUrl) {
+    const img = new Image();
+    img.onload = () => {
+      const tex = new THREE.Texture(img);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = Math.min(8, Math.max(1, maxAnisotropy));
+      tex.minFilter = THREE.LinearMipmapLinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.needsUpdate = true;
+      surfMat.map = tex;
+      surfMat.needsUpdate = true;
+      onTextureReady?.();
+    };
+    img.src = texUrl;
+  } else {
+    surfMat.color.setHex(isBp ? 0x0d1526 : 0xf8fafc);
+  }
+
+  const surfMesh = new THREE.Mesh(surfGeo, surfMat);
+  surfMesh.name = 'Replica_DepthSurface';
+  surfMesh.renderOrder = 1;
+  root.add(surfMesh);
+
+  // 1b. Clean occlusion-cliff side skirts (matte architectural paper in Wireframe/Blueprint, seamless UV in Photo 3D)
+  if (depthMesh.skirtIndices && depthMesh.skirtIndices.length > 0) {
+    const skirtGeo = new THREE.BufferGeometry();
+    skirtGeo.setAttribute('position', new THREE.BufferAttribute(depthMesh.positions, 3));
+    skirtGeo.setAttribute('uv', new THREE.BufferAttribute(depthMesh.uvs, 2));
+    skirtGeo.setIndex(new THREE.BufferAttribute(depthMesh.skirtIndices, 1));
+    skirtGeo.computeVertexNormals();
+    const skirtMat = isTextured
+      ? surfMat
+      : new THREE.MeshBasicMaterial({
+          color: isBp ? 0x0d1526 : 0xf6f8fb,
+          side: THREE.FrontSide,
+          polygonOffset: true,
+          polygonOffsetFactor: 3,
+          polygonOffsetUnits: 3,
+        });
+    const skirtMesh = new THREE.Mesh(skirtGeo, skirtMat);
+    skirtMesh.name = 'Replica_OcclusionSkirt';
+    skirtMesh.renderOrder = 1;
+    root.add(skirtMesh);
+  }
+
+  // 2. Subtle structural quad wireframe across room shell (clean architectural white walls!)
+  if (depthMesh.wireframePositions.length > 0) {
+    const wireGeo = new THREE.BufferGeometry();
+    wireGeo.setAttribute('position', new THREE.BufferAttribute(depthMesh.wireframePositions, 3));
+    const wireMat = new THREE.LineBasicMaterial({
+      color: isBp ? 0x38bdf8 : 0x475569,
+      transparent: true,
+      opacity: isTextured ? 0.05 : isBp ? 0.22 : 0.08,
+      depthWrite: false,
+    });
+    const wireLines = new THREE.LineSegments(wireGeo, wireMat);
+    wireLines.name = 'Replica_StructuralWireframe';
+    wireLines.renderOrder = 4;
+    root.add(wireLines);
+  }
+
+  // 3. Clean CAD quad mesh emphasizing foreground 3D furniture & planters (sofa, pots)
+  if (depthMesh.foregroundWirePositions.length > 0) {
+    const fgGeo = new THREE.BufferGeometry();
+    fgGeo.setAttribute('position', new THREE.BufferAttribute(depthMesh.foregroundWirePositions, 3));
+    const fgMat = new THREE.LineBasicMaterial({
+      color: isBp ? 0x7dd3fc : 0x1e293b,
+      transparent: true,
+      opacity: isTextured ? 0.1 : isBp ? 0.42 : 0.24,
+      depthWrite: false,
+    });
+    const fgLines = new THREE.LineSegments(fgGeo, fgMat);
+    fgLines.name = 'Replica_ForegroundQuadMesh';
+    fgLines.renderOrder = 5;
+    root.add(fgLines);
+  }
+
+  // 4. Crisp 3D depth-silhouette & corner-crease architectural contour lines
+  if (depthMesh.silhouettePositions.length > 0) {
+    const silGeo = new THREE.BufferGeometry();
+    silGeo.setAttribute('position', new THREE.BufferAttribute(depthMesh.silhouettePositions, 3));
+    const silMat = new THREE.LineBasicMaterial({
+      color: isBp ? 0xe0f2fe : 0x0f172a,
+      transparent: true,
+      opacity: isTextured ? 0.18 : isBp ? 0.72 : 0.48,
+      depthWrite: false,
+    });
+    const silLines = new THREE.LineSegments(silGeo, silMat);
+    silLines.name = 'Replica_SilhouetteContours';
+    silLines.renderOrder = 6;
+    root.add(silLines);
+  }
+
+  // 5. Calibrated metric architectural floor tile grid grounded cleanly at Y = 0
+  root.add(
+    buildMetricFloorTileGrid(
+      depthMesh.bounds,
+      sceneData.roomWidthM,
+      sceneData.roomDepthM,
+      renderMode
+    )
+  );
+
+  // 6. Toggleable 3D Measured Object Dimension Wireframes & W x D x H metric tags
+  const dimsGroup = new THREE.Group();
+  dimsGroup.name = 'Replica_MeasuredObjectDimensions';
+  dimsGroup.userData.isDimensionOverlay = true;
+
+  for (const obj of depthMesh.measuredObjects) {
+    const boxGeo = new THREE.BoxGeometry(obj.widthM, obj.heightM, obj.depthM);
+    const edgesGeo = new THREE.EdgesGeometry(boxGeo);
+    boxGeo.dispose();
+
+    const edgeMat = new THREE.LineBasicMaterial({
+      color: isBp ? 0x22d3ee : 0x0284c7,
+      transparent: true,
+      opacity: 0.88,
+      depthWrite: false,
+    });
+    const wireframeBox = new THREE.LineSegments(edgesGeo, edgeMat);
+    wireframeBox.position.set(obj.x, obj.minY + obj.heightM * 0.5, obj.z);
+    wireframeBox.renderOrder = 18;
+    dimsGroup.add(wireframeBox);
+
+    dimsGroup.add(makeDimensionTagSprite(obj, isBp));
+  }
+  root.add(dimsGroup);
+
+  return root;
+}
+
 function disposeGroupChildren(parent: THREE.Group): void {
   while (parent.children.length > 0) {
     const child = parent.children[0];
     parent.remove(child);
     child.traverse((node) => {
-      if (node instanceof THREE.Mesh) {
-        node.geometry.dispose();
-        if (Array.isArray(node.material)) {
-          node.material.forEach((m) => {
-            if (m.map) m.map.dispose();
+      if (
+        node instanceof THREE.Mesh ||
+        node instanceof THREE.LineSegments ||
+        node instanceof THREE.Line ||
+        node instanceof THREE.Sprite
+      ) {
+        if ('geometry' in node && node.geometry) {
+          node.geometry.dispose();
+        }
+        const mat = node.material;
+        if (Array.isArray(mat)) {
+          mat.forEach((m) => {
+            if ('map' in m && m.map) (m.map as THREE.Texture).dispose();
             m.dispose();
           });
-        } else {
-          if (node.material.map) node.material.map.dispose();
-          node.material.dispose();
+        } else if (mat) {
+          if ('map' in mat && mat.map) (mat.map as THREE.Texture).dispose();
+          mat.dispose();
         }
       }
     });
@@ -1239,9 +1551,15 @@ function disposeGroupChildren(parent: THREE.Group): void {
 }
 
 /**
- * Manages the procedural 3D furniture & architectural replica meshes inside the studio scene.
+ * Manages the 3D Room Replica inside the viewport:
+ * - When `sceneData.depthMesh` is available (all new scans), renders the high-precision
+ *   metric 3D depth-displaced architectural CAD wireframe + measured W x D x H volumes.
+ * - Falls back gracefully to procedural furniture meshes for legacy scenes without depthMesh.
  */
-export function createRoomReplicaRig(parent: THREE.Group): RoomReplicaRigHandle {
+export function createRoomReplicaRig(
+  parent: THREE.Group,
+  onTextureReady?: () => void
+): RoomReplicaRigHandle {
   const group = new THREE.Group();
   group.name = 'AxisPole_RoomReplica';
   group.visible = false;
@@ -1252,24 +1570,43 @@ export function createRoomReplicaRig(parent: THREE.Group): RoomReplicaRigHandle 
   function update(
     sceneData: RoomReplicaScene | null,
     visible: boolean,
-    showInferred: boolean
+    showInferred: boolean,
+    renderMode: ReplicaRenderMode = 'wireframe',
+    showDimensions = false,
+    maxAnisotropy = 4
   ): void {
     if (!visible || !sceneData) {
       group.visible = false;
       return;
     }
 
+    const hasDepthMesh = Boolean(sceneData.depthMesh);
     const featCount = sceneData.architecturalFeatures?.length ?? 0;
-    const nextKey = `${sceneData.capturedAt}|${sceneData.objects.length}|${featCount}|${sceneData.ceilingHeightCm}`;
+    const nextKey = hasDepthMesh
+      ? `depth|${sceneData.capturedAt}|${renderMode}|${sceneData.ceilingHeightCm}|${sceneData.depthMesh!.gridW}x${sceneData.depthMesh!.gridH}`
+      : `proc|${sceneData.capturedAt}|${sceneData.objects.length}|${featCount}|${sceneData.ceilingHeightCm}`;
+
     if (builtKey !== nextKey) {
       disposeGroupChildren(group);
-      const ceilingM = sceneData.ceilingHeightCm / 100;
-      for (const obj of sceneData.objects) {
-        group.add(buildReplicaObjectMesh(obj, ceilingM));
-      }
-      if (sceneData.architecturalFeatures) {
-        for (const feat of sceneData.architecturalFeatures) {
-          group.add(buildArchitecturalFeature(feat, ceilingM));
+      if (hasDepthMesh && sceneData.depthMesh) {
+        group.add(
+          buildDepthWireframeReplicaGroup(
+            sceneData,
+            sceneData.depthMesh,
+            renderMode,
+            maxAnisotropy,
+            onTextureReady
+          )
+        );
+      } else {
+        const ceilingM = sceneData.ceilingHeightCm / 100;
+        for (const obj of sceneData.objects) {
+          group.add(buildReplicaObjectMesh(obj, ceilingM));
+        }
+        if (sceneData.architecturalFeatures) {
+          for (const feat of sceneData.architecturalFeatures) {
+            group.add(buildArchitecturalFeature(feat, ceilingM));
+          }
         }
       }
       builtKey = nextKey;
@@ -1277,8 +1614,17 @@ export function createRoomReplicaRig(parent: THREE.Group): RoomReplicaRigHandle 
 
     group.visible = true;
     for (const child of group.children) {
-      const isInferred = Boolean(child.userData.inferred);
-      child.visible = !isInferred || showInferred;
+      if (hasDepthMesh) {
+        child.visible = true;
+        child.traverse((node) => {
+          if (node.userData.isDimensionOverlay) {
+            node.visible = showDimensions;
+          }
+        });
+      } else {
+        const isInferred = Boolean(child.userData.inferred);
+        child.visible = !isInferred || showInferred;
+      }
     }
   }
 

@@ -95,10 +95,10 @@ const FINISH_ORDER: PoleFinishId[] = ['brass', 'stainless', 'powder-black', 'sil
 type DragHandleId = 'ceiling' | 'floor' | 'pole' | `floor-pin-${number}`;
 
 const REPLICA_STAGES = [
-  'Analyzing walls, ceiling, lighting & furniture geometry…',
-  'Estimating 3D room depth & scale…',
-  'Fitting exact furniture, shelves & architectural details…',
-  'Constructing 3D Room Replica…',
+  'Estimating dense 3D room depth map…',
+  'Extracting architectural CAD linework & surfaces…',
+  'Calculating metric 3D object dimensions (W × D × H)…',
+  'Assembling 3D Wireframe Room Replica…',
 ];
 
 export function ARMeasurementOverlay({

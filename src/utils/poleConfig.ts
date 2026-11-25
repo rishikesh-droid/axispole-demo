@@ -26,7 +26,7 @@ export const DEV_MIN_ROOM_SIZE_M = 1.5;
 export const MAX_ROOM_SIZE_M = 7.0;
 export const MIN_WALL_CLEARANCE_M = 1.25;
 export const DEV_MIN_WALL_CLEARANCE_M = 0.35;
-export const MAX_POLES_IN_STUDIO = 4;
+export const MAX_POLES_IN_STUDIO = 24;
 
 /** Room ceiling height bounds (2.00m – 5.00m) */
 export const MIN_CEILING_HEIGHT_CM = 200;
@@ -538,7 +538,11 @@ export function clampPoleHeightCm(rawHeightCm: number, ceilingHeightCm: number):
   return Math.max(MIN_POLE_HEIGHT_CM, Math.min(maxAllowed, Math.round(rawHeightCm)));
 }
 
-export function getCushionHeightCm(ceilingHeightCm: number, poleHeightCm: number): number {
+export function getCushionHeightCm(
+  ceilingHeightCm: number,
+  poleHeightCm: number,
+  _cushionPlacement: CushionPlacement = 'top'
+): number {
   const effectivePole = clampPoleHeightCm(poleHeightCm, ceilingHeightCm);
   return Math.max(0, Math.round(ceilingHeightCm) - effectivePole);
 }
@@ -546,6 +550,7 @@ export function getCushionHeightCm(ceilingHeightCm: number, poleHeightCm: number
 /**
  * Updates all poles when the shared room ceiling height changes:
  * - Poles that were flush with the previous ceiling (or at the 3.00m max limit) track the new ceiling up to 3.00m.
+ * - Whenever ceiling exceeds a pole's height (including ceilings above 3.00m), the exact difference height is automatically cushioned.
  * - Poles intentionally set to custom shorter heights preserve their individual height (clamped if ceiling drops below them).
  */
 export function reconcilePolesForCeilingHeight(
@@ -554,7 +559,10 @@ export function reconcilePolesForCeilingHeight(
   nextCeilingCm: number
 ): PoleInstance[] {
   const prevMaxPole = Math.min(Math.round(prevCeilingCm), MAX_POLE_HEIGHT_CM);
-  const nextMaxPole = Math.max(MIN_POLE_HEIGHT_CM, Math.min(Math.round(nextCeilingCm), MAX_POLE_HEIGHT_CM));
+  const nextMaxPole = Math.max(
+    MIN_POLE_HEIGHT_CM,
+    Math.min(Math.round(nextCeilingCm), MAX_POLE_HEIGHT_CM)
+  );
 
   return poles.map((p) => {
     const wasFlush = p.heightCm >= prevMaxPole - 1;
@@ -684,16 +692,192 @@ export function clampPolePosition(
 }
 
 /**
- * Finds an uncluttered, wall-safe spawn position for a newly added pole
- * with a contrasting finish so multi-pole setups look immediately curated.
+ * Validates whether a specific floor coordinate (x, z) satisfies wall clearance
+ * (1.25m when enforced) AND minimum separation from all existing poles.
  */
-export function createNextPoleInstance(
+export function isPositionValidForNewPole(
+  x: number,
+  z: number,
+  existingPoles: Pick<PoleInstance, 'x' | 'z'>[],
+  roomWidthM: number,
+  roomDepthM: number,
+  mountId: BaseMountId = 'tension',
+  enforceMinClearance = true
+): boolean {
+  const wallMargin = getWallClearanceMarginM(mountId, enforceMinClearance);
+  const maxX = roomWidthM / 2 - wallMargin;
+  const maxZ = roomDepthM / 2 - wallMargin;
+  if (maxX < -1e-4 || maxZ < -1e-4) return false;
+  if (Math.abs(x) > maxX + 1e-4 || Math.abs(z) > maxZ + 1e-4) return false;
+
+  const minSep = getMinPoleSeparationM(mountId, mountId, enforceMinClearance);
+  return existingPoles.every((p) => Math.hypot(x - p.x, z - p.z) >= minSep - 1e-3);
+}
+
+/**
+ * Searches the valid clearance-safe interior rectangle of the room for an open
+ * position that honors wall clearance (1.25m by default) and inter-pole separation.
+ * Returns null if no additional pole can safely fit in the current room.
+ */
+export function findAvailablePoleSlot(
+  existingPoles: Pick<PoleInstance, 'x' | 'z'>[],
+  roomWidthM: number,
+  roomDepthM: number,
+  mountId: BaseMountId = 'tension',
+  enforceMinClearance = true,
+  preferred?: { x: number; z: number }
+): { x: number; z: number } | null {
+  if (existingPoles.length >= MAX_POLES_IN_STUDIO) return null;
+
+  const wallMargin = getWallClearanceMarginM(mountId, enforceMinClearance);
+  const maxX = roomWidthM / 2 - wallMargin;
+  const maxZ = roomDepthM / 2 - wallMargin;
+  if (maxX < -1e-4 || maxZ < -1e-4) return null;
+
+  const safeMaxX = Math.max(0, maxX);
+  const safeMaxZ = Math.max(0, maxZ);
+  const minSep = getMinPoleSeparationM(mountId, mountId, enforceMinClearance);
+
+  // 1. Honor explicit preferred position (e.g. right-click "Add Pole Here") if valid
+  if (preferred) {
+    const px = Number(Math.max(-safeMaxX, Math.min(safeMaxX, preferred.x)).toFixed(3));
+    const pz = Number(Math.max(-safeMaxZ, Math.min(safeMaxZ, preferred.z)).toFixed(3));
+    if (
+      isPositionValidForNewPole(
+        px,
+        pz,
+        existingPoles,
+        roomWidthM,
+        roomDepthM,
+        mountId,
+        enforceMinClearance
+      )
+    ) {
+      return { x: px, z: pz };
+    }
+  }
+
+  // 2. If room has no poles yet, place cleanly at center
+  if (existingPoles.length === 0) {
+    return { x: 0, z: 0 };
+  }
+
+  // 3. Try curated symmetric anchor offsets first so 2–5 pole layouts feel balanced
+  const stepDist = enforceMinClearance ? 1.75 : 0.78;
+  const anchorCandidates: [number, number][] = [
+    [stepDist, 0],
+    [-stepDist, 0],
+    [0, stepDist],
+    [0, -stepDist],
+    [safeMaxX, safeMaxZ],
+    [-safeMaxX, safeMaxZ],
+    [safeMaxX, -safeMaxZ],
+    [-safeMaxX, -safeMaxZ],
+    [safeMaxX, 0],
+    [-safeMaxX, 0],
+    [0, safeMaxZ],
+    [0, -safeMaxZ],
+  ];
+
+  for (const [cx, cz] of anchorCandidates) {
+    const x = Number(Math.max(-safeMaxX, Math.min(safeMaxX, cx)).toFixed(3));
+    const z = Number(Math.max(-safeMaxZ, Math.min(safeMaxZ, cz)).toFixed(3));
+    if (
+      isPositionValidForNewPole(
+        x,
+        z,
+        existingPoles,
+        roomWidthM,
+        roomDepthM,
+        mountId,
+        enforceMinClearance
+      )
+    ) {
+      return { x, z };
+    }
+  }
+
+  // 4. Exhaustive deterministic grid search across [-safeMaxX, safeMaxX] × [-safeMaxZ, safeMaxZ]
+  const step = enforceMinClearance ? 0.16 : 0.12;
+  const xs: number[] = [-safeMaxX, 0, safeMaxX];
+  for (let gx = -safeMaxX + step; gx < safeMaxX - 1e-4; gx += step) {
+    xs.push(gx);
+  }
+  const zs: number[] = [-safeMaxZ, 0, safeMaxZ];
+  for (let gz = -safeMaxZ + step; gz < safeMaxZ - 1e-4; gz += step) {
+    zs.push(gz);
+  }
+
+  let best: { x: number; z: number; score: number } | null = null;
+  for (const rawX of xs) {
+    for (const rawZ of zs) {
+      let nearest = Infinity;
+      for (const p of existingPoles) {
+        const d = Math.hypot(rawX - p.x, rawZ - p.z);
+        if (d < nearest) nearest = d;
+      }
+      if (nearest < minSep - 1e-3) continue;
+
+      // Prefer well-spaced spots (high nearest distance), gently tie-broken toward preferred point or center
+      const refX = preferred ? preferred.x : 0;
+      const refZ = preferred ? preferred.z : 0;
+      const refDist = Math.hypot(rawX - refX, rawZ - refZ);
+      const score = preferred ? -refDist + Math.min(nearest, minSep + 0.5) * 0.25 : nearest - refDist * 0.12;
+
+      if (!best || score > best.score) {
+        best = {
+          x: Number(rawX.toFixed(3)),
+          z: Number(rawZ.toFixed(3)),
+          score,
+        };
+      }
+    }
+  }
+
+  return best ? { x: best.x, z: best.z } : null;
+}
+
+export function canFitAdditionalPole(
+  existingPoles: Pick<PoleInstance, 'x' | 'z'>[],
+  roomWidthM: number,
+  roomDepthM: number,
+  mountId: BaseMountId = 'tension',
+  enforceMinClearance = true
+): boolean {
+  return (
+    findAvailablePoleSlot(
+      existingPoles,
+      roomWidthM,
+      roomDepthM,
+      mountId,
+      enforceMinClearance
+    ) !== null
+  );
+}
+
+/**
+ * Attempts to create a new pole strictly within valid room clearance.
+ * Returns null if the room has no remaining space that satisfies wall & pole clearance.
+ */
+export function tryCreateNextPoleInstance(
   existingPoles: PoleInstance[],
   roomWidthM: number,
   roomDepthM: number,
   enforceMinClearance = true,
-  ceilingHeightCm = DEFAULT_CONFIG.ceilingHeightCm
-): PoleInstance {
+  ceilingHeightCm = DEFAULT_CONFIG.ceilingHeightCm,
+  mountId: BaseMountId = 'tension',
+  preferred?: { x: number; z: number }
+): PoleInstance | null {
+  const slot = findAvailablePoleSlot(
+    existingPoles,
+    roomWidthM,
+    roomDepthM,
+    mountId,
+    enforceMinClearance,
+    preferred
+  );
+  if (!slot) return null;
+
   const finishCycle: PoleFinishId[] = ['brass', 'stainless', 'powder-black', 'silicone'];
   const usedFinishes = new Set(existingPoles.map((p) => p.finish));
   const nextFinish =
@@ -701,36 +885,6 @@ export function createNextPoleInstance(
     finishCycle[existingPoles.length % finishCycle.length];
 
   const nextNum = existingPoles.length + 1;
-  const minSep = getMinPoleSeparationM('tension', 'tension', enforceMinClearance);
-  const stepDist = enforceMinClearance ? 1.75 : 0.78;
-  const candidateOffsets: [number, number][] = [
-    [stepDist, 0],
-    [-stepDist, 0],
-    [0, stepDist],
-    [0, -stepDist],
-    [stepDist * 0.9, stepDist * 0.8],
-    [-stepDist * 0.9, stepDist * 0.8],
-  ];
-
-  let chosen = { x: stepDist, z: 0 };
-  for (const [cx, cz] of candidateOffsets) {
-    const res = clampPolePosition(
-      cx,
-      cz,
-      roomWidthM,
-      roomDepthM,
-      'tension',
-      existingPoles,
-      enforceMinClearance
-    );
-    const clearOfAll = existingPoles.every(
-      (p) => Math.hypot(res.x - p.x, res.z - p.z) >= minSep - 0.05
-    );
-    if (clearOfAll) {
-      chosen = { x: res.x, z: res.z };
-      break;
-    }
-  }
 
   return {
     id: `pole-${Date.now().toString(36)}-${nextNum}`,
@@ -741,8 +895,54 @@ export function createNextPoleInstance(
     cushionPlacement: 'top',
     isSpinning: true,
     spinRpm: 16,
-    x: chosen.x,
-    z: chosen.z,
+    x: slot.x,
+    z: slot.z,
+  };
+}
+
+/**
+ * Finds an uncluttered, wall-safe spawn position for a newly added pole
+ * with a contrasting finish so multi-pole setups look immediately curated.
+ */
+export function createNextPoleInstance(
+  existingPoles: PoleInstance[],
+  roomWidthM: number,
+  roomDepthM: number,
+  enforceMinClearance = true,
+  ceilingHeightCm = DEFAULT_CONFIG.ceilingHeightCm
+): PoleInstance {
+  const placed = tryCreateNextPoleInstance(
+    existingPoles,
+    roomWidthM,
+    roomDepthM,
+    enforceMinClearance,
+    ceilingHeightCm
+  );
+  if (placed) return placed;
+
+  // Fallback for direct programmatic calls when space is tight
+  const finishCycle: PoleFinishId[] = ['brass', 'stainless', 'powder-black', 'silicone'];
+  const nextNum = existingPoles.length + 1;
+  const fallback = clampPolePosition(
+    0,
+    0,
+    roomWidthM,
+    roomDepthM,
+    'tension',
+    existingPoles,
+    enforceMinClearance
+  );
+  return {
+    id: `pole-${Date.now().toString(36)}-${nextNum}`,
+    label: `Pole ${nextNum}`,
+    finish: finishCycle[existingPoles.length % finishCycle.length],
+    diameterMm: 45,
+    heightCm: clampPoleHeightCm(ceilingHeightCm, ceilingHeightCm),
+    cushionPlacement: 'top',
+    isSpinning: true,
+    spinRpm: 16,
+    x: fallback.x,
+    z: fallback.z,
   };
 }
 
@@ -766,7 +966,7 @@ export function calculateHeightSolution(
   const safeCeilingCm = Math.round(ceilingHeightCm);
   const rawPoleCm = poleHeightCm ?? Math.min(safeCeilingCm, MAX_POLE_HEIGHT_CM);
   const effectivePoleCm = clampPoleHeightCm(rawPoleCm, Math.max(safeCeilingCm, MIN_POLE_HEIGHT_CM));
-  const cushionHeightCm = Math.max(0, safeCeilingCm - effectivePoleCm);
+  const cushionHeightCm = getCushionHeightCm(safeCeilingCm, effectivePoleCm, cushionPlacement);
   const cappedAtMaxPoleHeight = safeCeilingCm > MAX_POLE_HEIGHT_CM;
   const targetMm = effectivePoleCm * 10;
 

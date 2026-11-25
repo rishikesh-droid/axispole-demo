@@ -6,13 +6,13 @@ import type {
   EnvironmentPreset,
   LightingPreset,
   PoleRigConfig,
+  ReplicaRenderMode,
   RoomReplicaScene,
 } from '../types/pole';
 import {
   analyzeFloorClearance,
   computeEffectiveVaultRad,
   getWallClearanceMarginM,
-  MAX_POLES_IN_STUDIO,
 } from '../utils/poleConfig';
 import type { ProceduralTextureSet } from './proceduralTextures';
 import { createRoomReplicaRig } from './roomReplicaBuilder';
@@ -33,7 +33,9 @@ export interface EnvironmentRigHandle {
     poleMarkers?: FloorPoleMarker[],
     dragBoundaryState?: { active: boolean; hitWall: boolean; activeMount: BaseMountId },
     roomReplica?: RoomReplicaScene | null,
-    showInferredObjects?: boolean
+    showInferredObjects?: boolean,
+    replicaRenderMode?: ReplicaRenderMode,
+    showReplicaDimensions?: boolean
   ) => void;
   dispose: () => void;
 }
@@ -41,7 +43,8 @@ export interface EnvironmentRigHandle {
 export function createEnvironmentRig(
   scene: THREE.Scene,
   textures: ProceduralTextureSet,
-  isSoftwareGl: boolean
+  isSoftwareGl: boolean,
+  onAssetLoaded?: () => void
 ): EnvironmentRigHandle {
   const group = new THREE.Group();
   group.name = 'AxisPole_StudioEnvironment';
@@ -226,7 +229,7 @@ export function createEnvironmentRig(
   apronMesh.position.y = -0.025;
   group.add(apronMesh);
 
-  // Pooled floor contact shadows, clearance rings & selection rings for up to MAX_POLES_IN_STUDIO poles
+  // Dynamically pooled floor contact shadows & clearance rings (grows lazily as poles are added)
   const shadowPool: THREE.Mesh[] = [];
   const clearancePool: THREE.Mesh[] = [];
   const selectionRingMat = new THREE.MeshBasicMaterial({
@@ -244,21 +247,24 @@ export function createEnvironmentRig(
   selectionRingMesh.visible = false;
   group.add(selectionRingMesh);
 
-  for (let i = 0; i < MAX_POLES_IN_STUDIO; i++) {
-    const sh = new THREE.Mesh(new THREE.CircleGeometry(0.54, 32), contactShadowMat);
-    sh.rotation.x = -Math.PI / 2;
-    sh.position.y = 0.004;
-    sh.visible = i === 0;
-    group.add(sh);
-    shadowPool.push(sh);
+  function ensureFloorMarkerPools(neededCount: number): void {
+    while (shadowPool.length < neededCount) {
+      const sh = new THREE.Mesh(new THREE.CircleGeometry(0.54, 32), contactShadowMat);
+      sh.rotation.x = -Math.PI / 2;
+      sh.position.y = 0.004;
+      sh.visible = false;
+      group.add(sh);
+      shadowPool.push(sh);
 
-    const cr = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), clearanceRingMat);
-    cr.rotation.x = -Math.PI / 2;
-    cr.position.y = 0.018;
-    cr.visible = i === 0;
-    group.add(cr);
-    clearancePool.push(cr);
+      const cr = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), clearanceRingMat);
+      cr.rotation.x = -Math.PI / 2;
+      cr.position.y = 0.018;
+      cr.visible = false;
+      group.add(cr);
+      clearancePool.push(cr);
+    }
   }
+  ensureFloorMarkerPools(2);
 
   // Safe floor drag perimeter outline (shown cleanly while dragging a pole to visualize min wall clearance)
   const boundaryLineMat = new THREE.LineBasicMaterial({
@@ -428,7 +434,7 @@ export function createEnvironmentRig(
   group.add(homeFeatureGroup);
 
   // --- SCANNED 3D ROOM REPLICA FURNITURE & ARCHITECTURAL RIG ---
-  const roomReplicaRig = createRoomReplicaRig(group);
+  const roomReplicaRig = createRoomReplicaRig(group, onAssetLoaded);
 
   scene.add(group);
 
@@ -769,7 +775,9 @@ export function createEnvironmentRig(
     poleMarkers?: FloorPoleMarker[],
     dragBoundaryState?: { active: boolean; hitWall: boolean; activeMount: BaseMountId },
     roomReplica?: RoomReplicaScene | null,
-    showInferredObjects = true
+    showInferredObjects = true,
+    replicaRenderMode: ReplicaRenderMode = 'wireframe',
+    showReplicaDimensions = false
   ): void {
     const W = config.roomWidthM;
     const D = config.roomDepthM;
@@ -783,9 +791,31 @@ export function createEnvironmentRig(
     }
 
     const isReplica = config.environment === 'replica' && Boolean(roomReplica);
+    const hasDepthMeshReplica = isReplica && Boolean(roomReplica?.depthMesh);
 
     group.visible = true;
     applyLightingPreset(config.environment, config.lighting, H, W, D, renderer);
+
+    if (hasDepthMeshReplica) {
+      const bgHex =
+        replicaRenderMode === 'blueprint'
+          ? 0x0a1120
+          : replicaRenderMode === 'textured'
+            ? 0xe7e9ee
+            : 0xf4f6f9;
+      scene.background = new THREE.Color(bgHex);
+      scene.fog = null;
+      renderer.toneMappingExposure = replicaRenderMode === 'blueprint' ? 1.06 : 1.02;
+    }
+
+    // Show studio box shell only when NOT rendering a dense 3D CAD depth-mesh room replica
+    const showBoxShell = !hasDepthMeshReplica;
+    floorMesh.visible = showBoxShell;
+    apronMesh.visible = showBoxShell;
+    backWall.visible = showBoxShell;
+    leftWall.visible = showBoxShell;
+    backBaseboard.visible = showBoxShell;
+    leftBaseboard.visible = showBoxShell;
 
     // Floor scale & material/plank/tile tiling (respects scanned replica material & color!)
     floorMesh.scale.set(W, D, 1);
@@ -873,6 +903,7 @@ export function createEnvironmentRig(
     backWall.position.set(0, 0, -D / 2 - 0.06);
 
     const hasDistinctUpperWall =
+      showBoxShell &&
       isReplica &&
       Boolean(roomReplica?.upperWallColor) &&
       roomReplica!.upperWallColor !== roomReplica!.wallColor &&
@@ -909,12 +940,12 @@ export function createEnvironmentRig(
       H + slabNormalOffset * cosV - 0.06 * sinV,
       -0.06
     );
-    ceilingSlab.visible = true;
+    ceilingSlab.visible = showBoxShell;
 
     ceilingBeam.scale.set(beamSpanW, 1, 1);
     ceilingBeam.rotation.set(0, 0, vaultRad);
     ceilingBeam.position.set(-beamNormalOffset * sinV, H + beamNormalOffset * cosV, 0);
-    ceilingBeam.visible = !isReplica || isVaulted;
+    ceilingBeam.visible = showBoxShell && (!isReplica || isVaulted);
 
     // Recessed perimeter ceiling LED cove strips follow exact flat or vaulted ceiling angle
     const coveNormalOffset = isVaulted ? 0.042 : -0.018;
@@ -925,11 +956,11 @@ export function createEnvironmentRig(
       H + coveNormalOffset * cosV,
       -D / 2 + 0.025
     );
-    coveBarBack.visible = !isReplica || config.lighting !== 'studio-daylight';
+    coveBarBack.visible = showBoxShell && (!isReplica || config.lighting !== 'studio-daylight');
 
     coveBarLeft.scale.set(1, 1, D - 0.16);
     coveBarLeft.position.set(-W / 2 + 0.025, leftEaveH + (isVaulted ? 0.035 : -0.018), 0);
-    coveBarLeft.visible = !isReplica || config.lighting !== 'studio-daylight';
+    coveBarLeft.visible = showBoxShell && (!isReplica || config.lighting !== 'studio-daylight');
 
     // Overhead black aluminum studio spotlight track tilts cleanly along sloped ceiling & scales for compact rooms
     const trackNormalOffset = isVaulted ? 0.035 : -0.02;
@@ -941,7 +972,7 @@ export function createEnvironmentRig(
       H + trackNormalOffset * cosV,
       Math.min(0.95, D * 0.32)
     );
-    trackRigGroup.visible = !isReplica;
+    trackRigGroup.visible = showBoxShell && !isReplica;
 
     // Studio feature wall (fluted acoustic wood slats on left wall + mirror + neon tubes)
     studioFeatureGroup.visible = config.environment === 'studio';
@@ -974,8 +1005,15 @@ export function createEnvironmentRig(
     homeFeatureGroup.scale.set(homeScaleX, 1, 1);
     homeFeatureGroup.position.set(0, 0, -D / 2 + 0.22);
 
-    // Scanned 3D Room Replica Furniture & Architectural Completion
-    roomReplicaRig.update(roomReplica ?? null, isReplica, showInferredObjects);
+    // Scanned 3D Room Replica (Dense 3D CAD Wireframe or Procedural Fallback)
+    roomReplicaRig.update(
+      roomReplica ?? null,
+      isReplica,
+      showInferredObjects,
+      replicaRenderMode,
+      showReplicaDimensions,
+      renderer.capabilities.getMaxAnisotropy()
+    );
 
     // Contact shadows, clearance safety rings & active-pole base ring
     const markers: FloorPoleMarker[] =
@@ -995,8 +1033,9 @@ export function createEnvironmentRig(
             ? 0xfb7185
             : 0xd97706;
 
+    ensureFloorMarkerPools(markers.length);
     selectionRingMesh.visible = false;
-    for (let i = 0; i < MAX_POLES_IN_STUDIO; i++) {
+    for (let i = 0; i < shadowPool.length; i++) {
       const m = markers[i];
       const sh = shadowPool[i];
       const cr = clearancePool[i];

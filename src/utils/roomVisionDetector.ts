@@ -28,7 +28,7 @@ export interface RoomVisionAnalysis {
   disparityMap: Float32Array;
   /** True when higher disparity values correspond to closer surfaces (Depth Anything V2) */
   disparityIsInverseDepth: boolean;
-  engine: 'segformer+depth-anything-v2';
+  engine: 'segformer+depth-anything-v2' | 'depth-anything-v2';
 }
 
 export const SEGFORMER_MODEL_ID = 'Xenova/segformer-b0-finetuned-ade-512-512';
@@ -53,13 +53,13 @@ type DepthFn = (image: string) => Promise<{
 
 let segmenterPromise: Promise<SegmenterFn | null> | null = null;
 let depthPromise: Promise<DepthFn | null> | null = null;
+
 async function loadSegmenter(): Promise<SegmenterFn | null> {
   if (typeof window === 'undefined') return null;
   if (!segmenterPromise) {
     segmenterPromise = (async () => {
       try {
         const { pipeline, env } = await import('@huggingface/transformers');
-        // Prevent SPA routers from returning index.html on /models/* probes
         env.allowLocalModels = false;
 
         const hasWebGpu = typeof navigator !== 'undefined' && 'gpu' in navigator;
@@ -128,15 +128,15 @@ async function loadDepthEstimator(): Promise<DepthFn | null> {
 let preloadStarted = false;
 
 /**
- * Silently pre-warms SegFormer-B0 and Depth Anything V2 Small sequentially
- * when entering AR mode so mobile browsers avoid parallel memory spikes.
+ * Silently pre-warms Depth Anything V2 Small first (most critical for 3D geometry),
+ * followed by SegFormer-B0 when entering AR mode.
  */
 export function preloadRoomVisionModels(): void {
   if (typeof window === 'undefined' || preloadStarted) return;
   preloadStarted = true;
   void (async () => {
-    await loadSegmenter();
     await loadDepthEstimator();
+    await loadSegmenter();
   })();
 }
 
@@ -195,18 +195,30 @@ function extractDisparityFloat32(
     if (srcW === targetW && srcH === targetH && rawData.length === targetW * targetH) {
       return rawData instanceof Float32Array ? rawData : Float32Array.from(rawData);
     }
+    // Bilinear resample for smooth, stair-step-free 3D depth relief
     const out = new Float32Array(targetW * targetH);
     for (let y = 0; y < targetH; y++) {
-      const sy = Math.min(srcH - 1, Math.floor((y / targetH) * srcH));
+      const fy = (y / Math.max(1, targetH - 1)) * (srcH - 1);
+      const y0 = Math.floor(fy);
+      const y1 = Math.min(srcH - 1, y0 + 1);
+      const wy = fy - y0;
       for (let x = 0; x < targetW; x++) {
-        const sx = Math.min(srcW - 1, Math.floor((x / targetW) * srcW));
-        out[y * targetW + x] = Number(rawData[sy * srcW + sx]) || 0;
+        const fx = (x / Math.max(1, targetW - 1)) * (srcW - 1);
+        const x0 = Math.floor(fx);
+        const x1 = Math.min(srcW - 1, x0 + 1);
+        const wx = fx - x0;
+        const v00 = Number(rawData[y0 * srcW + x0]) || 0;
+        const v10 = Number(rawData[y0 * srcW + x1]) || 0;
+        const v01 = Number(rawData[y1 * srcW + x0]) || 0;
+        const v11 = Number(rawData[y1 * srcW + x1]) || 0;
+        const top = v00 + (v10 - v00) * wx;
+        const bot = v01 + (v11 - v01) * wx;
+        out[y * targetW + x] = top + (bot - top) * wy;
       }
     }
     return out;
   }
 
-  // Fallback to normalized 8-bit RawImage if tensor dims absent
   const dImg = depthOut.depth;
   const ch = Math.max(1, dImg.channels || 1);
   const out = new Float32Array(targetW * targetH);
@@ -221,8 +233,9 @@ function extractDisparityFloat32(
 }
 
 /**
- * Runs SegFormer-B0 (ADE20K room + furniture masks) and Depth Anything V2 Small
- * sequentially on a bounded image data URL. Never throws; returns null on offline/timeout.
+ * Runs Depth Anything V2 Small FIRST for dense 3D room geometry, then SegFormer-B0
+ * for semantic object labels. If SegFormer times out or is unavailable, still returns
+ * the full dense Depth Anything V2 map so 3D reconstruction never degrades to crude boxes.
  */
 export async function analyzeRoomWithVisionModels(
   imageDataUrl: string,
@@ -230,31 +243,15 @@ export async function analyzeRoomWithVisionModels(
   height: number,
   opts?: {
     timeoutMs?: number;
-    onStage?: (stage: 'segment' | 'depth') => void;
+    onStage?: (stage: 'depth' | 'segment') => void;
   }
 ): Promise<RoomVisionAnalysis | null> {
-  const timeoutMs = opts?.timeoutMs ?? 28000;
-  const loadTimeoutMs = Math.max(timeoutMs, 45000);
-
-  opts?.onStage?.('segment');
-  const segmenter = await withTimeout(loadSegmenter(), loadTimeoutMs, null);
-  if (!segmenter) return null;
-
-  let rawSegments: Array<{ label: string | null; score: number | null; mask: RawImageLike }> = [];
-  try {
-    rawSegments = await withTimeout(
-      segmenter(imageDataUrl, { threshold: 0.22, mask_threshold: 0.42 }),
-      timeoutMs,
-      []
-    );
-  } catch {
-    return null;
-  }
-
-  if (rawSegments.length === 0) return null;
+  const depthTimeoutMs = opts?.timeoutMs ?? 20000;
+  const depthLoadTimeoutMs = Math.max(depthTimeoutMs, 26000);
+  const segTimeoutMs = Math.min(14000, depthTimeoutMs);
 
   opts?.onStage?.('depth');
-  const depthEstimator = await withTimeout(loadDepthEstimator(), loadTimeoutMs, null);
+  const depthEstimator = await withTimeout(loadDepthEstimator(), depthLoadTimeoutMs, null);
   if (!depthEstimator) return null;
 
   let depthOut: {
@@ -262,28 +259,39 @@ export async function analyzeRoomWithVisionModels(
     depth: RawImageLike;
   } | null = null;
   try {
-    depthOut = await withTimeout(depthEstimator(imageDataUrl), timeoutMs, null);
+    depthOut = await withTimeout(depthEstimator(imageDataUrl), depthTimeoutMs, null);
   } catch {
     return null;
   }
-
   if (!depthOut) return null;
 
-  const segments: VisionSegment[] = [];
-  for (const seg of rawSegments) {
-    if (!seg.label || !seg.mask) continue;
-    segments.push({
-      label: seg.label.toLowerCase().trim(),
-      score: typeof seg.score === 'number' && Number.isFinite(seg.score) ? seg.score : 0.85,
-      width,
-      height,
-      mask: extractSingleChannelMask(seg.mask, width, height),
-    });
-  }
-
-  if (segments.length === 0) return null;
-
   const disparityMap = extractDisparityFloat32(depthOut, width, height);
+
+  // Run SegFormer-B0 as optional semantic object enrichment (never blocks depth mesh!)
+  opts?.onStage?.('segment');
+  const segments: VisionSegment[] = [];
+  const segmenter = await withTimeout(loadSegmenter(), segTimeoutMs, null);
+  if (segmenter) {
+    try {
+      const rawSegments = await withTimeout(
+        segmenter(imageDataUrl, { threshold: 0.22, mask_threshold: 0.42 }),
+        segTimeoutMs,
+        []
+      );
+      for (const seg of rawSegments) {
+        if (!seg.label || !seg.mask) continue;
+        segments.push({
+          label: seg.label.toLowerCase().trim(),
+          score: typeof seg.score === 'number' && Number.isFinite(seg.score) ? seg.score : 0.85,
+          width,
+          height,
+          mask: extractSingleChannelMask(seg.mask, width, height),
+        });
+      }
+    } catch {
+      // Depth map alone is still fully usable
+    }
+  }
 
   return {
     width,
@@ -291,6 +299,6 @@ export async function analyzeRoomWithVisionModels(
     segments,
     disparityMap,
     disparityIsInverseDepth: true,
-    engine: 'segformer+depth-anything-v2',
+    engine: segments.length > 0 ? 'segformer+depth-anything-v2' : 'depth-anything-v2',
   };
 }

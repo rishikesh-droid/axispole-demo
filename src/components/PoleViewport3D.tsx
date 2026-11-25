@@ -13,9 +13,11 @@ import type {
   CameraMotionMode,
   HardwarePartId,
   PoleClampResult,
+  PoleContextMenuState,
   PoleFinishId,
   PoleInstance,
   PoleRigConfig,
+  ReplicaRenderMode,
   RoomReplicaScene,
 } from '../types/pole';
 import {
@@ -88,6 +90,10 @@ interface PoleViewport3DProps {
   arPartialFloorPoints: FloorPoint3D[];
   roomReplica: RoomReplicaScene | null;
   showInferredObjects: boolean;
+  replicaRenderMode?: ReplicaRenderMode;
+  showReplicaDimensions?: boolean;
+  paused?: boolean;
+  onOpenContextMenu?: (menu: PoleContextMenuState) => void;
 }
 
 const _camGoalPos = new THREE.Vector3();
@@ -141,6 +147,10 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       arPartialFloorPoints,
       roomReplica,
       showInferredObjects,
+      replicaRenderMode = 'wireframe',
+      showReplicaDimensions = false,
+      paused = false,
+      onOpenContextMenu,
     },
     ref
   ) {
@@ -173,8 +183,12 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       arPartialFloorPoints,
       roomReplica,
       showInferredObjects,
+      replicaRenderMode,
+      showReplicaDimensions,
+      paused,
       onSelectPart,
       onPlaybackProgress,
+      onOpenContextMenu,
     });
     stateRef.current = {
       config,
@@ -202,8 +216,12 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       arPartialFloorPoints,
       roomReplica,
       showInferredObjects,
+      replicaRenderMode,
+      showReplicaDimensions,
+      paused,
       onSelectPart,
       onPlaybackProgress,
+      onOpenContextMenu,
     };
 
     const sceneApiRef = useRef<{
@@ -293,6 +311,39 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
           return {
             pos: new THREE.Vector3(ox + 0.68, pt.y - 0.12, oz + 0.82),
             target: new THREE.Vector3(ox, pt.y, oz),
+          };
+        }
+        case 'replica-match': {
+          const dm = stateRef.current.roomReplica?.depthMesh;
+          if (dm) {
+            const camFov = sceneApiRef.current.camera?.fov ?? 38;
+            const tanHalfCam = Math.tan(THREE.MathUtils.degToRad(camFov * 0.5));
+            const spanY = Math.max(2.2, Math.min(3.3, dm.bounds.maxY - dm.bounds.minY));
+            const midY = Math.min(1.5, (dm.bounds.minY + dm.bounds.maxY) * 0.48);
+            const fitZ = Math.min(
+              4.9,
+              Math.max(dm.cameraPose.pos[2] + 0.35, dm.bounds.maxZ + (spanY * 0.25) / Math.max(0.2, tanHalfCam))
+            );
+            return {
+              pos: new THREE.Vector3(dm.cameraPose.pos[0], midY, fitZ),
+              target: new THREE.Vector3(
+                dm.cameraPose.target[0],
+                midY * 0.99,
+                (dm.bounds.minZ + dm.bounds.maxZ) * 0.28
+              ),
+            };
+          }
+          const s = stateRef.current;
+          const fallbackPose = computeFullRoomCamera(
+            s.config.roomWidthM,
+            s.config.roomDepthM,
+            heightCm,
+            false,
+            s.poles.length > 1
+          );
+          return {
+            pos: new THREE.Vector3(...fallbackPose.pos),
+            target: new THREE.Vector3(...fallbackPose.target),
           };
         }
         case 'full-rig':
@@ -402,24 +453,31 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       controls.update();
 
       const textures = createProceduralTextures(renderer.capabilities.getMaxAnisotropy());
-      const env = createEnvironmentRig(scene, textures, isSoftwareGl);
+      const env = createEnvironmentRig(scene, textures, isSoftwareGl, () => {
+        sceneApiRef.current.requestRender();
+      });
       const arCloudRig = createARPointCloudRig(scene);
 
-      // Create reusable pool of up to MAX_POLES_IN_STUDIO pole assemblies (zero runtime leaks)
+      // Lazy reusable pool of pole assemblies up to MAX_POLES_IN_STUDIO (zero runtime leaks)
       const polePool: PoleAssemblyHandle[] = [];
       const poleGeoKeys: string[] = [];
       const spinAngles: number[] = [];
       const spinVels: number[] = [];
 
-      for (let i = 0; i < MAX_POLES_IN_STUDIO; i++) {
-        const handle = createPoleAssembly(textures);
-        handle.root.visible = i === 0;
-        scene.add(handle.root);
-        polePool.push(handle);
-        poleGeoKeys.push('');
-        spinAngles.push(0);
-        spinVels.push(0);
+      function ensurePolePool(neededCount: number) {
+        const target = Math.min(MAX_POLES_IN_STUDIO, Math.max(2, neededCount));
+        while (polePool.length < target) {
+          const handle = createPoleAssembly(textures);
+          handle.root.visible = polePool.length === 0;
+          scene.add(handle.root);
+          polePool.push(handle);
+          poleGeoKeys.push('');
+          spinAngles.push(0);
+          spinVels.push(0);
+        }
       }
+
+      ensurePolePool(2);
 
       let draggingPoleIdx: number | null = null;
       let dragHitWall = false;
@@ -531,9 +589,10 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       function syncPolesAndEnv(): void {
         const s = stateRef.current;
         const rendered = getRenderedPoleConfigs();
+        ensurePolePool(rendered.length);
         const markers: FloorPoleMarker[] = [];
 
-        for (let i = 0; i < MAX_POLES_IN_STUDIO; i++) {
+        for (let i = 0; i < polePool.length; i++) {
           const item = rendered[i];
           const handle = polePool[i];
           if (!item) {
@@ -574,7 +633,9 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
             activeMount,
           },
           s.roomReplica,
-          s.showInferredObjects
+          s.showInferredObjects,
+          s.replicaRenderMode,
+          s.showReplicaDimensions
         );
         arCloudRig.update(
           s.arCameraActive,
@@ -654,6 +715,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
 
       function needsContinuousAnimation(): boolean {
         const s = stateRef.current;
+        if (s.paused) return false;
         if (s.playbackMode !== 'idle') return true;
         if (s.cameraMotion !== 'manual') return true;
         if (s.poles.some((p) => p.isSpinning && p.spinRpm > 0)) return true;
@@ -675,12 +737,15 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
         const s = stateRef.current;
         const rendered = getRenderedPoleConfigs();
 
-        // Snap animation progress & re-enable auto-tracking camera when a new install/dismantle run starts
+        // Snap animation progress & re-enable auto-tracking camera when a new install/dismantle run starts or resets to assembled
         if (s.playbackMode !== prevPlaybackMode) {
           if (s.playbackMode !== 'idle') {
             smoothedProgress = s.assemblyProgress;
             userOverrodePlaybackCam = false;
             camTransitionActive = false;
+          } else if (s.assemblyProgress >= 0.999) {
+            smoothedProgress = 1;
+            smoothedExploded = s.explodedFactor;
           }
           prevPlaybackMode = s.playbackMode;
         }
@@ -882,7 +947,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       }
 
       function requestRender(): void {
-        if (disposed) return;
+        if (disposed || stateRef.current.paused) return;
         if (renderBusy) {
           renderDirty = true;
           return;
@@ -909,14 +974,16 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
 
       controls.addEventListener('change', requestRender);
 
-      // --- POINTER INTERACTION: CLICK TO INSPECT / SELECT POLE + DRAG ON FLOOR TO MOVE POLE ---
+      // --- POINTER INTERACTION: CLICK TO INSPECT / SELECT, DRAG TO MOVE, RIGHT-CLICK TO EDIT, DYNAMIC CURSORS ---
       const raycaster = new THREE.Raycaster();
       let pointerDownX = 0;
       let pointerDownY = 0;
+      let isOrbitPointerDown = false;
+      let lastHoverCheckMs = 0;
 
       const getAllVisibleInteractables = (): THREE.Object3D[] => {
         const list: THREE.Object3D[] = [];
-        for (let i = 0; i < MAX_POLES_IN_STUDIO; i++) {
+        for (let i = 0; i < polePool.length; i++) {
           if (polePool[i].root.visible) {
             list.push(...polePool[i].interactables);
           }
@@ -924,13 +991,20 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
         return list;
       };
 
-      const updateNdc = (e: PointerEvent) => {
+      const updateNdc = (e: PointerEvent | MouseEvent) => {
         const rect = renderer.domElement.getBoundingClientRect();
         _pointerNdc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
         _pointerNdc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
       };
 
+      const setCanvasCursor = (cursor: string) => {
+        if (renderer.domElement.style.cursor !== cursor) {
+          renderer.domElement.style.cursor = cursor;
+        }
+      };
+
       const onPointerDown = (e: PointerEvent) => {
+        if (e.button !== 0) return;
         pointerDownX = e.clientX;
         pointerDownY = e.clientY;
         const s = stateRef.current;
@@ -947,6 +1021,8 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
               draggingPoleIdx = pIdx;
               dragHitWall = false;
               controls.enabled = false;
+              setCanvasCursor('grabbing');
+              document.body.style.cursor = 'grabbing';
               s.onSelectPole(pId);
               if (raycaster.ray.intersectPlane(_floorPlane, _floorHit)) {
                 const targetPole = s.poles[pIdx];
@@ -957,46 +1033,73 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
               renderer.domElement.setPointerCapture(e.pointerId);
               syncPolesAndEnv();
               requestRender();
+              return;
             }
           }
         }
+
+        isOrbitPointerDown = true;
+        setCanvasCursor('grabbing');
       };
 
       const onPointerMove = (e: PointerEvent) => {
-        if (draggingPoleIdx === null) return;
         const s = stateRef.current;
-        const poleItem = s.poles[draggingPoleIdx];
-        if (!poleItem) return;
+        if (draggingPoleIdx !== null) {
+          const poleItem = s.poles[draggingPoleIdx];
+          if (!poleItem) return;
+
+          updateNdc(e);
+          raycaster.setFromCamera(_pointerNdc, camera);
+          if (raycaster.ray.intersectPlane(_floorPlane, _floorHit)) {
+            const rawX = _floorHit.x + _dragOffset.x;
+            const rawZ = _floorHit.z + _dragOffset.z;
+            const others = s.poles.filter((p) => p.id !== poleItem.id);
+            const clamped = clampPolePosition(
+              rawX,
+              rawZ,
+              s.config.roomWidthM,
+              s.config.roomDepthM,
+              s.config.mount,
+              others,
+              s.config.enforceMinClearance
+            );
+
+            dragHitWall = clamped.hitWallBoundary || clamped.hitPoleBoundary;
+            polePool[draggingPoleIdx].root.position.set(clamped.x, 0, clamped.z);
+            s.onMovePole(poleItem.id, clamped.x, clamped.z, clamped);
+            syncPolesAndEnv();
+            requestRender();
+          }
+          return;
+        }
+
+        if (isOrbitPointerDown) {
+          setCanvasCursor('grabbing');
+          return;
+        }
+
+        const now = performance.now();
+        if (now - lastHoverCheckMs < 35) return;
+        lastHoverCheckMs = now;
 
         updateNdc(e);
         raycaster.setFromCamera(_pointerNdc, camera);
-        if (raycaster.ray.intersectPlane(_floorPlane, _floorHit)) {
-          const rawX = _floorHit.x + _dragOffset.x;
-          const rawZ = _floorHit.z + _dragOffset.z;
-          const others = s.poles.filter((p) => p.id !== poleItem.id);
-          const clamped = clampPolePosition(
-            rawX,
-            rawZ,
-            s.config.roomWidthM,
-            s.config.roomDepthM,
-            s.config.mount,
-            others,
-            s.config.enforceMinClearance
-          );
-
-          dragHitWall = clamped.hitWallBoundary || clamped.hitPoleBoundary;
-          polePool[draggingPoleIdx].root.position.set(clamped.x, 0, clamped.z);
-          s.onMovePole(poleItem.id, clamped.x, clamped.z, clamped);
-          syncPolesAndEnv();
-          requestRender();
+        const hits = raycaster.intersectObjects(getAllVisibleInteractables(), false);
+        if (hits.length > 0) {
+          setCanvasCursor((s.moveMode || e.shiftKey) && !s.compareMode ? 'grab' : 'pointer');
+        } else {
+          setCanvasCursor('grab');
         }
       };
 
       const onPointerUp = (e: PointerEvent) => {
+        isOrbitPointerDown = false;
         if (draggingPoleIdx !== null) {
           draggingPoleIdx = null;
           dragHitWall = false;
           controls.enabled = true;
+          document.body.style.cursor = '';
+          setCanvasCursor(stateRef.current.moveMode ? 'grab' : 'grab');
           if (renderer.domElement.hasPointerCapture(e.pointerId)) {
             renderer.domElement.releasePointerCapture(e.pointerId);
           }
@@ -1005,8 +1108,13 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
           return;
         }
 
+        if (e.button !== 0) return;
+
         const dist = Math.hypot(e.clientX - pointerDownX, e.clientY - pointerDownY);
-        if (dist > 6) return;
+        if (dist > 6) {
+          setCanvasCursor('grab');
+          return;
+        }
 
         updateNdc(e);
         raycaster.setFromCamera(_pointerNdc, camera);
@@ -1039,20 +1147,70 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
         }
       };
 
+      const onContextMenu = (e: MouseEvent) => {
+        const s = stateRef.current;
+        if (s.arCameraActive || !s.onOpenContextMenu) return;
+        e.preventDefault();
+
+        updateNdc(e);
+        raycaster.setFromCamera(_pointerNdc, camera);
+        const hits = raycaster.intersectObjects(getAllVisibleInteractables(), false);
+        if (hits.length > 0 && !s.compareMode) {
+          const pId = hits[0].object.userData.poleId as string | undefined;
+          if (pId) {
+            s.onSelectPole(pId);
+            s.onOpenContextMenu({
+              screenX: e.clientX,
+              screenY: e.clientY,
+              source: '3d',
+              poleId: pId,
+            });
+            return;
+          }
+        }
+
+        let worldX: number | undefined;
+        let worldZ: number | undefined;
+        if (raycaster.ray.intersectPlane(_floorPlane, _floorHit)) {
+          const halfW = s.config.roomWidthM / 2;
+          const halfD = s.config.roomDepthM / 2;
+          if (Math.abs(_floorHit.x) <= halfW && Math.abs(_floorHit.z) <= halfD) {
+            worldX = Number(_floorHit.x.toFixed(3));
+            worldZ = Number(_floorHit.z.toFixed(3));
+          }
+        }
+
+        s.onOpenContextMenu({
+          screenX: e.clientX,
+          screenY: e.clientY,
+          source: '3d',
+          poleId: null,
+          worldX,
+          worldZ,
+        });
+      };
+
       renderer.domElement.addEventListener('pointerdown', onPointerDown);
       renderer.domElement.addEventListener('pointermove', onPointerMove);
       renderer.domElement.addEventListener('pointerup', onPointerUp);
+      renderer.domElement.addEventListener('contextmenu', onContextMenu);
 
       const handleResize = () => {
         if (!container || disposed) return;
         const w = container.clientWidth || window.innerWidth;
         const h = container.clientHeight || window.innerHeight;
+        if (w < 10 || h < 10) return;
         camera.aspect = w / h;
         camera.updateProjectionMatrix();
         renderer.setSize(w, h);
+        if (!stateRef.current.paused) {
+          renderer.render(scene, camera);
+        }
         requestRender();
       };
       window.addEventListener('resize', handleResize);
+      const resizeObserver = new ResizeObserver(handleResize);
+      resizeObserver.observe(container);
 
       const onContextLost = (e: Event) => {
         e.preventDefault();
@@ -1086,9 +1244,12 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
         window.cancelAnimationFrame(frameId);
         window.clearTimeout(frameId);
         window.removeEventListener('resize', handleResize);
+        resizeObserver.disconnect();
+        document.body.style.cursor = '';
         renderer.domElement.removeEventListener('pointerdown', onPointerDown);
         renderer.domElement.removeEventListener('pointermove', onPointerMove);
         renderer.domElement.removeEventListener('pointerup', onPointerUp);
+        renderer.domElement.removeEventListener('contextmenu', onContextMenu);
         renderer.domElement.removeEventListener('webglcontextlost', onContextLost);
         renderer.domElement.removeEventListener('webglcontextrestored', onContextRestored);
         controls.dispose();
@@ -1126,22 +1287,23 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       arPartialFloorPoints,
       roomReplica,
       showInferredObjects,
+      replicaRenderMode,
+      showReplicaDimensions,
     ]);
 
     useEffect(() => {
-      sceneApiRef.current.requestRender();
-    }, [assemblyProgress, explodedFactor, highlightFasteners, selectedPart, playbackMode, cameraMotion]);
+      if (!paused) {
+        sceneApiRef.current.syncPolesAndEnv();
+        sceneApiRef.current.requestRender();
+      }
+    }, [assemblyProgress, explodedFactor, highlightFasteners, selectedPart, playbackMode, cameraMotion, paused]);
 
     return (
       <div className="relative w-full h-full select-none" data-testid="pole-viewport-3d">
         <div
           ref={mountRef}
-          className={`w-full h-full ${
-            moveMode && !compareMode
-              ? 'cursor-move'
-              : 'cursor-grab active:cursor-grabbing'
-          }`}
-          aria-label="Interactive 3D pole setup viewport. Drag to orbit, or enable Move mode to reposition poles within safe room clearance."
+          className="w-full h-full cursor-grab"
+          aria-label="Interactive 3D pole setup viewport. Drag to orbit, enable Move mode to reposition poles, or right-click to edit."
         />
 
         {contextLost && (

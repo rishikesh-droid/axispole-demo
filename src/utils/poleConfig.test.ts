@@ -4,6 +4,7 @@ import {
   analyzeFloorClearance,
   BASE_MOUNTS,
   calculateHeightSolution,
+  canFitAdditionalPole,
   clampPoleHeightCm,
   clampPolePosition,
   computeAssemblyOffsets,
@@ -17,6 +18,7 @@ import {
   DEV_MIN_ROOM_SIZE_M,
   DEV_MIN_WALL_CLEARANCE_M,
   exportBOMToCSV,
+  findAvailablePoleSlot,
   formatHeightMetricAndImperial,
   generateBOM,
   generateMultiPoleBOM,
@@ -25,6 +27,7 @@ import {
   getMinRoomSizeM,
   getWallClearanceMarginM,
   isDarkLighting,
+  isPositionValidForNewPole,
   LIGHTING_PRESETS,
   MAX_CEILING_HEIGHT_CM,
   MAX_POLE_HEIGHT_CM,
@@ -32,6 +35,7 @@ import {
   MIN_ROOM_SIZE_M,
   MIN_WALL_CLEARANCE_M,
   reconcilePolesForCeilingHeight,
+  tryCreateNextPoleInstance,
 } from './poleConfig.ts';
 import type { BaseMountId, CeilingType, PoleFinishId } from '../types/pole.ts';
 
@@ -312,3 +316,77 @@ test('formatHeightMetricAndImperial and exportBOMToCSV output expected structure
   assert.ok(csv.includes('SKU,Component,Material,Qty'));
   assert.ok(csv.includes('AXP-BRA-45'));
 });
+
+test('cushion automatically bridges difference whenever pole height is below ceiling while enforcing 3.00m pole limit', () => {
+  // 2.19m pole under 2.74m ceiling -> automatic 55cm cushion
+  const sol274 = calculateHeightSolution(274, 'tension', 'powder-black', 219, 'top');
+  assert.equal(sol274.poleHeightCm, 219);
+  assert.equal(sol274.cushionHeightCm, 55);
+  assert.equal(getCushionHeightCm(274, 219), 55);
+
+  const bom274 = generateBOM({
+    ...DEFAULT_CONFIG,
+    ceilingHeightCm: 274,
+    poleHeightCm: 219,
+    cushionPlacement: 'top',
+  });
+  assert.equal(
+    bom274.items.some((i) => i.sku === 'CSH-TOP-55'),
+    true,
+    'Expected CSH-TOP-55 cushion SKU for 2.19m pole in 2.74m ceiling'
+  );
+
+  // 3.00m ceiling with 2.45m pole -> automatic 55cm cushion (Top or Below)
+  const sol300Short = calculateHeightSolution(300, 'tension', 'brass', 245, 'below');
+  assert.equal(sol300Short.poleHeightCm, 245);
+  assert.equal(sol300Short.cushionHeightCm, 55);
+
+  // 3.00m ceiling with 3.00m pole -> flush 0cm cushion
+  const sol300Flush = calculateHeightSolution(300, 'tension', 'brass', 300, 'top');
+  assert.equal(sol300Flush.poleHeightCm, 300);
+  assert.equal(sol300Flush.cushionHeightCm, 0);
+
+  // 3.50m ceiling -> pole capped at 3.00m limit + automatic 50cm cushion
+  const sol350Cap = calculateHeightSolution(350, 'tension', 'brass', 350, 'top');
+  assert.equal(sol350Cap.poleHeightCm, 300);
+  assert.equal(sol350Cap.cushionHeightCm, 50);
+  assert.equal(sol350Cap.cappedAtMaxPoleHeight, true);
+});
+
+test('space-aware pole placement fits more than 4 poles in large rooms while strictly enforcing 1.25m clearance', () => {
+  // Large 7.0m x 7.0m room should easily fit > 4 poles with 1.25m wall clearance
+  const largePoles = createInitialPoles();
+  while (largePoles.length < 7) {
+    const next = tryCreateNextPoleInstance(largePoles, 7.0, 7.0, true, 274, 'tension');
+    assert.ok(next, `Expected slot for pole #${largePoles.length + 1} in 7.0m × 7.0m room`);
+    // Verify 1.25m wall clearance
+    assert.ok(Math.abs(next.x) <= 7.0 / 2 - 1.25 + 1e-3);
+    assert.ok(Math.abs(next.z) <= 7.0 / 2 - 1.25 + 1e-3);
+    // Verify separation from every existing pole
+    for (const existing of largePoles) {
+      assert.ok(
+        Math.hypot(next.x - existing.x, next.z - existing.z) >=
+          getMinPoleSeparationM('tension', 'tension', true) - 0.01
+      );
+    }
+    largePoles.push(next);
+  }
+  assert.equal(largePoles.length, 7);
+
+  // Compact 3.0m x 3.0m room with 1.25m clearance can hold only 1 pole (0.5m x 0.5m safe box < 1.65m separation)
+  const smallRoomPoles = createInitialPoles();
+  assert.equal(canFitAdditionalPole(smallRoomPoles, 3.0, 3.0, 'tension', true), false);
+  assert.equal(findAvailablePoleSlot(smallRoomPoles, 3.0, 3.0, 'tension', true), null);
+
+  // Right-click preferred spot validation respects 1.25m wall margin
+  assert.equal(
+    isPositionValidForNewPole(2.1, 2.1, createInitialPoles(), 7.0, 7.0, 'tension', true),
+    true
+  );
+  assert.equal(
+    isPositionValidForNewPole(3.0, 0, createInitialPoles(), 7.0, 7.0, 'tension', true),
+    false,
+    '3.0m from center in 7.0m room leaves only 0.5m wall clearance (< 1.25m)'
+  );
+});
+

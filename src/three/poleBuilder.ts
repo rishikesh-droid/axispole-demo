@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type {
   AssemblyPartOffsets,
+  CushionPlacement,
   HardwarePartId,
   PoleRigConfig,
 } from '../types/pole';
@@ -204,7 +205,7 @@ export function createPoleAssembly(textures: ProceduralTextureSet): PoleAssembly
   let currentHeightM = 2.74;
   let currentRadiusM = 0.0225;
   let currentCushionHeightM = 0;
-  let currentCushionPlacement: 'top' | 'below' = 'top';
+  let currentCushionPlacement: CushionPlacement = 'top';
 
   function clearDisposables(): void {
     const keepMats = new Set<THREE.Material>([
@@ -287,7 +288,11 @@ export function createPoleAssembly(textures: ProceduralTextureSet): PoleAssembly
     updatePoleMaterial(config);
 
     const effectivePoleCm = clampPoleHeightCm(config.poleHeightCm, config.ceilingHeightCm);
-    const cushionCm = getCushionHeightCm(config.ceilingHeightCm, effectivePoleCm);
+    const cushionCm = getCushionHeightCm(
+      config.ceilingHeightCm,
+      effectivePoleCm,
+      config.cushionPlacement
+    );
     const sol = calculateHeightSolution(
       config.ceilingHeightCm,
       config.mount,
@@ -892,11 +897,16 @@ export function createPoleAssembly(textures: ProceduralTextureSet): PoleAssembly
     topMountGroup.position.y = baseY.topMount + offsets.topMountY;
     coverSleeveGroup.position.y = baseY.coverSleeve + offsets.coverSleeveY;
     if (currentCushionHeightM > 0) {
-      heightCushionGroup.position.y =
-        baseY.heightCushion +
-        (currentCushionPlacement === 'below'
-          ? offsets.basePlateY * 0.45
-          : offsets.topMountY * 1.12);
+      if (currentCushionPlacement === 'below') {
+        heightCushionGroup.position.y = baseY.heightCushion + offsets.basePlateY * 0.35;
+      } else {
+        // Keep top cushion strictly beneath the studio ceiling slab — never protruding through the roof
+        const maxCeilingSeatedY = Math.max(0, currentHeightM - currentCushionHeightM);
+        heightCushionGroup.position.y = Math.min(
+          maxCeilingSeatedY,
+          baseY.heightCushion + offsets.topMountY * 0.25
+        );
+      }
     }
 
     // Rotate the pole column smoothly
