@@ -1,0 +1,1004 @@
+{
+  "priceTiers": {
+    "retail": {
+      "default": true
+    },
+    "xpole20": {
+      "roles": [
+        "xpole20"
+      ]
+    },
+    "xpole30": {
+      "roles": [
+        "xpole30"
+      ]
+    }
+  },
+  "inputs": {
+    "diameters": [
+      {
+        "key": "40mm",
+        "label": "40mm"
+      },
+      {
+        "key": "45mm",
+        "label": "45mm"
+      }
+    ],
+    "ceilingTypes": [
+      {
+        "key": "flat",
+        "label": "Flat"
+      },
+      {
+        "key": "vaulted",
+        "label": "Vaulted/Slanted"
+      }
+    ],
+    "heightUnits": [
+      "mm",
+      "ft"
+    ]
+  },
+  "finishes": [
+    {
+      "key": "chrome",
+      "label": "Chrome"
+    },
+    {
+      "key": "stainless",
+      "label": "Stainless Steel"
+    },
+    {
+      "key": "powder",
+      "label": "Powder Coated Black/White"
+    },
+    {
+      "key": "silicone",
+      "label": "Silicone Black"
+    },
+    {
+      "key": "brass",
+      "label": "Brass"
+    }
+  ],
+  "alwaysIncluded": [
+    "Mount",
+    "Top insert",
+    "Base",
+    "Tool Pouch"
+  ],
+  "materialMixFinishes": [
+    "stainless"
+  ],
+  "parts": [
+    {
+      "id": "only A pole",
+      "isCX": false,
+      "heightMinMm": 2641,
+      "heightMaxMm": 2718,
+      "included": {
+        "chrome": [],
+        "stainless": [],
+        "powder": [],
+        "silicone": [],
+        "brass": []
+      },
+      "finishes": {
+        "chrome": {
+          "retail": 749.95,
+          "wholesale20": 587.17,
+          "wholesale30": 513.77
+        },
+        "stainless": {
+          "retail": 859.95,
+          "wholesale20": 675.17,
+          "wholesale30": 590.77
+        },
+        "powder": {
+          "retail": 749.95,
+          "wholesale20": 587.17,
+          "wholesale30": 513.77
+        },
+        "silicone": {
+          "retail": 853.95,
+          "wholesale20": 670.37,
+          "wholesale30": 586.57
+        },
+        "brass": {
+          "retail": 983.95,
+          "wholesale20": 774.37,
+          "wholesale30": 677.57
+        }
+      }
+    },
+    {
+      "id": "125",
+      "isCX": false,
+      "heightMinMm": 2717,
+      "heightMaxMm": 2820,
+      "included": {
+        "chrome": [
+          "X-Joint"
+        ],
+        "stainless": [
+          "X-Joint"
+        ],
+        "powder": [
+          "X-Joint"
+        ],
+        "silicone": [
+          "X-Joint"
+        ],
+        "brass": [
+          "X-Joint"
+        ]
+      },
+      "finishes": {
+        "chrome": {
+          "retail": 782.93,
+          "wholesale20": 613.55,
+          "wholesale30": 536.86
+        },
+        "stainless": {
+          "retail": 904.93,
+          "wholesale20": 711.15,
+          "wholesale30": 622.26
+        },
+        "powder": {
+          "retail": 782.93,
+          "wholesale20": 613.55,
+          "wholesale30": 536.86
+        },
+        "silicone": {
+          "retail": 891.93,
+          "wholesale20": 700.75,
+          "wholesale30": 613.16
+        },
+        "brass": {
+          "retail": 1028.93,
+          "wholesale20": 810.35,
+          "wholesale30": 709.06
+        }
+      }
+    },
+    {
+      "id": "200",
+      "isCX": false,
+      "heightMinMm": 2819,
+      "heightMaxMm": 2921,
+      "included": {
+        "chrome": [
+          "X-Joint"
+        ],
+        "stainless": [
+          "X-Joint"
+        ],
+        "powder": [
+          "X-Joint"
+        ],
+        "silicone": [
+          "X-Joint"
+        ],
+        "brass": [
+          "X-Joint"
+        ]
+      },
+      "finishes": {
+        "chrome": {
+          "retail": 833.93,
+          "wholesale20": 654.35,
+          "wholesale30": 572.56
+        },
+        "stainless": {
+          "retail": 957.93,
+          "wholesale20": 753.55,
+          "wholesale30": 659.36
+        },
+        "powder": {
+          "retail": 837.93,
+          "wholesale20": 657.55,
+          "wholesale30": 575.36
+        },
+        "silicone": {
+          "retail": 944.93,
+          "wholesale20": 743.15,
+          "wholesale30": 650.26
+        },
+        "brass": {
+          "retail": 1080.93,
+          "wholesale20": 851.95,
+          "wholesale30": 745.46
+        }
+      }
+    },
+    {
+      "id": "250",
+      "isCX": false,
+      "heightMinMm": 2870,
+      "heightMaxMm": 2972,
+      "included": {
+        "chrome": [
+          "X-Joint"
+        ],
+        "stainless": [
+          "X-Joint"
+        ],
+        "powder": [
+          "X-Joint"
+        ],
+        "silicone": [
+          "X-Joint"
+        ],
+        "brass": [
+          "X-Joint"
+        ]
+      },
+      "finishes": {
+        "chrome": {
+          "retail": 837.93,
+          "wholesale20": 657.55,
+          "wholesale30": 575.36
+        },
+        "stainless": {
+          "retail": 965.93,
+          "wholesale20": 759.95,
+          "wholesale30": 664.96
+        },
+        "powder": {
+          "retail": 837.93,
+          "wholesale20": 657.55,
+          "wholesale30": 575.36
+        },
+        "silicone": {
+          "retail": 950.93,
+          "wholesale20": 747.95,
+          "wholesale30": 654.46
+        },
+        "brass": {
+          "retail": 1088.93,
+          "wholesale20": 858.35,
+          "wholesale30": 751.06
+        }
+      }
+    },
+    {
+      "id": "300",
+      "isCX": false,
+      "heightMinMm": 2921,
+      "heightMaxMm": 3023,
+      "included": {
+        "chrome": [
+          "X-Joint"
+        ],
+        "stainless": [
+          "X-Joint"
+        ],
+        "powder": [],
+        "silicone": [],
+        "brass": []
+      },
+      "finishes": {
+        "chrome": {
+          "retail": 838.93,
+          "wholesale20": 658.35,
+          "wholesale30": 576.06
+        },
+        "stainless": {
+          "retail": 948.93,
+          "wholesale20": 746.35,
+          "wholesale30": 653.06
+        },
+        "powder": null,
+        "silicone": null,
+        "brass": null
+      },
+      "materialMix": true
+    },
+    {
+      "id": "400",
+      "isCX": false,
+      "heightMinMm": 3022,
+      "heightMaxMm": 3125,
+      "included": {
+        "chrome": [
+          "X-Joint"
+        ],
+        "stainless": [
+          "X-Joint"
+        ],
+        "powder": [],
+        "silicone": [],
+        "brass": []
+      },
+      "finishes": {
+        "chrome": {
+          "retail": 843.93,
+          "wholesale20": 662.35,
+          "wholesale30": 579.56
+        },
+        "stainless": {
+          "retail": 953.93,
+          "wholesale20": 750.35,
+          "wholesale30": 656.56
+        },
+        "powder": null,
+        "silicone": null,
+        "brass": null
+      },
+      "materialMix": true
+    },
+    {
+      "id": "500",
+      "isCX": false,
+      "heightMinMm": 3124,
+      "heightMaxMm": 3226,
+      "included": {
+        "chrome": [
+          "X-Joint"
+        ],
+        "stainless": [
+          "X-Joint"
+        ],
+        "powder": [
+          "X-Joint"
+        ],
+        "silicone": [
+          "X-Joint"
+        ],
+        "brass": [
+          "X-Joint"
+        ]
+      },
+      "finishes": {
+        "chrome": {
+          "retail": 846.93,
+          "wholesale20": 664.75,
+          "wholesale30": 581.66
+        },
+        "stainless": {
+          "retail": 979.93,
+          "wholesale20": 771.15,
+          "wholesale30": 674.76
+        },
+        "powder": {
+          "retail": 846.93,
+          "wholesale20": 664.75,
+          "wholesale30": 581.66
+        },
+        "silicone": {
+          "retail": 973.93,
+          "wholesale20": 766.35,
+          "wholesale30": 670.56
+        },
+        "brass": {
+          "retail": 1119.93,
+          "wholesale20": 883.15,
+          "wholesale30": 772.76
+        }
+      }
+    },
+    {
+      "id": "CX600",
+      "isCX": true,
+      "heightMinMm": 3225,
+      "heightMaxMm": 3328,
+      "included": {
+        "chrome": [
+          "X-Joint"
+        ],
+        "stainless": [
+          "X-Joint"
+        ],
+        "powder": [
+          "X-Joint"
+        ],
+        "silicone": [
+          "X-Joint"
+        ],
+        "brass": []
+      },
+      "finishes": {
+        "chrome": {
+          "retail": 858.93,
+          "wholesale20": 674.35,
+          "wholesale30": 590.06
+        },
+        "stainless": {
+          "retail": 1015.93,
+          "wholesale20": 799.95,
+          "wholesale30": 699.96
+        },
+        "powder": {
+          "retail": 854.93,
+          "wholesale20": 671.15,
+          "wholesale30": 587.26
+        },
+        "silicone": {
+          "retail": 1009.93,
+          "wholesale20": 795.15,
+          "wholesale30": 695.76
+        },
+        "brass": null
+      }
+    },
+    {
+      "id": "CX700",
+      "isCX": true,
+      "heightMinMm": 3327,
+      "heightMaxMm": 3429,
+      "included": {
+        "chrome": [
+          "X-Joint"
+        ],
+        "stainless": [
+          "X-Joint"
+        ],
+        "powder": [
+          "X-Joint"
+        ],
+        "silicone": [
+          "X-Joint"
+        ],
+        "brass": []
+      },
+      "finishes": {
+        "chrome": {
+          "retail": 860.93,
+          "wholesale20": 675.95,
+          "wholesale30": 591.46
+        },
+        "stainless": {
+          "retail": 1017.93,
+          "wholesale20": 801.55,
+          "wholesale30": 701.36
+        },
+        "powder": {
+          "retail": 858.93,
+          "wholesale20": 674.35,
+          "wholesale30": 590.06
+        },
+        "silicone": {
+          "retail": 1011.93,
+          "wholesale20": 796.75,
+          "wholesale30": 697.16
+        },
+        "brass": null
+      }
+    },
+    {
+      "id": "750",
+      "isCX": false,
+      "heightMinMm": 3378,
+      "heightMaxMm": 3480,
+      "included": {
+        "chrome": [
+          "X-Joint"
+        ],
+        "stainless": [
+          "X-Joint"
+        ],
+        "powder": [
+          "X-Joint"
+        ],
+        "silicone": [
+          "X-Joint"
+        ],
+        "brass": [
+          "X-Joint"
+        ]
+      },
+      "finishes": {
+        "chrome": {
+          "retail": 851.93,
+          "wholesale20": 668.75,
+          "wholesale30": 585.16
+        },
+        "stainless": {
+          "retail": 995.93,
+          "wholesale20": 783.95,
+          "wholesale30": 685.96
+        },
+        "powder": {
+          "retail": 851.93,
+          "wholesale20": 668.75,
+          "wholesale30": 585.16
+        },
+        "silicone": {
+          "retail": 989.93,
+          "wholesale20": 779.15,
+          "wholesale30": 681.76
+        },
+        "brass": {
+          "retail": 1135.93,
+          "wholesale20": 895.95,
+          "wholesale30": 783.96
+        }
+      }
+    },
+    {
+      "id": "CX800",
+      "isCX": true,
+      "heightMinMm": 3429,
+      "heightMaxMm": 3531,
+      "included": {
+        "chrome": [
+          "X-Joint"
+        ],
+        "stainless": [
+          "X-Joint"
+        ],
+        "powder": [
+          "X-Joint"
+        ],
+        "silicone": [
+          "X-Joint"
+        ],
+        "brass": []
+      },
+      "finishes": {
+        "chrome": {
+          "retail": 864.93,
+          "wholesale20": 679.15,
+          "wholesale30": 594.26
+        },
+        "stainless": {
+          "retail": 1021.93,
+          "wholesale20": 804.75,
+          "wholesale30": 704.16
+        },
+        "powder": {
+          "retail": 860.93,
+          "wholesale20": 675.95,
+          "wholesale30": 591.46
+        },
+        "silicone": {
+          "retail": 1015.93,
+          "wholesale20": 799.95,
+          "wholesale30": 699.96
+        },
+        "brass": null
+      }
+    },
+    {
+      "id": "CX900",
+      "isCX": true,
+      "heightMinMm": 3530,
+      "heightMaxMm": 3633,
+      "included": {
+        "chrome": [
+          "X-Joint"
+        ],
+        "stainless": [
+          "X-Joint"
+        ],
+        "powder": [
+          "X-Joint"
+        ],
+        "silicone": [
+          "X-Joint"
+        ],
+        "brass": []
+      },
+      "finishes": {
+        "chrome": {
+          "retail": 867.93,
+          "wholesale20": 681.55,
+          "wholesale30": 596.36
+        },
+        "stainless": {
+          "retail": 1024.93,
+          "wholesale20": 807.15,
+          "wholesale30": 706.26
+        },
+        "powder": {
+          "retail": 864.93,
+          "wholesale20": 679.15,
+          "wholesale30": 594.26
+        },
+        "silicone": {
+          "retail": 1018.93,
+          "wholesale20": 802.35,
+          "wholesale30": 702.06
+        },
+        "brass": null
+      }
+    },
+    {
+      "id": "1000",
+      "isCX": false,
+      "heightMinMm": 3632,
+      "heightMaxMm": 3734,
+      "included": {
+        "chrome": [
+          "X-Joint"
+        ],
+        "stainless": [
+          "X-Joint"
+        ],
+        "powder": [
+          "X-Joint"
+        ],
+        "silicone": [
+          "X-Joint"
+        ],
+        "brass": [
+          "X-Joint"
+        ]
+      },
+      "finishes": {
+        "chrome": {
+          "retail": 858.93,
+          "wholesale20": 674.35,
+          "wholesale30": 590.06
+        },
+        "stainless": {
+          "retail": 1011.93,
+          "wholesale20": 796.75,
+          "wholesale30": 697.16
+        },
+        "powder": {
+          "retail": 858.93,
+          "wholesale20": 674.35,
+          "wholesale30": 590.06
+        },
+        "silicone": {
+          "retail": 1005.93,
+          "wholesale20": 791.95,
+          "wholesale30": 692.96
+        },
+        "brass": {
+          "retail": 1150.93,
+          "wholesale20": 907.95,
+          "wholesale30": 794.46
+        }
+      }
+    },
+    {
+      "id": "CX1000",
+      "isCX": true,
+      "heightMinMm": 3632,
+      "heightMaxMm": 3734,
+      "included": {
+        "chrome": [
+          "X-Joint"
+        ],
+        "stainless": [
+          "X-Joint"
+        ],
+        "powder": [
+          "X-Joint"
+        ],
+        "silicone": [
+          "X-Joint"
+        ],
+        "brass": [
+          "X-Joint"
+        ]
+      },
+      "finishes": {
+        "chrome": {
+          "retail": 869.93,
+          "wholesale20": 683.15,
+          "wholesale30": 597.76
+        },
+        "stainless": {
+          "retail": 1026.93,
+          "wholesale20": 808.75,
+          "wholesale30": 707.66
+        },
+        "powder": {
+          "retail": 867.93,
+          "wholesale20": 681.55,
+          "wholesale30": 596.36
+        },
+        "silicone": {
+          "retail": 1023.93,
+          "wholesale20": 806.35,
+          "wholesale30": 705.56
+        },
+        "brass": {
+          "retail": 1165.93,
+          "wholesale20": 919.95,
+          "wholesale30": 804.96
+        }
+      }
+    },
+    {
+      "id": "NS B/PX B",
+      "isCX": false,
+      "heightMinMm": 3733,
+      "heightMaxMm": 3836,
+      "included": {
+        "chrome": [
+          "X-Joint"
+        ],
+        "stainless": [
+          "X-Joint"
+        ],
+        "powder": [
+          "X-Joint"
+        ],
+        "silicone": [
+          "X-Joint"
+        ],
+        "brass": []
+      },
+      "finishes": {
+        "chrome": {
+          "retail": 858.93,
+          "wholesale20": 674.35,
+          "wholesale30": 590.06
+        },
+        "stainless": {
+          "retail": 1011.93,
+          "wholesale20": 796.75,
+          "wholesale30": 697.16
+        },
+        "powder": {
+          "retail": 838.93,
+          "wholesale20": 658.35,
+          "wholesale30": 576.06
+        },
+        "silicone": {
+          "retail": 989.93,
+          "wholesale20": 779.15,
+          "wholesale30": 681.76
+        },
+        "brass": null
+      }
+    },
+    {
+      "id": "CX1100",
+      "isCX": true,
+      "heightMinMm": 3733,
+      "heightMaxMm": 3836,
+      "included": {
+        "chrome": [
+          "X-Joint"
+        ],
+        "stainless": [
+          "X-Joint"
+        ],
+        "powder": [
+          "X-Joint"
+        ],
+        "silicone": [
+          "X-Joint"
+        ],
+        "brass": []
+      },
+      "finishes": {
+        "chrome": {
+          "retail": 873.93,
+          "wholesale20": 686.35,
+          "wholesale30": 600.56
+        },
+        "stainless": {
+          "retail": 1030.93,
+          "wholesale20": 811.95,
+          "wholesale30": 710.46
+        },
+        "powder": {
+          "retail": 869.93,
+          "wholesale20": 683.15,
+          "wholesale30": 597.76
+        },
+        "silicone": {
+          "retail": 1031.93,
+          "wholesale20": 812.75,
+          "wholesale30": 711.16
+        },
+        "brass": null
+      }
+    },
+    {
+      "id": "CX1200",
+      "isCX": true,
+      "heightMinMm": 3835,
+      "heightMaxMm": 3937,
+      "included": {
+        "chrome": [
+          "X-Joint"
+        ],
+        "stainless": [
+          "X-Joint"
+        ],
+        "powder": [
+          "X-Joint"
+        ],
+        "silicone": [
+          "X-Joint"
+        ],
+        "brass": []
+      },
+      "finishes": {
+        "chrome": {
+          "retail": 876.93,
+          "wholesale20": 688.75,
+          "wholesale30": 602.66
+        },
+        "stainless": {
+          "retail": 1039.93,
+          "wholesale20": 819.15,
+          "wholesale30": 716.76
+        },
+        "powder": {
+          "retail": 873.93,
+          "wholesale20": 686.35,
+          "wholesale30": 600.56
+        },
+        "silicone": {
+          "retail": 1036.93,
+          "wholesale20": 816.75,
+          "wholesale30": 714.66
+        },
+        "brass": null
+      }
+    },
+    {
+      "id": "CX1300",
+      "isCX": true,
+      "heightMinMm": 3937,
+      "heightMaxMm": 4039,
+      "included": {
+        "chrome": [
+          "X-Joint"
+        ],
+        "stainless": [
+          "X-Joint"
+        ],
+        "powder": [
+          "X-Joint"
+        ],
+        "silicone": [
+          "X-Joint"
+        ],
+        "brass": []
+      },
+      "finishes": {
+        "chrome": {
+          "retail": 880.93,
+          "wholesale20": 691.95,
+          "wholesale30": 605.46
+        },
+        "stainless": {
+          "retail": 1048.93,
+          "wholesale20": 826.35,
+          "wholesale30": 723.06
+        },
+        "powder": {
+          "retail": 876.93,
+          "wholesale20": 688.75,
+          "wholesale30": 602.66
+        },
+        "silicone": {
+          "retail": 1044.93,
+          "wholesale20": 823.15,
+          "wholesale30": 720.26
+        },
+        "brass": null
+      }
+    },
+    {
+      "id": "CX1400",
+      "isCX": true,
+      "heightMinMm": 4038,
+      "heightMaxMm": 4141,
+      "included": {
+        "chrome": [
+          "X-Joint"
+        ],
+        "stainless": [
+          "X-Joint"
+        ],
+        "powder": [
+          "X-Joint"
+        ],
+        "silicone": [
+          "X-Joint"
+        ],
+        "brass": []
+      },
+      "finishes": {
+        "chrome": {
+          "retail": 884.93,
+          "wholesale20": 695.15,
+          "wholesale30": 608.26
+        },
+        "stainless": {
+          "retail": 1057.93,
+          "wholesale20": 833.55,
+          "wholesale30": 729.36
+        },
+        "powder": {
+          "retail": 880.93,
+          "wholesale20": 691.95,
+          "wholesale30": 605.46
+        },
+        "silicone": {
+          "retail": 1051.93,
+          "wholesale20": 828.75,
+          "wholesale30": 725.16
+        },
+        "brass": null
+      }
+    },
+    {
+      "id": "CX1500",
+      "isCX": true,
+      "heightMinMm": 4140,
+      "heightMaxMm": 4242,
+      "included": {
+        "chrome": [
+          "X-Joint"
+        ],
+        "stainless": [
+          "X-Joint"
+        ],
+        "powder": [
+          "X-Joint"
+        ],
+        "silicone": [
+          "X-Joint"
+        ],
+        "brass": []
+      },
+      "finishes": {
+        "chrome": {
+          "retail": 888.93,
+          "wholesale20": 698.35,
+          "wholesale30": 611.06
+        },
+        "stainless": {
+          "retail": 1065.93,
+          "wholesale20": 839.95,
+          "wholesale30": 734.96
+        },
+        "powder": {
+          "retail": 878.93,
+          "wholesale20": 690.35,
+          "wholesale30": 604.06
+        },
+        "silicone": {
+          "retail": 1070.93,
+          "wholesale20": 843.95,
+          "wholesale30": 738.46
+        },
+        "brass": null
+      }
+    },
+    {
+      "id": "CX1600",
+      "isCX": true,
+      "heightMinMm": 4241,
+      "heightMaxMm": 4344,
+      "included": {
+        "chrome": [
+          "X-Joint"
+        ],
+        "stainless": [
+          "X-Joint"
+        ],
+        "powder": [],
+        "silicone": [],
+        "brass": []
+      },
+      "finishes": {
+        "chrome": {
+          "retail": 890.93,
+          "wholesale20": 699.95,
+          "wholesale30": 612.46
+        },
+        "stainless": {
+          "retail": 1073.93,
+          "wholesale20": 846.35,
+          "wholesale30": 740.56
+        },
+        "powder": null,
+        "silicone": null,
+        "brass": null
+      }
+    }
+  ]
+}

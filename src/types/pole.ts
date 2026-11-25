@@ -1,10 +1,16 @@
-export type PoleFinishId = 'brass' | 'stainless' | 'powder-black' | 'silicone';
+export type PoleFinishId = 'chrome' | 'stainless' | 'powder' | 'silicone' | 'brass';
+
+export type PowderCoatTone = 'black' | 'white';
 
 export type BaseMountId = 'tension' | 'permanent-ceiling';
 
 export type CeilingType = 'flat' | 'vaulted';
 
-export type PoleDiameterMm = 40 | 45 | 50;
+export type PoleDiameterMm = 40 | 45;
+
+export type PriceTierId = 'retail' | 'wholesale20' | 'wholesale30';
+
+export type HeightUnit = 'ft' | 'mm';
 
 export type EnvironmentPreset = 'studio' | 'home' | 'replica';
 
@@ -41,7 +47,7 @@ export type HardwarePartId =
   | 'top-mount'
   | 'height-cushion';
 
-export type DockTabId = 'configure' | 'assembly' | 'space';
+export type DockTabId = 'room' | 'pole' | 'selection' | 'scene';
 
 export type ViewportMode = '3d' | 'floor-plan';
 
@@ -49,7 +55,7 @@ export type SidebarDensity = 'full' | 'minimal';
 
 export type FloorPlanUnit = 'm' | 'ft';
 
-export type ModalId = 'none' | 'installation' | 'maintenance' | 'bom' | 'export-ar';
+export type ModalId = 'none' | 'quote' | 'export-ar';
 
 export interface PoleContextMenuState {
   screenX: number;
@@ -64,6 +70,7 @@ export interface PoleInstance {
   id: string;
   label: string;
   finish: PoleFinishId;
+  powderTone?: PowderCoatTone;
   diameterMm: PoleDiameterMm;
   heightCm: number;
   cushionPlacement: CushionPlacement;
@@ -207,6 +214,7 @@ export interface HardwarePartSpec {
 
 export interface PoleRigConfig {
   finish: PoleFinishId;
+  powderTone?: PowderCoatTone;
   diameterMm: PoleDiameterMm;
   mount: BaseMountId;
   ceilingType: CeilingType;
@@ -221,7 +229,10 @@ export interface PoleRigConfig {
   roomDepthM: number;
   showClearanceRing: boolean;
   enforceMinClearance: boolean;
+  clearanceRadiusM: number;
   vaultAngleDeg: number;
+  priceTier: PriceTierId;
+  heightUnit: HeightUnit;
 }
 
 export interface AssemblyPartOffsets {

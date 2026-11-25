@@ -21,6 +21,11 @@ import type {
   PoleRigConfig,
 } from '../types/pole';
 
+import {
+  getXPoleFinishLabel,
+  resolveXPoleConfiguration,
+} from '../data/xpoleCatalog';
+
 export const MIN_ROOM_SIZE_M = 3.0;
 export const DEV_MIN_ROOM_SIZE_M = 1.5;
 export const MAX_ROOM_SIZE_M = 7.0;
@@ -28,13 +33,13 @@ export const MIN_WALL_CLEARANCE_M = 1.25;
 export const DEV_MIN_WALL_CLEARANCE_M = 0.35;
 export const MAX_POLES_IN_STUDIO = 24;
 
-/** Room ceiling height bounds (2.00m – 5.00m) */
-export const MIN_CEILING_HEIGHT_CM = 200;
-export const MAX_CEILING_HEIGHT_CM = 500;
+/** Official X-POLE room ceiling height bounds (7'0" / 213cm – 14'3" / 434cm) */
+export const MIN_CEILING_HEIGHT_CM = 213;
+export const MAX_CEILING_HEIGHT_CM = 434;
 
-/** Individual pole height bounds (1.50m min, 3.00m max pole height) */
+/** Individual pole height bounds (1.50m min, 4.34m / 14'3" max PX Build-a-Pole height) */
 export const MIN_POLE_HEIGHT_CM = 150;
-export const MAX_POLE_HEIGHT_CM = 300;
+export const MAX_POLE_HEIGHT_CM = 434;
 
 export const LIGHTING_PRESETS: {
   id: LightingPreset;
@@ -81,84 +86,80 @@ export const LIGHTING_PRESETS: {
 ];
 
 export const POLE_FINISHES: Record<PoleFinishId, PoleFinishSpec> = {
-  brass: {
-    id: 'brass',
-    name: 'Solid Architectural Brass',
-    shortName: 'Brass',
-    alloy: 'C26000 Cartridge Brass (70/30 Cu-Zn)',
-    swatchHex: '#c89d46',
-    accentHex: '#9a7122',
-    basePriceUsd: 549,
-    gripLevel: 'High Warm-Climate Grip',
-    wallThicknessMm: 2.5,
-    weightPerMeterKg: 2.85,
-    hypoallergenic: true,
+  chrome: {
+    id: 'chrome',
+    name: 'Chrome',
+    shortName: 'Chrome',
+    alloy: '4130 Structural Steel + Mirror Electroplated Chrome',
+    swatchHex: '#e6edf5',
+    accentHex: '#94a3b8',
+    basePriceUsd: 749.95,
+    gripLevel: 'Industry Standard Grip',
+    wallThicknessMm: 2.0,
+    weightPerMeterKg: 2.18,
+    hypoallergenic: false,
     pbr: {
-      color: 0xd9af54,
-      metalness: 0.94,
-      roughness: 0.16,
-      clearcoat: 0.18,
-      clearcoatRoughness: 0.2,
-      anisotropy: 0.72,
+      color: 0xf4f7fb,
+      metalness: 1.0,
+      roughness: 0.04,
+      clearcoat: 0.35,
+      clearcoatRoughness: 0.06,
+      anisotropy: 0.35,
       sheen: 0.0,
     },
     summary:
-      'High-copper seamless drawn tubing prized for dry-skin traction and rapid thermal warming.',
-    cleaningAgent: 'Warm diluted vinegar mist or non-abrasive brass polish',
+      'High-gloss electroplated chrome steel offering smooth spin glide and universal studio compatibility.',
+    cleaningAgent: '70% Isopropyl Alcohol (IPA) with lint-free microfiber',
     cleaningNotes: [
-      'Wipe after every session with a dry microfiber cloth to lift skin oils and slow oxidation.',
-      'Deep-clean weekly using a 1:3 white vinegar and water mist, then buff dry immediately.',
-      'Apply ammonia-free brass polish monthly and strip residue with 70% IPA.',
+      'Wipe down with 70% IPA after sessions to clear skin oils and grip aids.',
+      'Buff dry with a clean microfiber cloth to maintain mirror reflectivity.',
     ],
     avoidList: [
-      'Chlorine bleach or acidic bathroom cleaners (causes copper pitting)',
-      'Steel wool or abrasive scouring pads (destroys micro-lathed surface)',
-      'Leaving grip chalk caked overnight (accelerates patina spots)',
+      'Abrasive pads or scouring powders (scratches chrome plating)',
+      'Rings or metal buckles during practice',
     ],
   },
   stainless: {
     id: 'stainless',
-    name: 'Mirror Stainless Steel 316L',
+    name: 'Stainless Steel',
     shortName: 'Stainless',
     alloy: 'AISI 316L Surgical-Grade Austenitic Steel',
     swatchHex: '#cfd6de',
     accentHex: '#64748b',
-    basePriceUsd: 469,
-    gripLevel: 'Competition Neutral',
+    basePriceUsd: 859.95,
+    gripLevel: 'Hypoallergenic Neutral',
     wallThicknessMm: 2.0,
     weightPerMeterKg: 2.15,
     hypoallergenic: true,
     pbr: {
-      color: 0xe4e9ef,
-      metalness: 0.98,
-      roughness: 0.08,
+      color: 0xdce2e9,
+      metalness: 0.96,
+      roughness: 0.12,
       clearcoat: 0.22,
-      clearcoatRoughness: 0.1,
+      clearcoatRoughness: 0.12,
       anisotropy: 0.45,
       sheen: 0.0,
     },
     summary:
-      'Nickel-safe 316L competition standard steel that will never flake, peel, or corrode.',
+      'Nickel-safe surgical 316L competition steel that will never flake, chip, or corrode.',
     cleaningAgent: '70%–91% Isopropyl Alcohol (IPA) with lint-free microfiber',
     cleaningNotes: [
       'Spray 70% IPA onto a clean microfiber cloth—never directly into the bearing hub.',
-      'Wipe top-to-bottom in spiral passes to remove rosin, wax, or moisturizer film.',
-      'Fully sanitizes between studio users without altering surface roughness.',
+      'Sanitizes cleanly between studio users without altering surface roughness.',
     ],
     avoidList: [
       'Silicone-based furniture polishes (creates hazardous slippery film)',
-      'Hydrochloric acid or chloride-heavy disinfectants',
-      'Metal rings or hard jewelry during grips (causes micro-burrs)',
+      'Chloride-heavy disinfectants',
     ],
   },
-  'powder-black': {
-    id: 'powder-black',
-    name: 'Powder-Coated Satin Black',
-    shortName: 'Powder Black',
-    alloy: '4130 Chromoly Core + 120µm Baked Polyester',
+  powder: {
+    id: 'powder',
+    name: 'Powder Coated Black/White',
+    shortName: 'Powder Coated',
+    alloy: '4130 Chromoly Core + 120µm Baked Polyester Coat',
     swatchHex: '#23262b',
     accentHex: '#0f172a',
-    basePriceUsd: 489,
+    basePriceUsd: 749.95,
     gripLevel: 'High Tactile Traction',
     wallThicknessMm: 2.2,
     weightPerMeterKg: 2.32,
@@ -173,52 +174,81 @@ export const POLE_FINISHES: Record<PoleFinishId, PoleFinishSpec> = {
       sheen: 0.05,
     },
     summary:
-      'Electrostatic thermoset matte-satin coating baked at 200°C for confident grip in cool rooms.',
+      'Electrostatic thermoset matte-satin coating in Black or White for confident grip in cool studios.',
     cleaningAgent: 'Mild pH-neutral dish soap solution or diluted 50% IPA',
     cleaningNotes: [
       'Clean with warm water and two drops of mild pH-neutral dish soap on a damp microfiber towel.',
-      'Rinse with a water-dampened cloth and buff dry to preserve satin texture.',
-      'Inspect seams quarterly for coating chips from rings or zippers.',
+      'Buff dry to preserve smooth satin traction.',
     ],
     avoidList: [
-      'Acetone, MEK, or paint thinners (softens thermoset polyester finish)',
-      'Steam cleaners directly against seam joints',
-      'Pure 99% alcohol soaking (gradually dulls satin topcoat)',
+      'Acetone, MEK, or paint thinners (softens polyester finish)',
+      'Sharp jewelry or zippers against the coated surface',
     ],
   },
   silicone: {
     id: 'silicone',
-    name: 'High-Grip Vulcanized Silicone',
+    name: 'Silicone Black',
     shortName: 'Silicone',
-    alloy: '4130 Steel Core + 3mm Shore-55A Platinum Silicone',
-    swatchHex: '#3c3138',
-    accentHex: '#6b3b4e',
-    basePriceUsd: 529,
+    alloy: '4130 Steel Core + Vulcanized Black Silicone Sleeve',
+    swatchHex: '#1f1f24',
+    accentHex: '#3f3f46',
+    basePriceUsd: 853.95,
     gripLevel: 'Maximum Clothed Grip',
     wallThicknessMm: 5.0,
     weightPerMeterKg: 2.68,
     hypoallergenic: true,
     pbr: {
-      color: 0x352c32,
+      color: 0x1d1d21,
       metalness: 0.02,
-      roughness: 0.84,
+      roughness: 0.86,
       clearcoat: 0.0,
       clearcoatRoughness: 0.9,
       anisotropy: 0.0,
-      sheen: 0.55,
+      sheen: 0.45,
     },
     summary:
-      'Bonded platinum-cured elastomer sleeve for high-friction clothed training and zero-slip climbs.',
+      'Bonded black silicone wrap engineered for maximum grip even in full studio clothing.',
     cleaningAgent: 'Warm distilled water + mild castile soap (alcohol-free)',
     cleaningNotes: [
-      'Wipe with warm water and a tiny amount of gentle castile soap to lift fabric lint.',
-      'Air dry completely or pat with a lint-free chamois cloth before covering.',
-      'Check sleeve edges near X-Joints monthly to ensure zero torsional creep.',
+      'Wipe with warm water and gentle soap to remove lint.',
+      'Air dry completely before storing.',
     ],
     avoidList: [
-      'High-percentage isopropyl alcohol or solvents (dries and cracks elastomer)',
-      'Oil-based lotions or silicone lubricants',
-      'Sharp buckles or heels against the silicone sleeve',
+      'High-percentage alcohol or solvents (dries elastomer)',
+      'Oil-based lotions or sharp buckles',
+    ],
+  },
+  brass: {
+    id: 'brass',
+    name: 'Brass',
+    shortName: 'Brass',
+    alloy: 'Solid Architectural Brass Tubing (Cu-Zn)',
+    swatchHex: '#c89d46',
+    accentHex: '#9a7122',
+    basePriceUsd: 983.95,
+    gripLevel: 'High Warm-Climate Grip',
+    wallThicknessMm: 2.5,
+    weightPerMeterKg: 2.85,
+    hypoallergenic: true,
+    pbr: {
+      color: 0xd9af54,
+      metalness: 0.94,
+      roughness: 0.16,
+      clearcoat: 0.18,
+      clearcoatRoughness: 0.2,
+      anisotropy: 0.72,
+      sheen: 0.0,
+    },
+    summary:
+      'Solid seamless brass prized for superior dry-skin grip and rapid thermal warming.',
+    cleaningAgent: 'Warm diluted vinegar mist or non-abrasive brass polish',
+    cleaningNotes: [
+      'Wipe after every session with a dry microfiber cloth to slow oxidation.',
+      'Deep-clean weekly with diluted vinegar mist and buff dry.',
+    ],
+    avoidList: [
+      'Chlorine bleach or acidic bathroom cleaners',
+      'Steel wool or abrasive scouring pads',
     ],
   },
 };
@@ -238,13 +268,13 @@ export const BASE_MOUNTS: Record<BaseMountId, BaseMountSpec> = {
     fastenerSpec: 'M24 Threaded Jackscrew + Dual M8 Lock Nuts',
     torqueNm: 22,
     description:
-      'Pressure-mounted articulating silicone dome and low-profile 230mm floor base. Zero ceiling drilling.',
+      'Pressure-mounted articulating silicone dome and low-profile floor base. Zero ceiling drilling.',
   },
   'permanent-ceiling': {
     id: 'permanent-ceiling',
     name: 'Permanent Bolted Ceiling Mount',
     shortName: 'Fixed Ceiling',
-    priceDeltaUsd: 85,
+    priceDeltaUsd: 0,
     weightKg: 4.1,
     minHeightCm: MIN_POLE_HEIGHT_CM,
     maxHeightCm: MAX_POLE_HEIGHT_CM,
@@ -254,7 +284,7 @@ export const BASE_MOUNTS: Record<BaseMountId, BaseMountSpec> = {
     fastenerSpec: '4× M10 Structural Lag / Anchor Bolts (Class 10.9)',
     torqueNm: 38,
     description:
-      'Studio-grade 6mm laser-cut steel ceiling flange bolted into solid timber joist or concrete slab.',
+      'Studio-grade steel ceiling flange bolted into solid timber joist or concrete slab.',
   },
 };
 
@@ -264,9 +294,8 @@ export const DIAMETER_OPTIONS: {
   priceDeltaUsd: number;
   note: string;
 }[] = [
-  { mm: 40, label: '40mm', priceDeltaUsd: 20, note: 'Agile spin grip' },
+  { mm: 40, label: '40mm', priceDeltaUsd: 0, note: 'Agile hand grip' },
   { mm: 45, label: '45mm', priceDeltaUsd: 0, note: 'Competition standard' },
-  { mm: 50, label: '50mm', priceDeltaUsd: 25, note: 'Classic studio grip' },
 ];
 
 export const HARDWARE_PARTS: Record<HardwarePartId, HardwarePartSpec> = {
@@ -476,7 +505,8 @@ export const ASSEMBLY_STEPS: AssemblyStepSpec[] = [
 ];
 
 export const DEFAULT_CONFIG: PoleRigConfig = {
-  finish: 'brass',
+  finish: 'chrome',
+  powderTone: 'black',
   diameterMm: 45,
   mount: 'tension',
   ceilingType: 'flat',
@@ -491,7 +521,10 @@ export const DEFAULT_CONFIG: PoleRigConfig = {
   roomDepthM: 5.2,
   showClearanceRing: true,
   enforceMinClearance: true,
+  clearanceRadiusM: 1.25,
   vaultAngleDeg: 22,
+  priceTier: 'retail',
+  heightUnit: 'ft',
 };
 
 /**
@@ -581,7 +614,8 @@ export function createInitialPoles(): PoleInstance[] {
     {
       id: 'pole-1',
       label: 'Pole 1',
-      finish: 'brass',
+      finish: 'chrome',
+      powderTone: 'black',
       diameterMm: 45,
       heightCm: clampPoleHeightCm(DEFAULT_CONFIG.ceilingHeightCm, DEFAULT_CONFIG.ceilingHeightCm),
       cushionPlacement: 'top',
@@ -599,9 +633,10 @@ export function getMinRoomSizeM(enforceMinClearance = true): number {
 
 export function getWallClearanceMarginM(
   _mountId?: BaseMountId,
-  enforceMinClearance = true
+  enforceMinClearance = true,
+  clearanceRadiusM = MIN_WALL_CLEARANCE_M
 ): number {
-  return enforceMinClearance ? MIN_WALL_CLEARANCE_M : DEV_MIN_WALL_CLEARANCE_M;
+  return enforceMinClearance ? Math.max(DEV_MIN_WALL_CLEARANCE_M, clearanceRadiusM) : DEV_MIN_WALL_CLEARANCE_M;
 }
 
 export function getMinPoleSeparationM(
@@ -878,7 +913,7 @@ export function tryCreateNextPoleInstance(
   );
   if (!slot) return null;
 
-  const finishCycle: PoleFinishId[] = ['brass', 'stainless', 'powder-black', 'silicone'];
+  const finishCycle: PoleFinishId[] = ['chrome', 'stainless', 'powder', 'silicone', 'brass'];
   const usedFinishes = new Set(existingPoles.map((p) => p.finish));
   const nextFinish =
     finishCycle.find((f) => !usedFinishes.has(f)) ??
@@ -890,6 +925,7 @@ export function tryCreateNextPoleInstance(
     id: `pole-${Date.now().toString(36)}-${nextNum}`,
     label: `Pole ${nextNum}`,
     finish: nextFinish,
+    powderTone: 'black',
     diameterMm: 45,
     heightCm: clampPoleHeightCm(ceilingHeightCm, ceilingHeightCm),
     cushionPlacement: 'top',
@@ -921,7 +957,7 @@ export function createNextPoleInstance(
   if (placed) return placed;
 
   // Fallback for direct programmatic calls when space is tight
-  const finishCycle: PoleFinishId[] = ['brass', 'stainless', 'powder-black', 'silicone'];
+  const finishCycle: PoleFinishId[] = ['chrome', 'stainless', 'powder', 'silicone', 'brass'];
   const nextNum = existingPoles.length + 1;
   const fallback = clampPolePosition(
     0,
@@ -936,6 +972,7 @@ export function createNextPoleInstance(
     id: `pole-${Date.now().toString(36)}-${nextNum}`,
     label: `Pole ${nextNum}`,
     finish: finishCycle[existingPoles.length % finishCycle.length],
+    powderTone: 'black',
     diameterMm: 45,
     heightCm: clampPoleHeightCm(ceilingHeightCm, ceilingHeightCm),
     cushionPlacement: 'top',
@@ -1038,9 +1075,6 @@ export function calculateHeightSolution(
 
 export function generateBOM(config: PoleRigConfig): BOMSummary {
   const finish = POLE_FINISHES[config.finish];
-  const mount = BASE_MOUNTS[config.mount];
-  const diameterSpec =
-    DIAMETER_OPTIONS.find((d) => d.mm === config.diameterMm) ?? DIAMETER_OPTIONS[1];
   const heightSolution = calculateHeightSolution(
     config.ceilingHeightCm,
     config.mount,
@@ -1049,74 +1083,40 @@ export function generateBOM(config: PoleRigConfig): BOMSummary {
     config.cushionPlacement,
     config.ceilingType
   );
+  const xpoleRes = resolveXPoleConfiguration(
+    heightSolution.poleHeightCm * 10,
+    config.finish,
+    config.priceTier ?? 'retail'
+  );
 
   const items: BOMLineItem[] = [];
+  const finishLabel = getXPoleFinishLabel(config.finish, config.powderTone);
+  const partSku = `XP-${xpoleRes.part.id.replace(/[^A-Za-z0-9]/g, '').toUpperCase()}-${config.finish.slice(0, 3).toUpperCase()}-${config.diameterMm}`;
+  const kitWeight = Number((finish.weightPerMeterKg * (heightSolution.poleHeightCm / 100) + 3.4).toFixed(2));
 
-  const kitPrice = finish.basePriceUsd + diameterSpec.priceDeltaUsd;
-  const kitWeight = Number((finish.weightPerMeterKg * 2.04 + 1.85).toFixed(2));
   items.push({
-    sku: `AXP-${config.finish.toUpperCase().slice(0, 3)}-${config.diameterMm}`,
-    name: `${finish.name} Main Kit (${config.diameterMm}mm · A+B Columns & Dual-Bearing Hub)`,
+    sku: partSku,
+    name: `X-POLE PX Build-a-Pole · ${xpoleRes.part.id} (${finishLabel} · ${config.diameterMm}mm)`,
     material: finish.alloy,
     quantity: 1,
     unitWeightKg: kitWeight,
-    unitPriceUsd: kitPrice,
-    totalPriceUsd: kitPrice,
+    unitPriceUsd: xpoleRes.unitPriceUsd,
+    totalPriceUsd: xpoleRes.unitPriceUsd,
   });
 
-  items.push({
-    sku: `MNT-${config.mount.toUpperCase().slice(0, 4)}`,
-    name: mount.name,
-    material: 'Laser-Cut Structural Steel + 70A Silicone Interface',
-    quantity: 1,
-    unitWeightKg: mount.weightKg,
-    unitPriceUsd: mount.priceDeltaUsd === 0 ? 0 : mount.priceDeltaUsd,
-    totalPriceUsd: mount.priceDeltaUsd === 0 ? 0 : mount.priceDeltaUsd,
-  });
-
-  if (config.ceilingType === 'vaulted') {
+  // Always included hardware + X-Joint from official JSON
+  for (const hw of xpoleRes.includedHardware) {
     items.push({
-      sku: 'MNT-VAULT-CLV',
-      name: `Vaulted Ceiling Articulating Clevis Adapter (${config.vaultAngleDeg}° Pitch)`,
-      material: '4140 Alloy Steel Yoke + M16 Hardened Pivot Pin',
+      sku: `INC-${hw.replace(/[^A-Za-z0-9]/g, '').toUpperCase()}`,
+      name: `${hw} (Included in X-POLE PX Kit)`,
+      material:
+        hw === 'Mount' && config.ceilingType === 'vaulted'
+          ? 'Vaulted/Slanted Articulating Mount'
+          : 'Official X-POLE Hardware',
       quantity: 1,
-      unitWeightKg: 1.2,
-      unitPriceUsd: 135,
-      totalPriceUsd: 135,
-    });
-  }
-
-  const extByLength = new Map<number, { piece: ExtensionPiece; qty: number }>();
-  for (const ext of heightSolution.extensions) {
-    const existing = extByLength.get(ext.lengthMm);
-    if (existing) {
-      existing.qty += 1;
-    } else {
-      extByLength.set(ext.lengthMm, { piece: ext, qty: 1 });
-    }
-  }
-  for (const { piece, qty } of extByLength.values()) {
-    items.push({
-      sku: piece.sku,
-      name: piece.label,
-      material: finish.alloy,
-      quantity: qty,
-      unitWeightKg: piece.weightKg,
-      unitPriceUsd: piece.unitPriceUsd,
-      totalPriceUsd: piece.unitPriceUsd * qty,
-    });
-  }
-
-  const extraJoints = Math.max(0, heightSolution.xJointCount - 1);
-  if (extraJoints > 0) {
-    items.push({
-      sku: `XJT-4140-${config.diameterMm}`,
-      name: `Additional Internal Expanding X-Joint (${config.diameterMm}mm)`,
-      material: '4140 Hardened Alloy Steel',
-      quantity: extraJoints,
-      unitWeightKg: 0.62,
-      unitPriceUsd: 38,
-      totalPriceUsd: extraJoints * 38,
+      unitWeightKg: hw === 'X-Joint' ? 0.62 : 0.35,
+      unitPriceUsd: 0,
+      totalPriceUsd: 0,
     });
   }
 
@@ -1124,30 +1124,19 @@ export function generateBOM(config: PoleRigConfig): BOMSummary {
     const posCode = heightSolution.cushionPlacement === 'top' ? 'TOP' : 'BLW';
     const posLabel = heightSolution.cushionPlacement === 'top' ? 'Ceiling Top' : 'Floor Below';
     const cushionMeters = (heightSolution.cushionHeightCm / 100).toFixed(2);
-    const cushionPrice = 65 + Math.ceil(heightSolution.cushionHeightCm / 25) * 18;
     const cushionWeight = Number((1.6 + (heightSolution.cushionHeightCm / 100) * 4.2).toFixed(2));
     items.push({
       sku: `CSH-${posCode}-${heightSolution.cushionHeightCm}`,
       name: `Height Cushion Spacer (${cushionMeters}m · ${posLabel})`,
-      material: 'High-Density Ribbed Elastomer Core + 6061-T6 Load Caps',
+      material: 'High-Density Ribbed Elastomer Core + Load Caps',
       quantity: 1,
       unitWeightKg: cushionWeight,
-      unitPriceUsd: cushionPrice,
-      totalPriceUsd: cushionPrice,
+      unitPriceUsd: 0,
+      totalPriceUsd: 0,
     });
   }
 
-  items.push({
-    sku: 'FST-KIT-129',
-    name: 'Class 12.9 Fastener Pack & 4mm / 5mm Hex Torque Keys',
-    material: 'Black Oxide Alloy Steel',
-    quantity: 1,
-    unitWeightKg: 0.45,
-    unitPriceUsd: 0,
-    totalPriceUsd: 0,
-  });
-
-  const totalPriceUsd = items.reduce((acc, item) => acc + item.totalPriceUsd, 0);
+  const totalPriceUsd = Number(items.reduce((acc, item) => acc + item.totalPriceUsd, 0).toFixed(2));
   const totalWeightKg = Number(
     items.reduce((acc, item) => acc + item.unitWeightKg * item.quantity, 0).toFixed(2)
   );
@@ -1176,6 +1165,7 @@ export function generateMultiPoleBOM(
         ? {
             ...baseConfig,
             finish: p.finish,
+            powderTone: p.powderTone,
             diameterMm: p.diameterMm,
             poleHeightCm: p.heightCm,
             cushionPlacement: p.cushionPlacement,
@@ -1202,6 +1192,7 @@ export function generateMultiPoleBOM(
     const sub = generateBOM({
       ...baseConfig,
       finish: p.finish,
+      powderTone: p.powderTone,
       diameterMm: p.diameterMm,
       poleHeightCm: p.heightCm,
       cushionPlacement: p.cushionPlacement,
@@ -1242,9 +1233,12 @@ export function analyzeFloorClearance(
   roomWidthM: number,
   roomDepthM: number,
   _mountId?: BaseMountId,
-  enforceMinClearance = true
+  enforceMinClearance = true,
+  clearanceRadiusM = MIN_WALL_CLEARANCE_M
 ): ClearanceAnalysis {
-  const minClearRadiusM = enforceMinClearance ? MIN_WALL_CLEARANCE_M : DEV_MIN_WALL_CLEARANCE_M;
+  const minClearRadiusM = enforceMinClearance
+    ? Math.max(DEV_MIN_WALL_CLEARANCE_M, clearanceRadiusM)
+    : DEV_MIN_WALL_CLEARANCE_M;
   const availableRadiusM = Number((Math.min(roomWidthM, roomDepthM) / 2).toFixed(2));
 
   if (!enforceMinClearance) {

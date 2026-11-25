@@ -244,9 +244,11 @@ export function createPoleAssembly(textures: ProceduralTextureSet): PoleAssembly
 
   function updatePoleMaterial(config: PoleRigConfig): void {
     const spec = POLE_FINISHES[config.finish];
-    poleMaterial.color.setHex(spec.pbr.color);
-    poleMaterial.metalness = spec.pbr.metalness;
-    poleMaterial.roughness = spec.pbr.roughness;
+    const isWhitePowder = config.finish === 'powder' && config.powderTone === 'white';
+    const colorHex = isWhitePowder ? 0xfafbfc : spec.pbr.color;
+    poleMaterial.color.setHex(colorHex);
+    poleMaterial.metalness = isWhitePowder ? 0.04 : spec.pbr.metalness;
+    poleMaterial.roughness = isWhitePowder ? 0.34 : spec.pbr.roughness;
     poleMaterial.clearcoat = spec.pbr.clearcoat;
     poleMaterial.clearcoatRoughness = spec.pbr.clearcoatRoughness;
     poleMaterial.sheen = spec.pbr.sheen;
@@ -256,11 +258,13 @@ export function createPoleAssembly(textures: ProceduralTextureSet): PoleAssembly
     poleMaterial.bumpScale =
       config.finish === 'silicone'
         ? 0.0042
-        : config.finish === 'powder-black'
+        : config.finish === 'powder'
           ? 0.0024
           : config.finish === 'brass'
             ? 0.0012
-            : 0.0005;
+            : config.finish === 'chrome'
+              ? 0.00025
+              : 0.0005;
     poleMaterial.needsUpdate = true;
   }
 

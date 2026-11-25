@@ -2,8 +2,8 @@ import type { PoleFinishId } from '../types/pole';
 
 /**
  * Generates high-craft circular studio-lit PBR material thumbnails ("material PFPs")
- * depicting realistic cylindrical reflections, brushed grain, stippled powder-coat,
- * and vulcanized silicone ribbing with zero external image fetches.
+ * for all 5 official X-POLE finishes: Chrome, Stainless Steel, Powder Coated Black/White,
+ * Silicone Black, and Brass.
  */
 function renderMaterialAvatar(finish: PoleFinishId): string {
   if (typeof document === 'undefined') return '';
@@ -33,7 +33,17 @@ function renderMaterialAvatar(finish: PoleFinishId): string {
 
   const grad = ctx.createLinearGradient(x0, 0, x0 + cylW, 0);
 
-  if (finish === 'brass') {
+  if (finish === 'chrome') {
+    // Mirror electroplated chrome — ultra-high contrast bright specular reflection
+    grad.addColorStop(0.0, '#3a424d');
+    grad.addColorStop(0.14, '#e5ecf5');
+    grad.addColorStop(0.28, '#ffffff');
+    grad.addColorStop(0.42, '#99a8ba');
+    grad.addColorStop(0.56, '#f6f9fd');
+    grad.addColorStop(0.74, '#4c5766');
+    grad.addColorStop(0.88, '#eef3f9');
+    grad.addColorStop(1.0, '#2c333d');
+  } else if (finish === 'brass') {
     grad.addColorStop(0.0, '#5a3f11');
     grad.addColorStop(0.18, '#b68933');
     grad.addColorStop(0.36, '#fff1c1');
@@ -43,33 +53,40 @@ function renderMaterialAvatar(finish: PoleFinishId): string {
     grad.addColorStop(1.0, '#442f0b');
   } else if (finish === 'stainless') {
     grad.addColorStop(0.0, '#47505c');
-    grad.addColorStop(0.16, '#b7c2ce');
-    grad.addColorStop(0.34, '#ffffff');
-    grad.addColorStop(0.48, '#d5dde6');
-    grad.addColorStop(0.72, '#5a6573');
-    grad.addColorStop(0.88, '#e3eaf2');
+    grad.addColorStop(0.18, '#b7c2ce');
+    grad.addColorStop(0.36, '#f2f6fa');
+    grad.addColorStop(0.54, '#cfd8e3');
+    grad.addColorStop(0.76, '#5a6573');
+    grad.addColorStop(0.9, '#dce4ee');
     grad.addColorStop(1.0, '#363d47');
-  } else if (finish === 'powder-black') {
+  } else if (finish === 'powder') {
+    // Split-tone Black / White satin powder-coat preview
     grad.addColorStop(0.0, '#0c0d10');
-    grad.addColorStop(0.24, '#242830');
-    grad.addColorStop(0.42, '#414754');
-    grad.addColorStop(0.65, '#191c22');
-    grad.addColorStop(1.0, '#0a0b0e');
+    grad.addColorStop(0.22, '#242830');
+    grad.addColorStop(0.47, '#3f4552');
+    grad.addColorStop(0.5, '#d8dce3');
+    grad.addColorStop(0.74, '#f8fafc');
+    grad.addColorStop(0.92, '#cfd5de');
+    grad.addColorStop(1.0, '#9aa2af');
   } else {
-    // High-grip vulcanized silicone (charcoal-plum matte elastomer)
-    grad.addColorStop(0.0, '#1c161a');
-    grad.addColorStop(0.26, '#3f323a');
-    grad.addColorStop(0.48, '#5a4954');
-    grad.addColorStop(0.72, '#2d2329');
-    grad.addColorStop(1.0, '#151014');
+    // Silicone Black high-grip matte elastomer
+    grad.addColorStop(0.0, '#121215');
+    grad.addColorStop(0.26, '#2b2a30');
+    grad.addColorStop(0.48, '#414048');
+    grad.addColorStop(0.72, '#201f24');
+    grad.addColorStop(1.0, '#0d0d10');
   }
 
   ctx.fillStyle = grad;
   ctx.fillRect(x0, y0, cylW, cylH);
 
   // Surface-specific tactile micro-detail
-  if (finish === 'brass' || finish === 'stainless') {
-    // Fine horizontal lathe-brushed sheen lines
+  if (finish === 'chrome') {
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.78)';
+    ctx.fillRect(x0 + cylW * 0.24, y0, cylW * 0.1, cylH);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
+    ctx.fillRect(x0 + cylW * 0.54, y0, cylW * 0.05, cylH);
+  } else if (finish === 'brass' || finish === 'stainless') {
     ctx.strokeStyle =
       finish === 'brass' ? 'rgba(255, 244, 210, 0.14)' : 'rgba(255, 255, 255, 0.16)';
     ctx.lineWidth = 1;
@@ -79,28 +96,25 @@ function renderMaterialAvatar(finish: PoleFinishId): string {
       ctx.lineTo(x0 + cylW, y);
       ctx.stroke();
     }
-    // Crisp specular neon/studio highlight streak
     ctx.fillStyle = 'rgba(255, 255, 255, 0.55)';
     ctx.fillRect(x0 + cylW * 0.31, y0, cylW * 0.08, cylH);
-  } else if (finish === 'powder-black') {
-    // Stippled powder-coat grain dots
+  } else if (finish === 'powder') {
     for (let i = 0; i < 420; i++) {
-      const gx = x0 + ((i * 37) % 100) / 100 * cylW;
-      const gy = y0 + ((i * 73) % 100) / 100 * cylH;
-      ctx.fillStyle = i % 2 === 0 ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.22)';
+      const gx = x0 + (((i * 37) % 100) / 100) * cylW;
+      const gy = y0 + (((i * 73) % 100) / 100) * cylH;
+      ctx.fillStyle = i % 2 === 0 ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.16)';
       ctx.fillRect(gx, gy, 1.5, 1.5);
     }
   } else {
-    // Vulcanized silicone subtle horizontal grip ribs
     for (let y = y0; y < y0 + cylH; y += 6) {
-      ctx.fillStyle = 'rgba(255, 235, 245, 0.11)';
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.09)';
       ctx.fillRect(x0, y, cylW, 2);
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.28)';
       ctx.fillRect(x0, y + 3, cylW, 1.5);
     }
   }
 
-  // Subtle rim highlight along left/right edge of cylinder
+  // Subtle rim highlight along left edge of cylinder
   ctx.fillStyle = 'rgba(255, 255, 255, 0.14)';
   ctx.fillRect(x0 + 1, y0, 2, cylH);
 
@@ -121,10 +135,11 @@ let cachedAvatars: Record<PoleFinishId, string> | null = null;
 export function getPoleMaterialAvatars(): Record<PoleFinishId, string> {
   if (!cachedAvatars) {
     cachedAvatars = {
-      brass: renderMaterialAvatar('brass'),
+      chrome: renderMaterialAvatar('chrome'),
       stainless: renderMaterialAvatar('stainless'),
-      'powder-black': renderMaterialAvatar('powder-black'),
+      powder: renderMaterialAvatar('powder'),
       silicone: renderMaterialAvatar('silicone'),
+      brass: renderMaterialAvatar('brass'),
     };
   }
   return cachedAvatars;

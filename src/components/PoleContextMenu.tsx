@@ -44,7 +44,7 @@ interface PoleContextMenuProps {
   onResetView: () => void;
 }
 
-const FINISH_ORDER: PoleFinishId[] = ['brass', 'stainless', 'powder-black', 'silicone'];
+const FINISH_ORDER: PoleFinishId[] = ['chrome', 'stainless', 'powder', 'silicone', 'brass'];
 
 const CUSHION_OPTIONS: { id: CushionPlacement; label: string }[] = [
   { id: 'top', label: 'Top' },
@@ -77,7 +77,7 @@ export function PoleContextMenu({
   useLayoutEffect(() => {
     if (!menu) return;
     const el = menuRef.current;
-    const width = el?.offsetWidth ?? 248;
+    const width = el?.offsetWidth ?? 264;
     const height = el?.offsetHeight ?? 310;
     const pad = 12;
     const left = Math.max(pad, Math.min(menu.screenX, window.innerWidth - width - pad));
@@ -173,7 +173,7 @@ export function PoleContextMenu({
       data-testid="pole-context-menu"
       style={{ left: `${pos.left}px`, top: `${pos.top}px` }}
       onContextMenu={(e) => e.preventDefault()}
-      className={`fixed z-50 w-[244px] rounded-xl border backdrop-blur-md py-1.5 select-none ${surfaceClass}`}
+      className={`fixed z-50 w-[264px] rounded-xl border backdrop-blur-md py-1.5 select-none ${surfaceClass}`}
     >
       {targetPole ? (
         <>
@@ -197,20 +197,22 @@ export function PoleContextMenu({
           {/* Quick Finish Swatches */}
           <div className={`px-3 py-2 border-b space-y-1.5 ${dividerClass}`}>
             <span className={`block text-[10px] font-semibold uppercase tracking-wide ${mutedClass}`}>
-              Finish
+              X-POLE Finish
             </span>
-            <div className="grid grid-cols-4 gap-1" role="group" aria-label="Quick finish">
+            <div className="grid grid-cols-5 gap-1" role="group" aria-label="Quick finish">
               {FINISH_ORDER.map((fid) => {
                 const spec = POLE_FINISHES[fid];
                 const selected = targetPole.finish === fid;
                 const shortLabel =
-                  fid === 'powder-black'
-                    ? 'Black'
+                  fid === 'chrome'
+                    ? 'Chrm'
                     : fid === 'stainless'
                       ? 'Steel'
-                      : fid === 'silicone'
-                        ? 'Silic.'
-                        : 'Brass';
+                      : fid === 'powder'
+                        ? 'Pwdr'
+                        : fid === 'silicone'
+                          ? 'Silic'
+                          : 'Brass';
                 return (
                   <button
                     key={fid}
@@ -220,13 +222,13 @@ export function PoleContextMenu({
                     data-testid={`ctx-finish-${fid}`}
                     onClick={() => onChangePole(targetPole.id, { finish: fid })}
                     title={spec.name}
-                    className={`py-1 px-1 rounded-lg border text-[10px] font-semibold flex flex-col items-center gap-1 transition-colors ${
+                    className={`py-1 px-0.5 rounded-lg border text-[9.5px] font-semibold flex flex-col items-center gap-1 transition-colors ${
                       selected
                         ? isNeon
                           ? 'border-cyan-400/80 bg-violet-500/20 text-white'
                           : isDark
                             ? 'border-amber-400/80 bg-amber-500/20 text-white'
-                            : 'border-amber-700 bg-amber-600/12 text-stone-950'
+                            : 'border-violet-700 bg-violet-600/12 text-stone-950'
                         : isDark
                           ? 'border-white/10 bg-white/4 text-zinc-300 hover:border-white/25'
                           : 'border-stone-200 bg-white text-stone-700 hover:border-stone-400'

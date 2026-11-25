@@ -9,6 +9,7 @@ import {
 } from 'react';
 import {
   AlertCircle,
+  Camera,
   Check,
   Compass,
   Crosshair,
@@ -70,6 +71,7 @@ interface ARMeasurementOverlayProps {
   arCameraError: string | null;
   uploadedPhotoUrl: string | null;
   onUploadRoomPhoto: (dataUrl: string | null) => void;
+  onReturnToCamera: () => void;
   markers: ARMarkerState;
   onChangeMarkers: (next: ARMarkerState) => void;
   scanPhase: ARScanPhase;
@@ -91,7 +93,7 @@ interface ARMeasurementOverlayProps {
   onExit: () => void;
 }
 
-const FINISH_ORDER: PoleFinishId[] = ['brass', 'stainless', 'powder-black', 'silicone'];
+const FINISH_ORDER: PoleFinishId[] = ['chrome', 'stainless', 'powder', 'silicone', 'brass'];
 type DragHandleId = 'ceiling' | 'floor' | 'pole' | `floor-pin-${number}`;
 
 const REPLICA_STAGES = [
@@ -106,6 +108,7 @@ export function ARMeasurementOverlay({
   arCameraError,
   uploadedPhotoUrl,
   onUploadRoomPhoto,
+  onReturnToCamera,
   markers,
   onChangeMarkers,
   scanPhase,
@@ -909,8 +912,24 @@ export function ARMeasurementOverlay({
               }`}
             >
               <ImagePlus className="w-3.5 h-3.5" aria-hidden="true" />
-              <span className="hidden sm:inline">{uploadedPhotoUrl ? 'Photo Loaded' : 'Room Photo'}</span>
+              <span className="hidden sm:inline">{uploadedPhotoUrl ? 'Change Photo' : 'Room Photo'}</span>
             </button>
+
+            {uploadedPhotoUrl && (
+              <button
+                type="button"
+                onClick={() => {
+                  setReplicaError(null);
+                  onReturnToCamera();
+                }}
+                data-testid="ar-return-camera-btn"
+                title="Switch back from uploaded photo to live camera"
+                className="min-h-[34px] px-2.5 rounded-lg border border-cyan-400/75 bg-cyan-500/25 hover:bg-cyan-500/35 text-cyan-100 text-[11px] font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
+              >
+                <Camera className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Live Camera</span>
+              </button>
+            )}
           </div>
 
           {/* Right Utility Controls: Tilt, Lens Height, Close */}

@@ -1,10 +1,10 @@
 import { Box, Grid2x2, Play } from 'lucide-react';
-import type { DockTabId, LightingPreset, ViewportMode } from '../types/pole';
+import type { LightingPreset, ViewportMode } from '../types/pole';
 import { isDarkLighting } from '../utils/poleConfig';
 
 interface ViewportModeBarProps {
   viewportMode: ViewportMode;
-  activeTab: DockTabId;
+  installDemoActive: boolean;
   lighting: LightingPreset;
   arCameraActive: boolean;
   onChangeViewportMode: (mode: ViewportMode) => void;
@@ -13,7 +13,7 @@ interface ViewportModeBarProps {
 
 export function ViewportModeBar({
   viewportMode,
-  activeTab,
+  installDemoActive,
   lighting,
   arCameraActive,
   onChangeViewportMode,
@@ -27,82 +27,87 @@ export function ViewportModeBar({
   const isPulse = lighting === 'cyber-pulse';
 
   const containerClass = isNeon
-    ? 'bg-[#11131d]/94 border-violet-400/25 shadow-[0_8px_24px_rgba(0,0,0,0.45)]'
+    ? 'bg-[#0e111d]/56 border-white/14 shadow-[0_10px_30px_rgba(0,0,0,0.36),inset_0_1px_0_rgba(255,255,255,0.12)]'
     : isSunset
-      ? 'bg-[#1c1317]/94 border-rose-400/28 shadow-[0_8px_24px_rgba(0,0,0,0.45)]'
+      ? 'bg-[#1a1015]/56 border-rose-300/18 shadow-[0_10px_30px_rgba(0,0,0,0.36),inset_0_1px_0_rgba(255,255,255,0.1)]'
       : isPulse
-        ? 'bg-[#0e161b]/94 border-emerald-400/28 shadow-[0_8px_24px_rgba(0,0,0,0.45)]'
+        ? 'bg-[#0b141a]/56 border-emerald-300/18 shadow-[0_10px_30px_rgba(0,0,0,0.36),inset_0_1px_0_rgba(255,255,255,0.1)]'
         : isDark
-          ? 'bg-[#161412]/94 border-amber-500/25 shadow-[0_8px_24px_rgba(0,0,0,0.45)]'
-          : 'bg-[#faf9f6]/96 border-stone-300/90 shadow-sm';
+          ? 'bg-[#151311]/58 border-amber-300/18 shadow-[0_10px_30px_rgba(0,0,0,0.36),inset_0_1px_0_rgba(255,255,255,0.1)]'
+          : 'bg-white/62 border-stone-900/10 shadow-[0_8px_24px_rgba(15,23,42,0.08),inset_0_1px_0_rgba(255,255,255,0.85)]';
 
-  const activeClass = isNeon
-    ? 'bg-violet-500/25 text-white ring-1 ring-violet-400/55'
+  const activePillClass = isNeon
+    ? 'bg-violet-600/80 text-white border-violet-300/45 shadow-[0_4px_14px_rgba(124,58,237,0.36),inset_0_1px_0_rgba(255,255,255,0.2)]'
     : isSunset
-      ? 'bg-rose-500/25 text-white ring-1 ring-orange-400/55'
+      ? 'bg-rose-500/80 text-white border-orange-300/45 shadow-[0_4px_14px_rgba(244,63,94,0.32)]'
       : isPulse
-        ? 'bg-emerald-500/25 text-white ring-1 ring-emerald-400/55'
+        ? 'bg-emerald-500/78 text-white border-emerald-200/45 shadow-[0_4px_14px_rgba(16,185,129,0.3)]'
         : isDark
-          ? 'bg-amber-500/20 text-amber-200 ring-1 ring-amber-400/50'
-          : 'bg-stone-900 text-stone-50 shadow-xs';
+          ? 'bg-amber-500/80 text-stone-950 border-amber-200/45 shadow-[0_4px_14px_rgba(245,158,11,0.3)]'
+          : 'bg-violet-700/92 text-white border-violet-500/40 shadow-[0_4px_14px_rgba(109,40,217,0.26)]';
 
   const idleClass = isDark
-    ? 'text-zinc-300 hover:text-white hover:bg-white/6'
-    : 'text-stone-700 hover:text-stone-950 hover:bg-stone-200/65';
+    ? 'border-transparent text-zinc-200/90 hover:text-white hover:bg-white/[0.08]'
+    : 'border-transparent text-stone-700 hover:text-stone-950 hover:bg-white/65';
 
-  const is3DStandard = viewportMode === '3d' && activeTab !== 'assembly';
+  const is3DStandard = viewportMode === '3d' && !installDemoActive;
   const isFloorPlan = viewportMode === 'floor-plan';
-  const isInstallDemo = viewportMode === '3d' && activeTab === 'assembly';
+  const isInstallDemo = viewportMode === '3d' && installDemoActive;
+
+  const tabs = [
+    {
+      id: '3d',
+      label: '3D View',
+      shortLabel: '3D',
+      active: is3DStandard,
+      testId: 'view-mode-3d',
+      icon: <Box className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />,
+      onClick: () => onChangeViewportMode('3d'),
+    },
+    {
+      id: 'floor-plan',
+      label: 'Floor Plan',
+      shortLabel: 'Plan',
+      active: isFloorPlan,
+      testId: 'view-mode-floor-plan',
+      icon: <Grid2x2 className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />,
+      onClick: () => onChangeViewportMode('floor-plan'),
+    },
+    {
+      id: 'demo',
+      label: 'Pole Installation Demo',
+      shortLabel: 'Demo',
+      active: isInstallDemo,
+      testId: 'view-mode-install-demo',
+      icon: <Play className="w-3 h-3 shrink-0" aria-hidden="true" />,
+      onClick: onLaunchInstallDemo,
+    },
+  ];
 
   return (
     <div
       role="tablist"
       aria-label="Workspace view mode"
       data-testid="viewport-mode-bar"
-      className={`absolute top-3 left-3 sm:left-4 z-20 inline-flex items-center gap-1 p-1 rounded-xl border transition-colors ${containerClass}`}
+      className={`fixed top-16 left-4 z-20 inline-flex items-center gap-1 p-1 rounded-2xl border backdrop-blur-xl backdrop-saturate-150 transition-all duration-200 ${containerClass}`}
     >
-      <button
-        type="button"
-        role="tab"
-        aria-selected={is3DStandard}
-        data-testid="view-mode-3d"
-        onClick={() => onChangeViewportMode('3d')}
-        className={`min-h-[32px] px-2.5 sm:px-3 py-1.5 rounded-lg text-[11px] font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
-          is3DStandard ? activeClass : idleClass
-        }`}
-      >
-        <Box className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-        <span>3D View</span>
-      </button>
-
-      <button
-        type="button"
-        role="tab"
-        aria-selected={isFloorPlan}
-        data-testid="view-mode-floor-plan"
-        onClick={() => onChangeViewportMode('floor-plan')}
-        className={`min-h-[32px] px-2.5 sm:px-3 py-1.5 rounded-lg text-[11px] font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
-          isFloorPlan ? activeClass : idleClass
-        }`}
-      >
-        <Grid2x2 className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-        <span>Floor Plan</span>
-      </button>
-
-      <button
-        type="button"
-        role="tab"
-        aria-selected={isInstallDemo}
-        data-testid="view-mode-install-demo"
-        onClick={onLaunchInstallDemo}
-        className={`min-h-[32px] px-2.5 sm:px-3 py-1.5 rounded-lg text-[11px] font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
-          isInstallDemo ? activeClass : idleClass
-        }`}
-      >
-        <Play className="w-3 h-3 shrink-0" aria-hidden="true" />
-        <span className="hidden sm:inline">Installation Demo</span>
-        <span className="sm:hidden">Demo</span>
-      </button>
+      {tabs.map((tab) => (
+        <button
+          key={tab.id}
+          type="button"
+          role="tab"
+          aria-selected={tab.active}
+          data-testid={tab.testId}
+          onClick={tab.onClick}
+          className={`min-h-[32px] px-2.5 sm:px-3 py-1.5 rounded-xl border text-[11px] font-semibold inline-flex items-center gap-1.5 transition-all duration-200 whitespace-nowrap shrink-0 active:scale-[0.97] ${
+            tab.active ? activePillClass : idleClass
+          }`}
+        >
+          {tab.icon}
+          <span className="hidden sm:inline">{tab.label}</span>
+          <span className="sm:hidden">{tab.shortLabel}</span>
+        </button>
+      ))}
     </div>
   );
 }

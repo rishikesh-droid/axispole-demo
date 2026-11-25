@@ -1,73 +1,68 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import {
+  AlertTriangle,
   Box,
   Camera,
   Check,
+  CheckCircle2,
   Download,
   FileSpreadsheet,
-  Package,
-  Play,
-  Printer,
-  RotateCcw,
-  ShieldCheck,
+  Send,
   Smartphone,
-  Wrench,
   X,
 } from 'lucide-react';
-import type {
-  BOMSummary,
-  ModalId,
-  PoleRigConfig,
-} from '../types/pole';
+import type { ModalId, PoleRigConfig, PriceTierId } from '../types/pole';
 import {
-  ASSEMBLY_STEPS,
-  BASE_MOUNTS,
-  exportBOMToCSV,
-  formatHeightMetricAndImperial,
-  POLE_FINISHES,
-} from '../utils/poleConfig';
+  exportXPoleQuoteToCSV,
+  formatFeetInches,
+  formatUsdExact,
+  XPOLE_CATALOG,
+  type XPoleQuoteSummary,
+} from '../data/xpoleCatalog';
+import { BASE_MOUNTS, POLE_FINISHES } from '../utils/poleConfig';
 import type { CadFormat } from '../three/cadExporter';
 
 interface ModalsProps {
   activeModal: ModalId;
   onClose: () => void;
   config: PoleRigConfig;
-  bom: BOMSummary;
+  quote: XPoleQuoteSummary;
+  onChangePriceTier: (tier: PriceTierId) => void;
   onExportCAD: (format: CadFormat) => Promise<{ filename: string; bytes: number }>;
   onGenerateUSDZUrl: () => Promise<string>;
   onCaptureSnapshot: () => string | null;
-  onLaunchAssemblyDemo: (mode: 'assemble' | 'dismantle') => void;
   onStartArCamera: () => void;
 }
 
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
+const TIER_ORDER: PriceTierId[] = ['retail', 'wholesale20', 'wholesale30'];
 
 export function Modals({
   activeModal,
   onClose,
   config,
-  bom,
+  quote,
+  onChangePriceTier,
   onExportCAD,
   onGenerateUSDZUrl,
   onCaptureSnapshot,
-  onLaunchAssemblyDemo,
   onStartArCamera,
 }: ModalsProps) {
-  const [installTab, setInstallTab] = useState<'install' | 'dismantle'>('install');
   const [exportStatus, setExportStatus] = useState<string | null>(null);
   const [exportingFormat, setExportingFormat] = useState<CadFormat | null>(null);
   const [quickLookUrl, setQuickLookUrl] = useState<string | null>(null);
-  const [checkedMaintenance, setCheckedMaintenance] = useState<Record<string, boolean>>({});
+
+  // Request Quote form state
+  const [customerName, setCustomerName] = useState('');
+  const [customerEmail, setCustomerEmail] = useState('');
+  const [studioName, setStudioName] = useState('');
+  const [projectNotes, setProjectNotes] = useState('');
+  const [formError, setFormError] = useState<string | null>(null);
+  const [submittedRef, setSubmittedRef] = useState<string | null>(null);
 
   useEffect(() => {
     setExportStatus(null);
+    setFormError(null);
+    setSubmittedRef(null);
     return () => {
       if (quickLookUrl) {
         URL.revokeObjectURL(quickLookUrl);
@@ -94,18 +89,18 @@ export function Modals({
     }
   };
 
-  const handleDownloadCSV = () => {
-    const csv = exportBOMToCSV(bom, config);
+  const handleDownloadQuoteCSV = () => {
+    const csv = exportXPoleQuoteToCSV(quote);
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `axispole-bom-${config.finish}-${config.ceilingHeightCm}cm.csv`;
+    a.download = `xpole-quote-${quote.priceTier}-${quote.lines.length}poles.csv`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-    setExportStatus('Downloaded itemized Bill of Materials CSV.');
+    setExportStatus('Downloaded official X-POLE quotation CSV.');
   };
 
   const handleDownloadSnapshot = () => {
@@ -116,113 +111,11 @@ export function Modals({
     }
     const a = document.createElement('a');
     a.href = dataUrl;
-    a.download = `axispole-view-${config.finish}-${config.ceilingHeightCm}cm.png`;
+    a.download = `xpole-room-${config.finish}-${config.ceilingHeightCm}cm.png`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    setExportStatus('Saved 3D viewport PNG snapshot.');
-  };
-
-  const handlePrintSpecSheet = () => {
-    const snapshotUrl = onCaptureSnapshot();
-    const win = window.open('', '_blank', 'width=920,height=780');
-    if (!win) {
-      setExportStatus('Pop-up blocked — allow pop-ups to print or save the PDF spec sheet.');
-      return;
-    }
-
-    const ceilingSummary =
-      config.ceilingType === 'vaulted'
-        ? `Tilted (${config.vaultAngleDeg}°)`
-        : 'Flat Level';
-    const snapshotHtml = snapshotUrl
-      ? `<div class="snapshot"><img id="spec-img" src="${snapshotUrl}" alt="3D Rig Snapshot" /></div>`
-      : '';
-    const rowsHtml = bom.items
-      .map(
-        (item) => `
-        <tr>
-          <td class="mono">${escapeHtml(item.sku)}</td>
-          <td><strong>${escapeHtml(item.name)}</strong><br/><span class="muted">${escapeHtml(item.material)}</span></td>
-          <td class="num mono">${item.quantity}</td>
-          <td class="num mono">${(item.unitWeightKg * item.quantity).toFixed(2)} kg</td>
-          <td class="num mono">${item.totalPriceUsd === 0 ? 'Included' : `$${item.totalPriceUsd}`}</td>
-        </tr>`
-      )
-      .join('');
-
-    const html = `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <title>AxisPole Studio — Specification &amp; BOM</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #1c1917; margin: 28px; line-height: 1.45; }
-    .header { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 2px solid #1c1917; padding-bottom: 10px; margin-bottom: 18px; }
-    .header h1 { font-size: 20px; margin: 0; }
-    .header .date { font-size: 12px; color: #57534e; }
-    .specs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }
-    .spec-card { border: 1px solid #d6d3d1; border-radius: 8px; padding: 8px 10px; background: #fafaf9; }
-    .spec-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: #57534e; }
-    .spec-val { font-size: 13px; font-weight: 700; margin-top: 2px; }
-    .snapshot { margin-bottom: 18px; border: 1px solid #d6d3d1; border-radius: 10px; overflow: hidden; background: #0d0f16; text-align: center; }
-    .snapshot img { max-width: 100%; max-height: 360px; object-fit: contain; display: block; margin: 0 auto; }
-    table { width: 100%; border-collapse: collapse; font-size: 12px; }
-    th, td { border-bottom: 1px solid #e7e5e4; padding: 8px 10px; text-align: left; }
-    th { background: #f5f5f4; color: #44403c; font-weight: 600; }
-    .num { text-align: right; white-space: nowrap; }
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-    .muted { font-size: 11px; color: #57534e; }
-    tfoot td { background: #f5f5f4; font-weight: 700; border-top: 2px solid #d6d3d1; font-size: 13px; }
-    .note { margin-top: 14px; font-size: 11px; color: #57534e; }
-    @media print { body { margin: 12mm; } }
-  </style>
-</head>
-<body>
-  <div class="header">
-    <h1>AxisPole Studio — Configuration &amp; BOM Spec Sheet</h1>
-    <div class="date">${escapeHtml(new Date().toLocaleDateString())}</div>
-  </div>
-  <div class="specs">
-    <div class="spec-card"><div class="spec-label">Finish &amp; Diameter</div><div class="spec-val">${escapeHtml(finish.name)} · ${config.diameterMm}mm</div></div>
-    <div class="spec-card"><div class="spec-label">Room Dimensions</div><div class="spec-val">${config.roomWidthM.toFixed(1)}m × ${config.roomDepthM.toFixed(1)}m</div></div>
-    <div class="spec-card"><div class="spec-label">Ceiling Height</div><div class="spec-val">${escapeHtml(formatHeightMetricAndImperial(config.ceilingHeightCm))} · ${escapeHtml(ceilingSummary)}</div></div>
-    <div class="spec-card"><div class="spec-label">Base Mount</div><div class="spec-val">${escapeHtml(mount.name)}</div></div>
-  </div>
-  ${snapshotHtml}
-  <table>
-    <thead>
-      <tr><th>SKU</th><th>Component &amp; Alloy</th><th class="num">Qty</th><th class="num">Weight</th><th class="num">Price</th></tr>
-    </thead>
-    <tbody>${rowsHtml}</tbody>
-    <tfoot>
-      <tr><td colspan="3">Total Configured Rig</td><td class="num mono">${bom.totalWeightKg} kg</td><td class="num mono">$${bom.totalPriceUsd} USD</td></tr>
-    </tfoot>
-  </table>
-  <p class="note">Tolerance note: Verify ceiling joist location and clear floor radius (${(Math.min(config.roomWidthM, config.roomDepthM) / 2).toFixed(2)}m available) before final torque (18.0 N·m drawbolts).</p>
-</body>
-</html>`;
-
-    win.document.open();
-    win.document.write(html);
-    win.document.close();
-    setExportStatus('Opened printable / Save-as-PDF specification sheet.');
-
-    const triggerPrint = () => {
-      try {
-        win.focus();
-        win.print();
-      } catch {
-        // Ignore cross-browser print focus restrictions
-      }
-    };
-    const img = win.document.getElementById('spec-img') as HTMLImageElement | null;
-    if (img && !img.complete) {
-      img.onload = triggerPrint;
-      img.onerror = triggerPrint;
-    } else {
-      window.setTimeout(triggerPrint, 120);
-    }
+    setExportStatus('Saved 3D room PNG snapshot.');
   };
 
   const handlePrepareQuickLook = async () => {
@@ -238,13 +131,30 @@ export function Modals({
     }
   };
 
-  const toggleChecklist = (key: string) => {
-    setCheckedMaintenance((prev) => ({ ...prev, [key]: !prev[key] }));
+  const handleSubmitQuote = (e: FormEvent) => {
+    e.preventDefault();
+    const trimmedName = customerName.trim();
+    const trimmedEmail = customerEmail.trim();
+    if (!trimmedName) {
+      setFormError('Please enter your name so we can address your X-POLE quote.');
+      return;
+    }
+    if (!trimmedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+      setFormError('Please enter a valid email address.');
+      return;
+    }
+    if (!quote.allAvailable) {
+      setFormError('One or more poles use a finish unavailable at that height. Switch finishes in Step 2 before submitting.');
+      return;
+    }
+    setFormError(null);
+    const code = `XP-${Date.now().toString(36).toUpperCase().slice(-6)}`;
+    setSubmittedRef(code);
   };
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/60 p-4 sm:p-6"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/65 p-4 sm:p-6"
       role="dialog"
       aria-modal="true"
       aria-labelledby="modal-heading"
@@ -252,25 +162,21 @@ export function Modals({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="w-full max-w-3xl max-h-[86vh] flex flex-col rounded-xl border border-stone-300 bg-[#faf9f6] text-stone-900 shadow-2xl overflow-hidden">
+      <div className="w-full max-w-3xl max-h-[88vh] flex flex-col rounded-xl border border-stone-300 bg-[#faf9f6] text-stone-900 shadow-2xl overflow-hidden">
         {/* Modal Header */}
         <div className="px-6 py-4 border-b border-stone-200 flex items-center justify-between gap-4 bg-white">
           <div>
             <h2 id="modal-heading" className="text-lg font-bold tracking-tight">
-              {activeModal === 'installation' && 'Installation & Quick Dismantle Manual'}
-              {activeModal === 'maintenance' && `Maintenance & Care Guide — ${finish.name}`}
-              {activeModal === 'bom' && 'Configuration Materials List & Pricing'}
-              {activeModal === 'export-ar' && 'CAD File Export & Real-World AR Preview'}
+              {activeModal === 'quote' && 'X-POLE Build a Pole — Official Quotation Request'}
+              {activeModal === 'export-ar' && 'Export 3D CAD & AR Room Preview'}
             </h2>
             <p className="text-xs text-stone-600 mt-0.5">
-              {finish.name} · {config.diameterMm}mm · {mount.name} ·{' '}
-              {config.ceilingType === 'vaulted'
-                ? `Tilted Ceiling ${config.vaultAngleDeg}°`
-                : 'Flat Ceiling'}{' '}
-              ·{' '}
+              Room {config.roomWidthM.toFixed(1)}m × {config.roomDepthM.toFixed(1)}m · Ceiling{' '}
               <span className="font-mono tabular-nums">
-                {formatHeightMetricAndImperial(config.ceilingHeightCm)}
-              </span>
+                {formatFeetInches(config.ceilingHeightCm)} ({config.ceilingHeightCm * 10}mm)
+              </span>{' '}
+              · {config.ceilingType === 'vaulted' ? `Vaulted ${config.vaultAngleDeg}°` : 'Flat'} ·{' '}
+              {quote.lines.length} {quote.lines.length === 1 ? 'Pole' : 'Poles'}
             </p>
           </div>
           <button
@@ -285,386 +191,241 @@ export function Modals({
 
         {/* Scrollable Modal Body */}
         <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
-          {/* 1. INSTALLATION & QUICK DISMANTLE MODAL */}
-          {activeModal === 'installation' && (
-            <>
+          {/* 1. OFFICIAL X-POLE REQUEST QUOTE MODAL */}
+          {activeModal === 'quote' && (
+            <div className="space-y-5" data-testid="quote-modal-content">
+              {/* Pricing Tier Switcher + Export Tools */}
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-center gap-1 p-1 bg-stone-200/80 rounded-lg">
-                  <button
-                    type="button"
-                    onClick={() => setInstallTab('install')}
-                    className={`px-3.5 py-1.5 text-xs font-semibold rounded-md transition-colors ${
-                      installTab === 'install'
-                        ? 'bg-white text-stone-950 shadow-xs'
-                        : 'text-stone-600 hover:text-stone-950'
-                    }`}
-                  >
-                    Step-by-Step Installation
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setInstallTab('dismantle')}
-                    className={`px-3.5 py-1.5 text-xs font-semibold rounded-md transition-colors ${
-                      installTab === 'dismantle'
-                        ? 'bg-white text-stone-950 shadow-xs'
-                        : 'text-stone-600 hover:text-stone-950'
-                    }`}
-                  >
-                    Quick Dismantle &amp; Storage
-                  </button>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    onClose();
-                    onLaunchAssemblyDemo(installTab === 'install' ? 'assemble' : 'dismantle');
-                  }}
-                  className="px-3.5 py-2 text-xs font-semibold rounded-lg bg-stone-900 text-white hover:bg-stone-800 inline-flex items-center gap-1.5 whitespace-nowrap"
-                >
-                  {installTab === 'install' ? (
-                    <>
-                      <Play className="w-3.5 h-3.5" aria-hidden="true" />
-                      <span>Play 3D Assembly Animation</span>
-                    </>
-                  ) : (
-                    <>
-                      <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
-                      <span>Play 3D Breakdown Animation</span>
-                    </>
-                  )}
-                </button>
-              </div>
-
-              {installTab === 'install' ? (
-                <div className="space-y-4">
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-4 rounded-lg border border-stone-200 bg-white text-xs">
-                    <div>
-                      <span className="text-stone-500 block">Mount Interface</span>
-                      <strong className="font-semibold text-stone-900">{mount.name}</strong>
-                      <span className="block text-stone-600 mt-0.5">
-                        {mount.drillingRequired
-                          ? 'Requires structural timber/concrete anchors'
-                          : 'Zero drilling · Floor & joist friction'}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-stone-500 block">Required Extensions</span>
-                      <strong className="font-mono tabular-nums text-stone-900">
-                        {bom.heightSolution.extensions.length > 0
-                          ? bom.heightSolution.extensions.map((e) => `${e.lengthMm}mm`).join(' + ')
-                          : 'None (A+B Base Stack)'}
-                      </strong>
-                      <span className="block font-mono tabular-nums text-stone-600 mt-0.5">
-                        Adjuster travel: {bom.heightSolution.adjusterTravelMm}mm / 125mm max
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-stone-500 block">Mount Fastener Spec</span>
-                      <strong className="font-semibold text-stone-900">{mount.fastenerSpec}</strong>
-                      <span className="block font-mono tabular-nums text-amber-700 mt-0.5">
-                        Target torque: {mount.torqueNm} N·m
-                      </span>
-                    </div>
-                  </div>
-
-                  <ol className="space-y-3">
-                    {ASSEMBLY_STEPS.map((st) => (
-                      <li
-                        key={st.id}
-                        className="p-4 rounded-lg border border-stone-200 bg-white space-y-1.5"
+                <div className="inline-flex items-center gap-1 p-1 rounded-lg bg-stone-200/80" role="group" aria-label="Quotation pricing tier">
+                  {TIER_ORDER.map((tierId) => {
+                    const meta = XPOLE_CATALOG.priceTiers[tierId];
+                    const active = quote.priceTier === tierId;
+                    return (
+                      <button
+                        key={tierId}
+                        type="button"
+                        onClick={() => onChangePriceTier(tierId)}
+                        className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${
+                          active
+                            ? 'bg-violet-700 text-white shadow-xs'
+                            : 'text-stone-700 hover:text-stone-950'
+                        }`}
                       >
-                        <div className="flex flex-wrap items-baseline justify-between gap-2">
-                          <h3 className="text-sm font-semibold text-stone-950">
-                            0{st.step}. {st.title}
-                          </h3>
-                          <span className="font-mono text-xs font-semibold tabular-nums text-amber-700">
-                            {st.torqueNm > 0
-                              ? `${st.torqueNm.toFixed(1)} N·m (${st.torqueFtLb.toFixed(1)} ft-lb)`
-                              : 'Hand-level seat'}
-                          </span>
-                        </div>
-                        <p className="text-xs text-stone-700 leading-relaxed">
-                          {st.installInstruction}
-                        </p>
-                        <div className="pt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-stone-500">
-                          <span>Fastener: {st.fastener}</span>
-                          <span aria-hidden="true">·</span>
-                          <span>Tool: {st.toolRequired}</span>
-                        </div>
-                      </li>
-                    ))}
-                  </ol>
+                        {meta.label}
+                      </button>
+                    );
+                  })}
                 </div>
-              ) : (
-                <div className="space-y-4">
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-4 rounded-lg border border-stone-200 bg-white text-xs">
-                    <div className="flex items-start gap-2.5">
-                      <Package className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" aria-hidden="true" />
-                      <div>
-                        <span className="text-stone-500 block">Compact Packed Length</span>
-                        <strong className="font-mono tabular-nums text-sm text-stone-950">
-                          {bom.packedLengthCm} cm
-                        </strong>
-                        <span className="block text-stone-600 mt-0.5">
-                          Fits in {bom.packedBagsCount} padded carry{' '}
-                          {bom.packedBagsCount === 1 ? 'case' : 'cases'}
-                        </span>
-                      </div>
-                    </div>
-                    <div>
-                      <span className="text-stone-500 block">Total Carry Weight</span>
-                      <strong className="font-mono tabular-nums text-sm text-stone-950">
-                        {bom.totalWeightKg} kg
-                      </strong>
-                      <span className="block text-stone-600 mt-0.5">
-                        Estimated breakdown time: 6–8 minutes
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-stone-500 block">Storage Climate</span>
-                      <strong className="text-stone-950">Dry, 10°C – 32°C</strong>
-                      <span className="block text-stone-600 mt-0.5">
-                        Store tubes flat with protective end caps fitted
-                      </span>
-                    </div>
-                  </div>
 
-                  <ol className="space-y-3">
-                    {[...ASSEMBLY_STEPS].reverse().map((st, idx) => (
-                      <li
-                        key={`dismantle-${st.id}`}
-                        className="p-4 rounded-lg border border-stone-200 bg-white space-y-1"
-                      >
-                        <div className="flex items-baseline justify-between gap-2">
-                          <h3 className="text-sm font-semibold text-stone-950">
-                            0{idx + 1}. Reverse Step {st.step} — {st.title}
-                          </h3>
-                          <span className="font-mono text-[11px] text-stone-500">
-                            Tool: {st.toolRequired}
-                          </span>
-                        </div>
-                        <p className="text-xs text-stone-700 leading-relaxed">
-                          {st.dismantleInstruction}
-                        </p>
-                      </li>
-                    ))}
-                  </ol>
-                </div>
-              )}
-            </>
-          )}
-
-          {/* 2. MAINTENANCE GUIDE MODAL */}
-          {activeModal === 'maintenance' && (
-            <div className="space-y-5">
-              <div className="p-4 rounded-lg border border-stone-200 bg-white space-y-2">
-                <div className="flex items-center justify-between gap-2">
-                  <h3 className="text-sm font-semibold text-stone-950">
-                    Finish-Specific Surface Care: {finish.name}
-                  </h3>
-                  <span className="text-xs font-medium text-amber-700">{finish.gripLevel}</span>
-                </div>
-                <p className="text-xs text-stone-600">{finish.summary}</p>
-                <p className="text-xs pt-1">
-                  <strong className="text-stone-900">Recommended Cleaner:</strong>{' '}
-                  <span className="text-stone-700">{finish.cleaningAgent}</span>
-                </p>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-3 border-t border-stone-100">
-                  <div>
-                    <h4 className="text-xs font-semibold text-teal-800 mb-1.5">
-                      Approved Maintenance Procedure
-                    </h4>
-                    <ul className="space-y-1.5 text-xs text-stone-700 list-disc pl-4">
-                      {finish.cleaningNotes.map((note) => (
-                        <li key={note}>{note}</li>
-                      ))}
-                    </ul>
-                  </div>
-                  <div>
-                    <h4 className="text-xs font-semibold text-red-800 mb-1.5">
-                      Avoid (Finish Damage Risk)
-                    </h4>
-                    <ul className="space-y-1.5 text-xs text-stone-700 list-disc pl-4">
-                      {finish.avoidList.map((item) => (
-                        <li key={item}>{item}</li>
-                      ))}
-                    </ul>
-                  </div>
-                </div>
-              </div>
-
-              {/* Periodic Mechanical Inspection Schedule */}
-              <div className="rounded-lg border border-stone-200 bg-white overflow-hidden">
-                <div className="px-4 py-3 border-b border-stone-200 flex items-center gap-2">
-                  <Wrench className="w-4 h-4 text-stone-700" aria-hidden="true" />
-                  <h3 className="text-sm font-semibold">Mechanical Torque &amp; Bearing Schedule</h3>
-                </div>
-                <table className="w-full text-left text-xs">
-                  <thead className="bg-stone-50 border-b border-stone-200 text-stone-600">
-                    <tr>
-                      <th className="py-2.5 px-4 font-semibold">Interval</th>
-                      <th className="py-2.5 px-4 font-semibold">Hardware Component</th>
-                      <th className="py-2.5 px-4 font-semibold">Verification Standard</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-stone-100">
-                    <tr>
-                      <td className="py-2.5 px-4 font-medium">Before Every Session</td>
-                      <td className="py-2.5 px-4">Base &amp; Ceiling Tension</td>
-                      <td className="py-2.5 px-4">
-                        Firm lateral push test at chest height; zero creak or top dome creep.
-                      </td>
-                    </tr>
-                    <tr>
-                      <td className="py-2.5 px-4 font-medium">Every 14 Days</td>
-                      <td className="py-2.5 px-4">Internal X-Joint Drawbolts</td>
-                      <td className="py-2.5 px-4 font-mono tabular-nums">
-                        Re-torque to 18.0 N·m (5mm hex key) · verify flush joint seam.
-                      </td>
-                    </tr>
-                    <tr>
-                      <td className="py-2.5 px-4 font-medium">Monthly</td>
-                      <td className="py-2.5 px-4">Spin-Lock M6 Hex Screws</td>
-                      <td className="py-2.5 px-4 font-mono tabular-nums">
-                        Inspect socket walls for wear; torque to 8.5 N·m in Static mode.
-                      </td>
-                    </tr>
-                    <tr>
-                      <td className="py-2.5 px-4 font-medium">Every 6 Months</td>
-                      <td className="py-2.5 px-4">Sealed Ball-Bearing Cartridge</td>
-                      <td className="py-2.5 px-4">
-                        Spin freely without drag or grit sound. Sealed bearings require no grease;
-                        replace cartridge if lateral play exceeds 0.5mm.
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-
-              {/* Interactive Pre-Session Safety Checklist */}
-              <div className="p-4 rounded-lg border border-stone-200 bg-white space-y-2.5">
                 <div className="flex items-center gap-2">
-                  <ShieldCheck className="w-4 h-4 text-teal-700" aria-hidden="true" />
-                  <h3 className="text-sm font-semibold">Pre-Session Safety Inspection</h3>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  {[
-                    ['plumb', 'Pole verified plumb (vertical) on two 90° axes'],
-                    ['jam-nuts', 'Both M8 adjuster jam nuts locked tight at 10 N·m'],
-                    ['spin-pins', 'Spin/Static lock pins fully seated or fully retracted'],
-                    ['clearance', `Floor clear within ${(Math.min(config.roomWidthM, config.roomDepthM) / 2).toFixed(2)}m radius`],
-                  ].map(([id, text]) => (
-                    <label
-                      key={id}
-                      className="flex items-start gap-2.5 p-2.5 rounded-md border border-stone-200 hover:bg-stone-50 cursor-pointer text-xs"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={Boolean(checkedMaintenance[id])}
-                        onChange={() => toggleChecklist(id)}
-                        className="mt-0.5 rounded border-stone-400 accent-amber-700"
-                      />
-                      <span className={checkedMaintenance[id] ? 'line-through text-stone-400' : 'text-stone-800'}>
-                        {text}
-                      </span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* 3. MATERIALS LIST & PRICING (BOM) MODAL */}
-          {activeModal === 'bom' && (
-            <div className="space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="text-xs text-stone-600">
-                  All hardware matched to{' '}
-                  <strong className="text-stone-950">{finish.alloy}</strong> · Total Rig Mass:{' '}
-                  <strong className="font-mono tabular-nums text-stone-950">
-                    {bom.totalWeightKg} kg
-                  </strong>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
                     onClick={handleDownloadSnapshot}
-                    data-testid="bom-save-png-button"
-                    className="px-3 py-2 text-xs font-semibold rounded-lg border border-stone-300 bg-white hover:bg-stone-100 inline-flex items-center gap-1.5 whitespace-nowrap"
+                    className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-stone-300 bg-white hover:bg-stone-100 inline-flex items-center gap-1.5"
                   >
                     <Camera className="w-3.5 h-3.5" aria-hidden="true" />
                     <span>Save 3D PNG</span>
                   </button>
                   <button
                     type="button"
-                    onClick={handlePrintSpecSheet}
-                    data-testid="bom-print-spec-button"
-                    className="px-3 py-2 text-xs font-semibold rounded-lg border border-stone-300 bg-white hover:bg-stone-100 inline-flex items-center gap-1.5 whitespace-nowrap"
-                  >
-                    <Printer className="w-3.5 h-3.5" aria-hidden="true" />
-                    <span>Print / PDF Spec</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleDownloadCSV}
-                    className="px-3.5 py-2 text-xs font-semibold rounded-lg border border-stone-300 bg-white hover:bg-stone-100 inline-flex items-center gap-1.5 whitespace-nowrap"
+                    onClick={handleDownloadQuoteCSV}
+                    data-testid="quote-download-csv"
+                    className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-stone-300 bg-white hover:bg-stone-100 inline-flex items-center gap-1.5"
                   >
                     <FileSpreadsheet className="w-3.5 h-3.5" aria-hidden="true" />
-                    <span>Download BOM CSV</span>
+                    <span>Download CSV</span>
                   </button>
                 </div>
               </div>
 
+              {/* Itemized X-POLE PX Table */}
               <div className="rounded-lg border border-stone-200 bg-white overflow-x-auto">
                 <table className="w-full text-left text-xs">
                   <thead className="bg-stone-50 border-b border-stone-200 text-stone-600">
                     <tr>
-                      <th className="py-2.5 px-3.5 font-semibold">SKU</th>
-                      <th className="py-2.5 px-3.5 font-semibold">Component &amp; Alloy</th>
-                      <th className="py-2.5 px-3.5 font-semibold text-right">Qty</th>
-                      <th className="py-2.5 px-3.5 font-semibold text-right">Weight</th>
-                      <th className="py-2.5 px-3.5 font-semibold text-right">Price</th>
+                      <th className="py-2.5 px-3 font-semibold">Pole</th>
+                      <th className="py-2.5 px-3 font-semibold">Auto-Matched PX Kit</th>
+                      <th className="py-2.5 px-3 font-semibold">Finish &amp; Spec</th>
+                      <th className="py-2.5 px-3 font-semibold">Included Hardware</th>
+                      <th className="py-2.5 px-3 font-semibold text-right">Price ({quote.priceTierLabel})</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-stone-100">
-                    {bom.items.map((item) => (
-                      <tr key={item.sku}>
-                        <td className="py-2.5 px-3.5 font-mono text-[11px] text-stone-500 whitespace-nowrap">
-                          {item.sku}
+                    {quote.lines.map((line) => (
+                      <tr key={line.poleId}>
+                        <td className="py-2.5 px-3 font-semibold text-stone-950 whitespace-nowrap">
+                          {line.poleLabel}
                         </td>
-                        <td className="py-2.5 px-3.5">
-                          <span className="font-medium text-stone-950 block">{item.name}</span>
-                          <span className="text-[11px] text-stone-500">{item.material}</span>
+                        <td className="py-2.5 px-3">
+                          <span className="font-mono font-bold text-violet-800 block">
+                            {line.resolution.part.id}
+                          </span>
+                          <span className="font-mono text-[10.5px] text-stone-500">
+                            {formatFeetInches(line.heightCm)} · {line.heightMm}mm
+                          </span>
                         </td>
-                        <td className="py-2.5 px-3.5 font-mono tabular-nums text-right">
-                          {item.quantity}
+                        <td className="py-2.5 px-3">
+                          <span className="font-medium text-stone-900 block">
+                            {line.finishLabel} · {line.diameterMm}mm
+                          </span>
+                          {line.resolution.notes.length > 0 && (
+                            <span className="text-[10.5px] text-amber-700 block mt-0.5">
+                              {line.resolution.notes[0]}
+                            </span>
+                          )}
                         </td>
-                        <td className="py-2.5 px-3.5 font-mono tabular-nums text-right whitespace-nowrap">
-                          {(item.unitWeightKg * item.quantity).toFixed(2)} kg
+                        <td className="py-2.5 px-3 text-[11px] text-stone-600">
+                          {line.resolution.includedHardware.join(', ')}
                         </td>
-                        <td className="py-2.5 px-3.5 font-mono tabular-nums text-right font-semibold whitespace-nowrap">
-                          {item.totalPriceUsd === 0 ? 'Included' : `$${item.totalPriceUsd}`}
+                        <td className="py-2.5 px-3 font-mono tabular-nums text-right font-semibold whitespace-nowrap">
+                          {line.resolution.available ? (
+                            <>
+                              {quote.priceTier !== 'retail' && (
+                                <span className="block text-[10px] line-through text-stone-400 font-normal">
+                                  {formatUsdExact(line.lineRetailUsd)}
+                                </span>
+                              )}
+                              <span className="text-stone-950">{formatUsdExact(line.lineTotalUsd)}</span>
+                            </>
+                          ) : (
+                            <span className="text-rose-600">Unavailable</span>
+                          )}
                         </td>
                       </tr>
                     ))}
                   </tbody>
                   <tfoot className="bg-stone-50 border-t border-stone-200">
+                    {quote.savingsUsd > 0 && (
+                      <tr>
+                        <td colSpan={4} className="py-2 px-3 text-right text-emerald-700 font-semibold">
+                          {quote.priceTierLabel} Savings vs Retail
+                        </td>
+                        <td className="py-2 px-3 text-right font-mono tabular-nums font-bold text-emerald-700">
+                          -{formatUsdExact(quote.savingsUsd)}
+                        </td>
+                      </tr>
+                    )}
                     <tr>
-                      <td colSpan={3} className="py-3 px-3.5 font-semibold text-stone-900">
-                        Total Configured Rig
+                      <td colSpan={4} className="py-3 px-3 font-semibold text-stone-950">
+                        Estimated Total ({quote.lines.length} {quote.lines.length === 1 ? 'Pole' : 'Poles'} · {quote.priceTierLabel})
                       </td>
-                      <td className="py-3 px-3.5 font-mono tabular-nums text-right font-semibold">
-                        {bom.totalWeightKg} kg
-                      </td>
-                      <td className="py-3 px-3.5 font-mono tabular-nums text-right text-sm font-bold text-stone-950">
-                        ${bom.totalPriceUsd} USD
+                      <td className="py-3 px-3 font-mono tabular-nums text-right text-sm font-bold text-violet-800">
+                        {formatUsdExact(quote.totalUsd)} USD
                       </td>
                     </tr>
                   </tfoot>
                 </table>
               </div>
+
+              {!quote.allAvailable && (
+                <div className="p-3 rounded-lg border border-rose-200 bg-rose-50 text-rose-800 text-xs flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0" aria-hidden="true" />
+                  <span>
+                    {quote.unavailableCount} pole configuration is unavailable in the selected finish at its current height. Adjust the finish in Step 2 before submitting.
+                  </span>
+                </div>
+              )}
+
+              {/* Quote Submission Form or Confirmation */}
+              {submittedRef ? (
+                <div
+                  className="p-4 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-950 space-y-2"
+                  data-testid="quote-submitted-banner"
+                >
+                  <div className="flex items-center gap-2 font-semibold text-sm">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" aria-hidden="true" />
+                    <span>X-POLE Quotation Prepared · Ref #{submittedRef}</span>
+                  </div>
+                  <p className="text-xs text-emerald-900">
+                    Summary logged for <strong>{customerName}</strong> ({customerEmail}) at{' '}
+                    <strong>{formatUsdExact(quote.totalUsd)}</strong> ({quote.priceTierLabel}). You can also download the itemized CSV above for direct studio ordering.
+                  </p>
+                </div>
+              ) : (
+                <form onSubmit={handleSubmitQuote} className="p-4 rounded-xl border border-stone-200 bg-white space-y-3">
+                  <h3 className="text-sm font-semibold text-stone-950">Send Quotation Details</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label htmlFor="quote-name" className="block text-[11px] font-semibold text-stone-700 mb-1">
+                        Full Name *
+                      </label>
+                      <input
+                        id="quote-name"
+                        type="text"
+                        value={customerName}
+                        onChange={(e) => setCustomerName(e.target.value)}
+                        placeholder="Alex Rivera"
+                        className="w-full px-3 py-2 text-xs rounded-lg border border-stone-300 bg-white text-stone-950 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="quote-email" className="block text-[11px] font-semibold text-stone-700 mb-1">
+                        Email Address *
+                      </label>
+                      <input
+                        id="quote-email"
+                        type="email"
+                        value={customerEmail}
+                        onChange={(e) => setCustomerEmail(e.target.value)}
+                        placeholder="studio@example.com"
+                        className="w-full px-3 py-2 text-xs rounded-lg border border-stone-300 bg-white text-stone-950 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                      />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label htmlFor="quote-studio" className="block text-[11px] font-semibold text-stone-700 mb-1">
+                        Studio / Organization (Optional)
+                      </label>
+                      <input
+                        id="quote-studio"
+                        type="text"
+                        value={studioName}
+                        onChange={(e) => setStudioName(e.target.value)}
+                        placeholder="Elevation Aerial Studio"
+                        className="w-full px-3 py-2 text-xs rounded-lg border border-stone-300 bg-white text-stone-950 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="quote-notes" className="block text-[11px] font-semibold text-stone-700 mb-1">
+                        Delivery / Ceiling Notes (Optional)
+                      </label>
+                      <input
+                        id="quote-notes"
+                        type="text"
+                        value={projectNotes}
+                        onChange={(e) => setProjectNotes(e.target.value)}
+                        placeholder="Joist spacing, preferred timeline..."
+                        className="w-full px-3 py-2 text-xs rounded-lg border border-stone-300 bg-white text-stone-950 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                      />
+                    </div>
+                  </div>
+
+                  {formError && (
+                    <p className="text-xs text-rose-600 font-medium" role="alert">
+                      {formError}
+                    </p>
+                  )}
+
+                  <div className="flex items-center justify-end gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={onClose}
+                      className="px-3.5 py-2 text-xs font-semibold rounded-lg border border-stone-300 text-stone-700 hover:bg-stone-100"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      data-testid="quote-submit-btn"
+                      className="px-4 py-2 text-xs font-semibold rounded-lg bg-violet-700 text-white hover:bg-violet-600 inline-flex items-center gap-1.5"
+                    >
+                      <Send className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>Submit Quote Request</span>
+                    </button>
+                  </div>
+                </form>
+              )}
 
               {exportStatus && (
                 <p className="text-xs text-teal-700 font-medium flex items-center gap-1.5">
@@ -675,10 +436,9 @@ export function Modals({
             </div>
           )}
 
-          {/* 4. CAD EXPORT & AR PREVIEW MODAL */}
+          {/* 2. CAD EXPORT & AR PREVIEW MODAL */}
           {activeModal === 'export-ar' && (
             <div className="space-y-5">
-              {/* CAD Formats Section */}
               <div className="space-y-2.5">
                 <h3 className="text-sm font-semibold text-stone-950">
                   Export Assembled 3D Geometry (1:1 Metric Scale)
@@ -719,11 +479,11 @@ export function Modals({
                       type="button"
                       disabled={exportingFormat !== null}
                       onClick={() => handleCadExport(item.fmt)}
-                      className="p-3.5 rounded-lg border border-stone-200 bg-white hover:border-amber-600 hover:bg-amber-50/30 text-left transition-colors flex items-start justify-between gap-3 disabled:opacity-60"
+                      className="p-3.5 rounded-lg border border-stone-200 bg-white hover:border-violet-600 hover:bg-violet-50/30 text-left transition-colors flex items-start justify-between gap-3 disabled:opacity-60"
                     >
                       <div>
                         <span className="text-xs font-semibold text-stone-950 flex items-center gap-1.5">
-                          <Box className="w-3.5 h-3.5 text-amber-700" aria-hidden="true" />
+                          <Box className="w-3.5 h-3.5 text-violet-700" aria-hidden="true" />
                           <span>{item.title}</span>
                         </span>
                         <span className="block text-[11px] text-stone-600 mt-1 leading-snug">
@@ -738,16 +498,15 @@ export function Modals({
                 </div>
               </div>
 
-              {/* AR Real-World Space Preview Section */}
               <div className="p-4 rounded-lg border border-stone-200 bg-white space-y-3">
                 <div className="flex items-center gap-2">
-                  <Smartphone className="w-4 h-4 text-amber-700" aria-hidden="true" />
+                  <Smartphone className="w-4 h-4 text-violet-700" aria-hidden="true" />
                   <h3 className="text-sm font-semibold text-stone-950">
                     AR Real-World Room Preview
                   </h3>
                 </div>
                 <p className="text-xs text-stone-600 leading-relaxed">
-                  Measure your real ceiling height and room footprint using your camera, get an automatic mount and extension recommendation, and preview the {finish.shortName} pole at 1:1 scale in your room.
+                  Measure your real ceiling height and room footprint using your camera and preview the {finish.shortName} pole at 1:1 scale in your room.
                 </p>
 
                 <div className="flex flex-wrap items-center gap-2.5">
@@ -776,8 +535,8 @@ export function Modals({
                     <a
                       rel="ar"
                       href={quickLookUrl}
-                      download={`axispole-${config.finish}.usdz`}
-                      className="px-4 py-2 text-xs font-semibold rounded-lg bg-amber-600 text-white hover:bg-amber-500 whitespace-nowrap"
+                      download={`xpole-${config.finish}.usdz`}
+                      className="px-4 py-2 text-xs font-semibold rounded-lg bg-violet-700 text-white hover:bg-violet-600 whitespace-nowrap"
                     >
                       Open iOS Quick Look AR
                     </a>

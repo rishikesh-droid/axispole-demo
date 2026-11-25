@@ -12,18 +12,15 @@ import type {
   PoleRigConfig,
   ReplicaRenderMode,
   RoomReplicaScene,
-  SidebarDensity,
   ViewportMode,
 } from './types/pole';
 import {
-  analyzeFloorClearance,
   ASSEMBLY_STEPS,
   canFitAdditionalPole,
   clampPoleHeightCm,
   clampPolePosition,
   createInitialPoles,
   DEFAULT_CONFIG,
-  generateMultiPoleBOM,
   getMinRoomSizeM,
   isDarkLighting,
   MAX_CEILING_HEIGHT_CM,
@@ -31,6 +28,7 @@ import {
   reconcilePolesForCeilingHeight,
   tryCreateNextPoleInstance,
 } from './utils/poleConfig';
+import { generateXPoleQuote } from './data/xpoleCatalog';
 import { soundFx } from './utils/soundFx';
 import {
   calculateARMeasurement,
@@ -50,7 +48,7 @@ import type { ARScanPhase } from './three/arPointCloudMesh';
 import { TopBar } from './components/TopBar';
 import { PoleViewport3D, type PoleViewportHandle } from './components/PoleViewport3D';
 import { InspectorCallout } from './components/InspectorCallout';
-import { ControlSidebar } from './components/ControlSidebar';
+import { BottomControlDock } from './components/BottomControlDock';
 import { ViewportModeBar } from './components/ViewportModeBar';
 import { FloorPlanView } from './components/FloorPlanView';
 import { PoleContextMenu } from './components/PoleContextMenu';
@@ -70,11 +68,10 @@ export default function App() {
   const [lastClamp, setLastClamp] = useState<PoleClampResult | null>(null);
   const [cameraMotion, setCameraMotion] = useState<CameraMotionMode>('manual');
 
-  const [activeTab, setActiveTab] = useState<DockTabId>('configure');
+  const [activeTab, setActiveTab] = useState<DockTabId>('room');
+  const [installDemoActive, setInstallDemoActive] = useState(false);
   const [viewportMode, setViewportMode] = useState<ViewportMode>('3d');
-  const [sidebarDensity, setSidebarDensity] = useState<SidebarDensity>('full');
   const [dockCollapsed, setDockCollapsed] = useState(false);
-  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   const [activeModal, setActiveModal] = useState<ModalId>('none');
   const [contextMenu, setContextMenu] = useState<PoleContextMenuState | null>(null);
   const [floorPlanResetZoomSignal, setFloorPlanResetZoomSignal] = useState(0);
@@ -140,6 +137,7 @@ export default function App() {
     () => ({
       ...config,
       finish: activePole.finish,
+      powderTone: activePole.powderTone,
       diameterMm: activePole.diameterMm,
       poleHeightCm: activePole.heightCm,
       cushionPlacement: activePole.cushionPlacement,
@@ -149,16 +147,23 @@ export default function App() {
     [config, activePole]
   );
 
-  const bom = useMemo(() => generateMultiPoleBOM(poles, config), [poles, config]);
-  const clearance = useMemo(
+  const quote = useMemo(
     () =>
-      analyzeFloorClearance(
-        config.roomWidthM,
-        config.roomDepthM,
-        config.mount,
-        config.enforceMinClearance
-      ),
-    [config.roomWidthM, config.roomDepthM, config.mount, config.enforceMinClearance]
+      generateXPoleQuote(poles, {
+        roomWidthM: config.roomWidthM,
+        roomDepthM: config.roomDepthM,
+        ceilingHeightCm: config.ceilingHeightCm,
+        ceilingType: config.ceilingType,
+        priceTier: config.priceTier,
+      }),
+    [
+      poles,
+      config.roomWidthM,
+      config.roomDepthM,
+      config.ceilingHeightCm,
+      config.ceilingType,
+      config.priceTier,
+    ]
   );
 
   const canAddPole = useMemo(
@@ -360,11 +365,15 @@ export default function App() {
       const next = !prev;
       if (next) {
         setMoveMode(false);
+        setInstallDemoActive(false);
+        setPlaybackMode('idle');
+        setAssemblyProgress(1.0);
+        setExplodedFactor(0.0);
+        setHighlightFasteners(false);
         setSelectedPart(null);
-        setActiveTab('configure');
         // Ensure right comparison finish contrasts with left finish by default
         if (compareFinish === activePole.finish) {
-          setCompareFinish(activePole.finish === 'brass' ? 'stainless' : 'brass');
+          setCompareFinish(activePole.finish === 'chrome' ? 'brass' : 'chrome');
         }
         setCameraMotion('manual');
         window.setTimeout(() => viewportRef.current?.focusCamera('compare-pair'), 40);
@@ -398,12 +407,22 @@ export default function App() {
     }
   }, []);
 
+  const handleExitInstallDemo = useCallback(() => {
+    soundFx.playDetent();
+    setInstallDemoActive(false);
+    setPlaybackMode('idle');
+    setAssemblyProgress(1.0);
+    setExplodedFactor(0.0);
+    if (!selectedPart) setHighlightFasteners(false);
+    viewportRef.current?.focusCamera('full-rig');
+  }, [selectedPart]);
+
   const handleLaunchAssemblyDemo = useCallback((mode: 'assemble' | 'dismantle') => {
+    soundFx.playDetent();
     setViewportMode('3d');
     setCompareMode(false);
     setMoveMode(false);
-    setActiveTab('assembly');
-    setDockCollapsed(false);
+    setInstallDemoActive(true);
     setSelectedPart(null);
     setHighlightFasteners(true);
     setExplodedFactor(0);
@@ -421,6 +440,7 @@ export default function App() {
       videoRef.current.srcObject = null;
     }
     setArStream(null);
+    setArUploadedPhotoUrl(null);
     setArCameraActive(false);
     setArCameraError(null);
     setArPointCloud([]);
@@ -494,27 +514,23 @@ export default function App() {
     [handleChangeConfig, handleChangeActivePole, stopArCamera]
   );
 
-  const startArCamera = useCallback(async () => {
-    soundFx.playTorqueClick();
-    setCompareMode(false);
-    setMoveMode(false);
-    setSelectedPart(null);
-    setHighlightFasteners(false);
-    setPlaybackMode('idle');
-    setAssemblyProgress(1.0);
-    setExplodedFactor(0.0);
-    setCameraMotion('manual');
-    // Immediately place the live 3D pole directly onto the real camera view!
-    setViewportMode('3d');
-    setArScanPhase('pole-ready');
-    setArFloorTaps([]);
-    setArPointCloud([]);
-    setArShowPointCloud(false);
-    setArCameraActive(true);
+  const acquireArCameraStream = useCallback(async () => {
     setArCameraError(null);
-
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
       setArCameraError('Camera unavailable on this device/browser.');
+      return;
+    }
+
+    // Reuse active live camera tracks if still running
+    if (
+      streamRef.current &&
+      streamRef.current.getVideoTracks().some((t) => t.readyState === 'live')
+    ) {
+      setArStream(streamRef.current);
+      if (videoRef.current) {
+        videoRef.current.srcObject = streamRef.current;
+        videoRef.current.play().catch(() => {});
+      }
       return;
     }
 
@@ -543,15 +559,43 @@ export default function App() {
     }
   }, []);
 
-  // Reliably attach MediaStream to <video> element after it mounts
+  const startArCamera = useCallback(async () => {
+    soundFx.playTorqueClick();
+    setCompareMode(false);
+    setMoveMode(false);
+    setInstallDemoActive(false);
+    setSelectedPart(null);
+    setHighlightFasteners(false);
+    setPlaybackMode('idle');
+    setAssemblyProgress(1.0);
+    setExplodedFactor(0.0);
+    setCameraMotion('manual');
+    // Immediately place the live 3D pole directly onto the real camera view!
+    setViewportMode('3d');
+    setArScanPhase('pole-ready');
+    setArFloorTaps([]);
+    setArPointCloud([]);
+    setArShowPointCloud(false);
+    setArUploadedPhotoUrl(null);
+    setArCameraActive(true);
+    await acquireArCameraStream();
+  }, [acquireArCameraStream]);
+
+  const handleReturnToArCamera = useCallback(() => {
+    soundFx.playDetent();
+    setArUploadedPhotoUrl(null);
+    void acquireArCameraStream();
+  }, [acquireArCameraStream]);
+
+  // Reliably attach MediaStream to <video> element after it mounts or when returning from uploaded photo
   useEffect(() => {
     const videoEl = videoRef.current;
-    if (!arCameraActive || !arStream || !videoEl) return;
+    if (!arCameraActive || arUploadedPhotoUrl || !arStream || !videoEl) return;
     if (videoEl.srcObject !== arStream) {
       videoEl.srcObject = arStream;
     }
     videoEl.play().catch(() => {});
-  }, [arCameraActive, arStream]);
+  }, [arCameraActive, arUploadedPhotoUrl, arStream]);
 
   useEffect(() => {
     return () => {
@@ -614,20 +658,24 @@ export default function App() {
       data-environment={config.environment}
       data-replica-objects={String(roomReplica?.objects.length ?? 0)}
       data-viewport-mode={viewportMode}
-      data-sidebar-density={sidebarDensity}
+      data-dock-collapsed={dockCollapsed ? 'true' : 'false'}
       data-active-pole-pos={`${activePole.x.toFixed(2)},${activePole.z.toFixed(2)}`}
     >
-      {/* Top 3-zone navigation header */}
+      {/* Minimal Translucent X-POLE Brand Header */}
       <TopBar
         lighting={config.lighting}
-        activeModal={activeModal}
-        totalPriceUsd={bom.totalPriceUsd}
+        totalPriceUsd={quote.totalUsd}
+        priceTier={config.priceTier}
         arCameraActive={arCameraActive}
         onOpenModal={(m) => {
           soundFx.playDetent();
           setActiveModal(m);
         }}
-        onStartArCamera={startArCamera}
+        onJumpToSelection={() => {
+          soundFx.playDetent();
+          setActiveTab('selection');
+          setDockCollapsed(false);
+        }}
       />
 
       {/* Live AR Camera Pass-Through Layer behind transparent 3D WebGL Canvas */}
@@ -658,170 +706,121 @@ export default function App() {
         </div>
       )}
 
-      {/* Horizontal Workspace Split: Left Interactive Viewport (3D / 2D Floor Plan) + Right Docked Settings Sidebar */}
-      <div className={`relative z-10 flex flex-1 min-h-0 w-full ${arCameraActive ? 'pt-0' : 'pt-12'}`}>
-        {/* Left Primary Interactive Stage */}
-        <main className="relative flex-1 min-w-0 h-full overflow-hidden">
-          {/* Persistent 3D WebGL Studio Viewport (kept mounted for instant 2D <-> 3D switching & live sync) */}
-          <div
-            className={`w-full h-full ${
-              viewportMode === 'floor-plan' && !arCameraActive
-                ? 'invisible pointer-events-none'
-                : 'visible'
-            }`}
-          >
-            <PoleViewport3D
-              ref={viewportRef}
+      {/* Full-Bleed Primary Interactive Stage (100% Viewport 3D Studio & 2D Floor Plan) */}
+      <main className="relative z-10 flex-1 min-h-0 w-full h-full overflow-hidden">
+        {/* Persistent 3D WebGL Studio Viewport (kept mounted for instant 2D <-> 3D switching & live sync) */}
+        <div
+          className={`w-full h-full ${
+            viewportMode === 'floor-plan' && !arCameraActive
+              ? 'invisible pointer-events-none'
+              : 'visible'
+          }`}
+        >
+          <PoleViewport3D
+            ref={viewportRef}
+            config={activeRigConfig}
+            poles={poles}
+            activePoleId={activePole.id}
+            onSelectPole={(id) => {
+              setActivePoleId(id);
+              setSelectedPart(null);
+            }}
+            onMovePole={handleMovePole}
+            moveMode={moveMode}
+            compareMode={compareMode}
+            compareFinish={compareFinish}
+            cameraMotion={cameraMotion}
+            onCancelCameraMotion={() => setCameraMotion('manual')}
+            assemblyProgress={assemblyProgress}
+            explodedFactor={explodedFactor}
+            highlightFasteners={highlightFasteners}
+            selectedPart={selectedPart}
+            onSelectPart={(partId) => {
+              setSelectedPart(partId);
+              if (partId) setHighlightFasteners(true);
+            }}
+            playbackMode={playbackMode}
+            onPlaybackProgress={handlePlaybackProgress}
+            arCameraActive={arCameraActive}
+            arMarkers={arMarkers}
+            arMeasurement={arMeasurement}
+            arScanPhase={arScanPhase}
+            arPointCloud={arPointCloud}
+            arShowPointCloud={arShowPointCloud}
+            arSurfaceCalibration={arSurfaceCalibration}
+            arPartialFloorPoints={arPartialFloorPoints}
+            roomReplica={roomReplica}
+            showInferredObjects={showInferredObjects}
+            replicaRenderMode={replicaRenderMode}
+            showReplicaDimensions={showReplicaDimensions}
+            paused={viewportMode === 'floor-plan' && !arCameraActive}
+            onOpenContextMenu={setContextMenu}
+          />
+        </div>
+
+        {/* Interactive 2D Architectural Floor Plan View (directly synced with 3D pole positions) */}
+        {viewportMode === 'floor-plan' && !arCameraActive && (
+          <div className="absolute inset-0 z-10 pt-13">
+            <FloorPlanView
               config={activeRigConfig}
               poles={poles}
               activePoleId={activePole.id}
+              canAddPole={canAddPole}
+              roomReplica={roomReplica}
+              showInferredObjects={showInferredObjects}
               onSelectPole={(id) => {
                 setActivePoleId(id);
                 setSelectedPart(null);
               }}
               onMovePole={handleMovePole}
-              moveMode={moveMode}
-              compareMode={compareMode}
-              compareFinish={compareFinish}
-              cameraMotion={cameraMotion}
-              onCancelCameraMotion={() => setCameraMotion('manual')}
-              assemblyProgress={assemblyProgress}
-              explodedFactor={explodedFactor}
-              highlightFasteners={highlightFasteners}
-              selectedPart={selectedPart}
-              onSelectPart={(partId) => {
-                setSelectedPart(partId);
-                if (partId) setHighlightFasteners(true);
-              }}
-              playbackMode={playbackMode}
-              onPlaybackProgress={handlePlaybackProgress}
-              arCameraActive={arCameraActive}
-              arMarkers={arMarkers}
-              arMeasurement={arMeasurement}
-              arScanPhase={arScanPhase}
-              arPointCloud={arPointCloud}
-              arShowPointCloud={arShowPointCloud}
-              arSurfaceCalibration={arSurfaceCalibration}
-              arPartialFloorPoints={arPartialFloorPoints}
-              roomReplica={roomReplica}
-              showInferredObjects={showInferredObjects}
-              replicaRenderMode={replicaRenderMode}
-              showReplicaDimensions={showReplicaDimensions}
-              paused={viewportMode === 'floor-plan' && !arCameraActive}
+              onCenterActivePole={handleCenterActivePole}
+              onAddPole={() => handleAddPole()}
+              onChangeLighting={(lighting) => handleChangeConfig({ lighting })}
               onOpenContextMenu={setContextMenu}
+              resetZoomSignal={floorPlanResetZoomSignal}
             />
           </div>
+        )}
 
-          {/* Interactive 2D Architectural Floor Plan View (directly synced with 3D pole positions) */}
-          {viewportMode === 'floor-plan' && !arCameraActive && (
-            <div className="absolute inset-0 z-10">
-              <FloorPlanView
-                config={activeRigConfig}
-                poles={poles}
-                activePoleId={activePole.id}
-                canAddPole={canAddPole}
-                roomReplica={roomReplica}
-                showInferredObjects={showInferredObjects}
-                onSelectPole={(id) => {
-                  setActivePoleId(id);
-                  setSelectedPart(null);
-                }}
-                onMovePole={handleMovePole}
-                onCenterActivePole={handleCenterActivePole}
-                onAddPole={() => handleAddPole()}
-                onChangeLighting={(lighting) => handleChangeConfig({ lighting })}
-                onOpenContextMenu={setContextMenu}
-                resetZoomSignal={floorPlanResetZoomSignal}
-              />
-            </div>
-          )}
-
-          {/* Top-Left Segmented View Mode Bar (3D View | Floor Plan | Installation Demo) */}
-          <ViewportModeBar
-            viewportMode={viewportMode}
-            activeTab={activeTab}
-            lighting={config.lighting}
-            arCameraActive={arCameraActive}
-            onChangeViewportMode={(mode) => {
-              soundFx.playDetent();
-              setContextMenu(null);
-              setViewportMode(mode);
-              if (mode === '3d' && (activeTab === 'assembly' || playbackMode !== 'idle')) {
-                setActiveTab('configure');
-                setPlaybackMode('idle');
-                setAssemblyProgress(1.0);
-                setExplodedFactor(0.0);
-                setHighlightFasteners(false);
-                viewportRef.current?.focusCamera('full-rig');
-              }
-              if (mode === 'floor-plan') {
-                setCompareMode(false);
-                setPlaybackMode('idle');
-                setAssemblyProgress(1.0);
-                setExplodedFactor(0.0);
-                setHighlightFasteners(false);
-              }
-            }}
-            onLaunchInstallDemo={() => {
-              setContextMenu(null);
-              handleLaunchAssemblyDemo('assemble');
-            }}
-          />
-
-          {/* Top-Left Minimal Rig Spec & Assembly Callout (anchored neatly below ViewportModeBar) */}
-          <InspectorCallout
-            config={activeRigConfig}
-            poles={poles}
-            activePole={activePole}
-            bom={bom}
-            clearance={clearance}
-            compareMode={compareMode}
-            compareFinish={compareFinish}
-            moveMode={moveMode}
-            lastClamp={lastClamp}
-            activeTab={activeTab}
-            activeStepIndex={activeStepIndex}
-            assemblyProgress={assemblyProgress}
-            playbackMode={playbackMode}
-            selectedPart={selectedPart}
-            onClearSelectedPart={() => {
-              setSelectedPart(null);
-              if (activeTab !== 'assembly') setHighlightFasteners(false);
+        {/* Top-Left Translucent Segmented View Mode Bar (3D View | Floor Plan | Pole Installation Demo) */}
+        <ViewportModeBar
+          viewportMode={viewportMode}
+          installDemoActive={installDemoActive}
+          lighting={config.lighting}
+          arCameraActive={arCameraActive}
+          onChangeViewportMode={(mode) => {
+            soundFx.playDetent();
+            setContextMenu(null);
+            setViewportMode(mode);
+            if (mode === '3d' && (installDemoActive || playbackMode !== 'idle')) {
+              setInstallDemoActive(false);
+              setPlaybackMode('idle');
+              setAssemblyProgress(1.0);
+              setExplodedFactor(0.0);
+              setHighlightFasteners(false);
               viewportRef.current?.focusCamera('full-rig');
-            }}
-            onToggleMinClearance={() =>
-              handleChangeConfig({ enforceMinClearance: !config.enforceMinClearance })
             }
-            arCameraActive={arCameraActive}
-            roomReplica={roomReplica}
-            showInferredObjects={showInferredObjects}
-            onToggleInferredObjects={() => {
-              soundFx.playDetent();
-              setShowInferredObjects((v) => !v);
-            }}
-            replicaRenderMode={replicaRenderMode}
-            onChangeReplicaRenderMode={(mode) => {
-              soundFx.playDetent();
-              setReplicaRenderMode(mode);
-            }}
-            showReplicaDimensions={showReplicaDimensions}
-            onToggleReplicaDimensions={() => {
-              soundFx.playDetent();
-              setShowReplicaDimensions((v) => !v);
-            }}
-            onMatchReplicaCamera={() => {
-              soundFx.playDetent();
-              viewportRef.current?.focusCamera('replica-match');
-            }}
-            viewportMode={viewportMode}
-          />
-        </main>
+            if (mode === 'floor-plan') {
+              setCompareMode(false);
+              setInstallDemoActive(false);
+              setPlaybackMode('idle');
+              setAssemblyProgress(1.0);
+              setExplodedFactor(0.0);
+              setHighlightFasteners(false);
+            }
+          }}
+          onLaunchInstallDemo={() => {
+            setContextMenu(null);
+            handleLaunchAssemblyDemo('assemble');
+          }}
+        />
 
-        {/* Right-Docked Architectural Settings Sidebar (Full & Minimal Styled Modes) */}
-        <ControlSidebar
+        {/* Fluid Center-Bottom Translucent Glass Dock + Floating Contextual Strip */}
+        <BottomControlDock
           config={activeRigConfig}
           poles={poles}
           activePole={activePole}
+          quote={quote}
           canAddPole={canAddPole}
           onSelectPole={(id) => {
             soundFx.playDetent();
@@ -834,16 +833,32 @@ export default function App() {
           onChangeActivePole={handleChangeActivePole}
           onApplyFinishToAll={handleApplyFinishToAll}
           onChangeConfig={handleChangeConfig}
+          activeTab={activeTab}
+          onChangeTab={(tab) => {
+            soundFx.playDetent();
+            setActiveTab(tab);
+          }}
+          dockCollapsed={dockCollapsed}
+          onToggleCollapse={() => {
+            soundFx.playDetent();
+            setDockCollapsed((c) => !c);
+          }}
+          onExpandDock={() => setDockCollapsed(false)}
+          soundEnabled={soundEnabled}
+          onToggleSound={handleToggleSound}
+          arCameraActive={arCameraActive}
+          onStartArCamera={startArCamera}
+          hasRoomReplica={Boolean(roomReplica)}
+          onOpenModal={(m) => {
+            soundFx.playDetent();
+            setActiveModal(m);
+          }}
           compareMode={compareMode}
           onToggleCompareMode={handleToggleCompareMode}
-          compareFinish={compareFinish}
-          onChangeCompareFinish={(f) => {
-            soundFx.playDetent();
-            setCompareFinish(f);
-          }}
           moveMode={moveMode}
           onToggleMoveMode={() => {
             soundFx.playDetent();
+            setInstallDemoActive(false);
             setMoveMode((m) => !m);
             setLastClamp(null);
           }}
@@ -852,92 +867,80 @@ export default function App() {
             soundFx.playDetent();
             setCameraMotion(mode);
           }}
-          activeTab={activeTab}
-          onChangeTab={(tab) => {
-            soundFx.playDetent();
-            setActiveTab(tab);
-            if (tab === 'assembly') {
-              setViewportMode('3d');
-              setCompareMode(false);
-              setHighlightFasteners(true);
-            } else {
-              setPlaybackMode('idle');
-              setAssemblyProgress(1.0);
-              setExplodedFactor(0.0);
-              if (!selectedPart) setHighlightFasteners(false);
-            }
-          }}
-          viewportMode={viewportMode}
-          onChangeViewportMode={(mode) => {
-            soundFx.playDetent();
-            setContextMenu(null);
-            setViewportMode(mode);
-            if (mode === 'floor-plan') {
-              setCompareMode(false);
-              setPlaybackMode('idle');
-              setAssemblyProgress(1.0);
-              setExplodedFactor(0.0);
-              setHighlightFasteners(false);
-            }
-          }}
-          sidebarDensity={sidebarDensity}
-          onChangeSidebarDensity={(density) => {
-            soundFx.playDetent();
-            setSidebarDensity(density);
-          }}
-          dockCollapsed={dockCollapsed}
-          onToggleCollapse={() => setDockCollapsed((c) => !c)}
-          mobileDrawerOpen={mobileDrawerOpen}
-          onSetMobileDrawerOpen={setMobileDrawerOpen}
-          assemblyProgress={assemblyProgress}
-          onChangeAssemblyProgress={(p) => {
-            setAssemblyProgress(p);
-            if (p < 0.99) setHighlightFasteners(true);
-          }}
-          explodedFactor={explodedFactor}
-          onChangeExplodedFactor={(f) => {
-            setExplodedFactor(f);
-            if (f > 0.05) setHighlightFasteners(true);
-          }}
-          highlightFasteners={highlightFasteners}
-          onToggleHighlightFasteners={() => {
-            soundFx.playDetent();
-            setHighlightFasteners((h) => !h);
-          }}
-          playbackMode={playbackMode}
-          onStartPlayback={(mode) => {
-            soundFx.playDetent();
-            if (mode !== 'idle') {
-              setViewportMode('3d');
-              setCompareMode(false);
-              setHighlightFasteners(true);
-            }
-            setPlaybackMode(mode);
-          }}
           onFocusCamera={handleFocusCamera}
-          soundEnabled={soundEnabled}
-          onToggleSound={handleToggleSound}
-          arCameraActive={arCameraActive}
-          onStartArCamera={startArCamera}
-          hasRoomReplica={Boolean(roomReplica)}
-          hasDepthMeshReplica={Boolean(roomReplica?.depthMesh)}
-          showInferredObjects={showInferredObjects}
-          onToggleInferredObjects={() => {
-            soundFx.playDetent();
-            setShowInferredObjects((v) => !v);
-          }}
-          replicaRenderMode={replicaRenderMode}
-          onChangeReplicaRenderMode={(mode) => {
-            soundFx.playDetent();
-            setReplicaRenderMode(mode);
-          }}
-          showReplicaDimensions={showReplicaDimensions}
-          onToggleReplicaDimensions={() => {
-            soundFx.playDetent();
-            setShowReplicaDimensions((v) => !v);
-          }}
+          contextualStrip={
+            <InspectorCallout
+              config={activeRigConfig}
+              poles={poles}
+              activePole={activePole}
+              compareMode={compareMode}
+              compareFinish={compareFinish}
+              onChangeCompareFinish={(f) => {
+                soundFx.playDetent();
+                setCompareFinish(f);
+              }}
+              moveMode={moveMode}
+              lastClamp={lastClamp}
+              onFocusCamera={handleFocusCamera}
+              installDemoActive={installDemoActive}
+              onExitInstallDemo={handleExitInstallDemo}
+              activeStepIndex={activeStepIndex}
+              assemblyProgress={assemblyProgress}
+              onChangeAssemblyProgress={(p) => {
+                setAssemblyProgress(p);
+                if (p < 0.99) setHighlightFasteners(true);
+              }}
+              explodedFactor={explodedFactor}
+              onChangeExplodedFactor={(f) => {
+                setExplodedFactor(f);
+                if (f > 0.05) setHighlightFasteners(true);
+              }}
+              playbackMode={playbackMode}
+              onStartPlayback={(mode) => {
+                soundFx.playDetent();
+                if (mode !== 'idle') {
+                  setViewportMode('3d');
+                  setCompareMode(false);
+                  setInstallDemoActive(true);
+                  setHighlightFasteners(true);
+                }
+                setPlaybackMode(mode);
+              }}
+              selectedPart={selectedPart}
+              onClearSelectedPart={() => {
+                setSelectedPart(null);
+                if (!installDemoActive) setHighlightFasteners(false);
+                viewportRef.current?.focusCamera('full-rig');
+              }}
+              onToggleMinClearance={() =>
+                handleChangeConfig({ enforceMinClearance: !config.enforceMinClearance })
+              }
+              arCameraActive={arCameraActive}
+              roomReplica={roomReplica}
+              showInferredObjects={showInferredObjects}
+              onToggleInferredObjects={() => {
+                soundFx.playDetent();
+                setShowInferredObjects((v) => !v);
+              }}
+              replicaRenderMode={replicaRenderMode}
+              onChangeReplicaRenderMode={(mode) => {
+                soundFx.playDetent();
+                setReplicaRenderMode(mode);
+              }}
+              showReplicaDimensions={showReplicaDimensions}
+              onToggleReplicaDimensions={() => {
+                soundFx.playDetent();
+                setShowReplicaDimensions((v) => !v);
+              }}
+              onMatchReplicaCamera={() => {
+                soundFx.playDetent();
+                viewportRef.current?.focusCamera('replica-match');
+              }}
+              viewportMode={viewportMode}
+            />
+          }
         />
-      </div>
+      </main>
 
       {/* Interactive AR Surface Calibration, Point Cloud Room Scanner & Pole Fit HUD */}
       {arCameraActive && (
@@ -946,6 +949,7 @@ export default function App() {
           arCameraError={arCameraError}
           uploadedPhotoUrl={arUploadedPhotoUrl}
           onUploadRoomPhoto={setArUploadedPhotoUrl}
+          onReturnToCamera={handleReturnToArCamera}
           markers={arMarkers}
           onChangeMarkers={setArMarkers}
           scanPhase={arScanPhase}
@@ -1013,16 +1017,16 @@ export default function App() {
         }}
       />
 
-      {/* Documentation, BOM, CAD Export & AR Preview Modals */}
+      {/* Official X-POLE Request Quote & CAD Export Modals */}
       <Modals
         activeModal={activeModal}
         onClose={() => setActiveModal('none')}
         config={activeRigConfig}
-        bom={bom}
+        quote={quote}
+        onChangePriceTier={(priceTier) => handleChangeConfig({ priceTier })}
         onExportCAD={handleExportCAD}
         onGenerateUSDZUrl={handleGenerateUSDZUrl}
         onCaptureSnapshot={handleCaptureSnapshot}
-        onLaunchAssemblyDemo={handleLaunchAssemblyDemo}
         onStartArCamera={startArCamera}
       />
     </div>

@@ -229,6 +229,141 @@ export function createEnvironmentRig(
   apronMesh.position.y = -0.025;
   group.add(apronMesh);
 
+  // --- OFFICIAL X-POLE STUDIO BRANDING (Floor Decal + Architectural Wall Signage) ---
+  const LOGO_ASPECT = 120 / 38;
+  const floorBrandMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0,
+    roughness: 0.46,
+    metalness: 0.03,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
+  });
+  const floorBrandMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), floorBrandMat);
+  floorBrandMesh.name = 'XPole_FloorBranding';
+  floorBrandMesh.rotation.x = -Math.PI / 2;
+  floorBrandMesh.position.y = 0.006;
+  floorBrandMesh.visible = false;
+  group.add(floorBrandMesh);
+
+  const wallBrandMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0,
+    roughness: 0.42,
+    metalness: 0.04,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
+  });
+  const wallBrandMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), wallBrandMat);
+  wallBrandMesh.name = 'XPole_WallBranding';
+  wallBrandMesh.visible = false;
+  group.add(wallBrandMesh);
+
+  let brandTexLight: THREE.CanvasTexture | null = null;
+  let brandTexDarkWall: THREE.CanvasTexture | null = null;
+  let brandReady = false;
+  let lastWallIsDark = true;
+  let shouldShowFloorBrand = false;
+  let shouldShowWallBrand = false;
+
+  function applyBrandLightingStyle(isDarkWall: boolean): void {
+    lastWallIsDark = isDarkWall;
+    if (!brandReady || !brandTexLight || !brandTexDarkWall) return;
+
+    floorBrandMat.map = brandTexLight;
+    floorBrandMat.emissive.setHex(isDarkWall ? 0xffffff : 0x000000);
+    floorBrandMat.emissiveMap = isDarkWall ? brandTexLight : null;
+    floorBrandMat.emissiveIntensity = isDarkWall ? 0.24 : 0;
+    floorBrandMat.opacity = isDarkWall ? 0.86 : 0.9;
+    floorBrandMat.needsUpdate = true;
+
+    const activeWallTex = isDarkWall ? brandTexDarkWall : brandTexLight;
+    wallBrandMat.map = activeWallTex;
+    wallBrandMat.emissive.setHex(isDarkWall ? 0xffffff : 0x000000);
+    wallBrandMat.emissiveMap = isDarkWall ? activeWallTex : null;
+    wallBrandMat.emissiveIntensity = isDarkWall ? 0.68 : 0;
+    wallBrandMat.opacity = 0.96;
+    wallBrandMat.needsUpdate = true;
+  }
+
+  if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+    const logoImg = new Image();
+    logoImg.crossOrigin = 'anonymous';
+    logoImg.onload = () => {
+      const cw = 960;
+      const ch = Math.round(cw / LOGO_ASPECT);
+
+      // High-res crisp version for light surfaces (wood floor & daylight white wall)
+      const cLight = document.createElement('canvas');
+      cLight.width = cw;
+      cLight.height = ch;
+      const ctxL = cLight.getContext('2d');
+      if (ctxL) {
+        ctxL.imageSmoothingEnabled = true;
+        ctxL.imageSmoothingQuality = 'high';
+        ctxL.drawImage(logoImg, 0, 0, cw, ch);
+      }
+      brandTexLight = new THREE.CanvasTexture(cLight);
+      brandTexLight.colorSpace = THREE.SRGBColorSpace;
+      brandTexLight.generateMipmaps = true;
+      brandTexLight.minFilter = THREE.LinearMipmapLinearFilter;
+      brandTexLight.magFilter = THREE.LinearFilter;
+      brandTexLight.anisotropy = isSoftwareGl ? 2 : 8;
+
+      // High-contrast version for dark studio walls (keeps official purple X-POLE vibrant, lifts dark tagline to crisp silver-white)
+      const cDark = document.createElement('canvas');
+      cDark.width = cw;
+      cDark.height = ch;
+      const ctxD = cDark.getContext('2d');
+      if (ctxD) {
+        ctxD.imageSmoothingEnabled = true;
+        ctxD.imageSmoothingQuality = 'high';
+        ctxD.drawImage(logoImg, 0, 0, cw, ch);
+        const imgData = ctxD.getImageData(0, 0, cw, ch);
+        const d = imgData.data;
+        for (let i = 0; i < d.length; i += 4) {
+          const a = d[i + 3];
+          if (a < 16) continue;
+          const r = d[i];
+          const g = d[i + 1];
+          const b = d[i + 2];
+          // Neutral dark gray/black pixels (tagline & ® mark) -> luminous architectural off-white
+          const chroma = Math.max(r, g, b) - Math.min(r, g, b);
+          if (chroma < 26 && r < 140) {
+            d[i] = 240;
+            d[i + 1] = 242;
+            d[i + 2] = 250;
+          } else {
+            // Gently brighten the official X-POLE purple for crisp legibility on charcoal walls
+            d[i] = Math.min(255, Math.round(r * 1.28 + 26));
+            d[i + 1] = Math.min(255, Math.round(g * 1.2 + 16));
+            d[i + 2] = Math.min(255, Math.round(b * 1.3 + 28));
+          }
+        }
+        ctxD.putImageData(imgData, 0, 0);
+      }
+      brandTexDarkWall = new THREE.CanvasTexture(cDark);
+      brandTexDarkWall.colorSpace = THREE.SRGBColorSpace;
+      brandTexDarkWall.generateMipmaps = true;
+      brandTexDarkWall.minFilter = THREE.LinearMipmapLinearFilter;
+      brandTexDarkWall.magFilter = THREE.LinearFilter;
+      brandTexDarkWall.anisotropy = isSoftwareGl ? 2 : 8;
+
+      brandReady = true;
+      applyBrandLightingStyle(lastWallIsDark);
+      floorBrandMesh.visible = shouldShowFloorBrand;
+      wallBrandMesh.visible = shouldShowWallBrand;
+      onAssetLoaded?.();
+    };
+    logoImg.src = '/assets/aistudio/logo-xpole_ae18a8c2.png';
+  }
+
   // Dynamically pooled floor contact shadows & clearance rings (grows lazily as poles are added)
   const shadowPool: THREE.Mesh[] = [];
   const clearancePool: THREE.Mesh[] = [];
@@ -990,10 +1125,10 @@ export function createEnvironmentRig(
       slatInstanced.instanceMatrix.needsUpdate = true;
 
       const mirrorScaleX = Math.max(0.38, Math.min(1.0, (W - 0.34) / 2.74));
-      const mirrorMaxH = Math.min(H, H - 1.24 * mirrorScaleX * tanV) - 0.32;
-      const mirrorScaleY = Math.max(0.55, Math.min(1.0, mirrorMaxH / 2.24));
+      const mirrorMaxH = Math.max(1.25, Math.min(H, H - 1.24 * mirrorScaleX * tanV) - 0.62);
+      const mirrorScaleY = Math.max(0.55, Math.min(0.88, mirrorMaxH / 2.24));
       mirrorGroup.scale.set(mirrorScaleX, mirrorScaleY, 1);
-      mirrorGroup.position.set(0, (2.24 * mirrorScaleY) / 2 + 0.14, -D / 2 + 0.016);
+      mirrorGroup.position.set(0, (2.24 * mirrorScaleY) / 2 + 0.12, -D / 2 + 0.016);
 
       floorNeonStrip.scale.set(Math.max(0.35, Math.min(1.0, (W - 0.28) / 2.68)), 1, 1);
       floorNeonStrip.position.set(0, 0.014, -D / 2 + 0.028);
@@ -1004,6 +1139,66 @@ export function createEnvironmentRig(
     const homeScaleX = Math.max(0.55, Math.min(1.0, (W - 0.35) / 1.75));
     homeFeatureGroup.scale.set(homeScaleX, 1, 1);
     homeFeatureGroup.position.set(0, 0, -D / 2 + 0.22);
+
+    // Official X-POLE Studio Branding (Floor Decal + Architectural Wall Signage)
+    const allowBranding = showBoxShell && !isReplica;
+    const isDarkWall = config.lighting !== 'studio-daylight';
+    if (lastWallIsDark !== isDarkWall || !brandReady) {
+      applyBrandLightingStyle(isDarkWall);
+    }
+
+    // 1. Floor branding decal centered cleanly in the forward wood floor apron facing the camera
+    shouldShowFloorBrand = allowBranding;
+    floorBrandMesh.visible = brandReady && shouldShowFloorBrand;
+    if (allowBranding) {
+      const floorLogoW = Math.max(0.95, Math.min(1.48, W * 0.3));
+      const floorLogoH = floorLogoW / LOGO_ASPECT;
+      floorBrandMesh.scale.set(floorLogoW, floorLogoH, 1);
+      floorBrandMesh.position.set(0, 0.006, Math.min(D * 0.34, Math.max(1.0, D / 2 - 0.62)));
+    }
+
+    // 2. Architectural back-wall branding (centered header above studio mirror, or right bay in Home Loft)
+    if (allowBranding) {
+      if (config.environment === 'studio') {
+        const mirrorScaleX = Math.max(0.38, Math.min(1.0, (W - 0.34) / 2.74));
+        const mirrorMaxH = Math.max(1.25, Math.min(H, H - 1.24 * mirrorScaleX * tanV) - 0.62);
+        const mirrorScaleY = Math.max(0.55, Math.min(0.88, mirrorMaxH / 2.24));
+        const mirrorTopY = 0.12 + 2.24 * mirrorScaleY;
+        const headerCeilingY = H - 0.52 * Math.abs(tanV) - 0.05;
+        const headerBandH = headerCeilingY - mirrorTopY;
+
+        if (headerBandH >= 0.26) {
+          const wallLogoH = Math.max(0.2, Math.min(0.36, headerBandH * 0.64));
+          const wallLogoW = Math.min(W * 0.56, wallLogoH * LOGO_ASPECT);
+          const fittedH = wallLogoW / LOGO_ASPECT;
+          const wallLogoY = mirrorTopY + headerBandH * 0.5;
+          shouldShowWallBrand = true;
+          wallBrandMesh.scale.set(wallLogoW, fittedH, 1);
+          wallBrandMesh.position.set(0, wallLogoY, -D / 2 + 0.012);
+        } else {
+          shouldShowWallBrand = false;
+        }
+      } else {
+        const rightEdge = 0.82 * homeScaleX;
+        const rightBayWidth = W / 2 - rightEdge;
+        if (rightBayWidth >= 0.58) {
+          const wallLogoW = Math.max(0.48, Math.min(1.02, rightBayWidth * 0.78));
+          const wallLogoH = wallLogoW / LOGO_ASPECT;
+          const wallLogoX = rightEdge + rightBayWidth * 0.5;
+          const localCeilAtX = H + wallLogoX * tanV;
+          const wallLogoY = Math.min(localCeilAtX - 0.3 - wallLogoH / 2, Math.max(1.48, H * 0.6));
+          shouldShowWallBrand = true;
+          wallBrandMesh.scale.set(wallLogoW, wallLogoH, 1);
+          wallBrandMesh.position.set(wallLogoX, wallLogoY, -D / 2 + 0.012);
+        } else {
+          shouldShowWallBrand = false;
+        }
+      }
+      wallBrandMesh.visible = brandReady && shouldShowWallBrand;
+    } else {
+      shouldShowWallBrand = false;
+      wallBrandMesh.visible = false;
+    }
 
     // Scanned 3D Room Replica (Dense 3D CAD Wireframe or Procedural Fallback)
     roomReplicaRig.update(
@@ -1021,7 +1216,13 @@ export function createEnvironmentRig(
         ? poleMarkers
         : [{ x: 0, z: 0, mount: config.mount, isSelected: false }];
 
-    const clearance = analyzeFloorClearance(W, D, config.mount, config.enforceMinClearance);
+    const clearance = analyzeFloorClearance(
+      W,
+      D,
+      config.mount,
+      config.enforceMinClearance,
+      config.clearanceRadiusM
+    );
     updateClearanceColor(clearance, config.lighting, config.enforceMinClearance);
 
     const accentHex =
@@ -1050,7 +1251,7 @@ export function createEnvironmentRig(
 
       cr.visible = config.showClearanceRing;
       cr.position.set(m.x, 0.018, m.z);
-      const rad = config.enforceMinClearance ? 1.25 : 0.45;
+      const rad = config.enforceMinClearance ? Math.max(0.45, config.clearanceRadiusM || 1.25) : 0.45;
       cr.scale.set(rad * 2, rad * 2, 1);
 
       if (m.isSelected && (markers.length > 1 || dragBoundaryState?.active)) {
@@ -1065,7 +1266,8 @@ export function createEnvironmentRig(
     if (dragBoundaryState?.active) {
       const margin = getWallClearanceMarginM(
         dragBoundaryState.activeMount,
-        config.enforceMinClearance
+        config.enforceMinClearance,
+        config.clearanceRadiusM
       );
       const safeSpanW = Math.max(0.15, W - margin * 2);
       const safeSpanD = Math.max(0.15, D - margin * 2);
@@ -1115,6 +1317,10 @@ export function createEnvironmentRig(
       selectionRingMat.dispose();
       boundaryLineMat.dispose();
       apronMat.dispose();
+      floorBrandMat.dispose();
+      wallBrandMat.dispose();
+      brandTexLight?.dispose();
+      brandTexDarkWall?.dispose();
       scene.remove(group);
       scene.remove(
         hemiLight,

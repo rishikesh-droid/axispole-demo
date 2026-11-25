@@ -10,14 +10,9 @@ import {
 } from 'react';
 import {
   Crosshair,
-  Lamp,
   Maximize2,
   Minus,
   Plus,
-  Sparkles,
-  Sun,
-  Sunset,
-  Zap,
 } from 'lucide-react';
 import type {
   FloorPlanUnit,
@@ -32,7 +27,6 @@ import {
   clampPolePosition,
   getWallClearanceMarginM,
   isDarkLighting,
-  LIGHTING_PRESETS,
   POLE_FINISHES,
 } from '../utils/poleConfig';
 import {
@@ -62,14 +56,6 @@ interface FloorPlanViewProps {
   resetZoomSignal?: number;
 }
 
-function LightingSmallIcon({ preset }: { preset: LightingPreset }) {
-  if (preset === 'studio-daylight') return <Sun className="w-3 h-3 shrink-0" aria-hidden="true" />;
-  if (preset === 'mood-neon') return <Sparkles className="w-3 h-3 shrink-0" aria-hidden="true" />;
-  if (preset === 'sunset-flow') return <Sunset className="w-3 h-3 shrink-0" aria-hidden="true" />;
-  if (preset === 'cyber-pulse') return <Zap className="w-3 h-3 shrink-0" aria-hidden="true" />;
-  return <Lamp className="w-3 h-3 shrink-0" aria-hidden="true" />;
-}
-
 export function FloorPlanView({
   config,
   poles,
@@ -81,7 +67,7 @@ export function FloorPlanView({
   onMovePole,
   onCenterActivePole,
   onAddPole,
-  onChangeLighting,
+  onChangeLighting: _onChangeLighting,
   onOpenContextMenu,
   resetZoomSignal = 0,
 }: FloorPlanViewProps) {
@@ -129,20 +115,21 @@ export function FloorPlanView({
 
   const isCompactViewport = viewportSize.width < 640;
   const padX = isCompactViewport ? 56 : 112;
-  const padY = isCompactViewport ? 88 : 94;
+  const padY = isCompactViewport ? 64 : 68;
+  const dockSafeBottom = isCompactViewport ? 140 : 196;
 
   const planRect = useMemo(
     () =>
       computeFloorPlanRect(
         viewportSize.width,
-        viewportSize.height,
+        Math.max(280, viewportSize.height - dockSafeBottom),
         config.roomWidthM,
         config.roomDepthM,
         zoom,
         padX,
         padY
       ),
-    [viewportSize.width, viewportSize.height, config.roomWidthM, config.roomDepthM, zoom, padX, padY]
+    [viewportSize.width, viewportSize.height, dockSafeBottom, config.roomWidthM, config.roomDepthM, zoom, padX, padY]
   );
 
   const gridLines = useMemo(
@@ -155,7 +142,11 @@ export function FloorPlanView({
     [poles, activePoleId]
   );
 
-  const wallMarginM = getWallClearanceMarginM(config.mount, config.enforceMinClearance);
+  const wallMarginM = getWallClearanceMarginM(
+    config.mount,
+    config.enforceMinClearance,
+    config.clearanceRadiusM
+  );
 
   const activeDistances = useMemo(
     () => computePoleWallDistances(activePole, config.roomWidthM, config.roomDepthM, poles),
@@ -224,14 +215,14 @@ export function FloorPlanView({
           : '#f4f3ef';
 
   const surfaceToolbarClass = isNeon
-    ? 'bg-[#11131d]/94 border-violet-400/25 text-zinc-100 shadow-[0_8px_24px_rgba(0,0,0,0.45)]'
+    ? 'bg-[#12101f]/74 border-violet-300/20 text-zinc-100 backdrop-blur-xl backdrop-saturate-150 shadow-[0_8px_28px_rgba(0,0,0,0.42)]'
     : isSunset
-      ? 'bg-[#1c1317]/94 border-rose-400/28 text-rose-50 shadow-[0_8px_24px_rgba(0,0,0,0.45)]'
+      ? 'bg-[#1f1218]/74 border-rose-300/22 text-rose-50 backdrop-blur-xl backdrop-saturate-150 shadow-[0_8px_28px_rgba(0,0,0,0.42)]'
       : isPulse
-        ? 'bg-[#0e161b]/94 border-emerald-400/28 text-emerald-50 shadow-[0_8px_24px_rgba(0,0,0,0.45)]'
+        ? 'bg-[#0d181e]/74 border-emerald-300/22 text-emerald-50 backdrop-blur-xl backdrop-saturate-150 shadow-[0_8px_28px_rgba(0,0,0,0.42)]'
         : isDark
-          ? 'bg-[#161412]/94 border-amber-500/25 text-stone-100 shadow-[0_8px_24px_rgba(0,0,0,0.45)]'
-          : 'bg-[#faf9f6]/96 border-stone-300/90 text-stone-900 shadow-sm';
+          ? 'bg-[#171412]/76 border-amber-300/20 text-stone-100 backdrop-blur-xl backdrop-saturate-150 shadow-[0_8px_28px_rgba(0,0,0,0.42)]'
+          : 'bg-white/76 border-violet-900/12 text-stone-900 backdrop-blur-xl backdrop-saturate-150 shadow-[0_8px_24px_rgba(30,20,55,0.08)]';
 
   const toolBtnHover = isDark ? 'hover:bg-white/10' : 'hover:bg-stone-200/80';
 
@@ -919,152 +910,115 @@ export function FloorPlanView({
         })}
       </svg>
 
-      {/* Top-Right Subtle Floor Area & Drag Hint Strip */}
-      <div
-        className={`hidden sm:flex absolute top-3 right-3 sm:right-4 z-20 items-center gap-3 px-3 py-1.5 rounded-xl border text-[11px] ${surfaceToolbarClass}`}
-      >
-        <span className="font-mono font-semibold tabular-nums">
-          {formatFloorArea(config.roomWidthM, config.roomDepthM, unit)}
-        </span>
-        <span className={isDark ? 'text-zinc-600' : 'text-stone-300'} aria-hidden="true">
-          |
-        </span>
-        <span className={isDark ? 'text-zinc-300' : 'text-stone-600'}>
-          {draggingPoleId
-            ? dragBoundaryHit.pole
-              ? 'Min pole spacing reached'
-              : dragBoundaryHit.wall
-                ? `Min ${formatFloorPlanDim(wallMarginM, unit)} wall margin`
-                : `Moving ${activePole.label} · ${activePole.x.toFixed(2)}m, ${activePole.z.toFixed(2)}m`
-            : 'Drag pole to move · Right-click to edit'}
-        </span>
-      </div>
-
-      {/* Bottom-Left Floating Zoom & Pole Floor Plan Controls (lifted cleanly above mobile Controls trigger) */}
-      <div className="absolute bottom-16 md:bottom-3 left-3 right-3 md:right-auto sm:left-4 z-20 flex items-center justify-between md:justify-start gap-2">
+      {/* Top-Right Frosted Floor Area, Hint & Blueprint Controls (clear of bottom dock) */}
+      <div className="absolute top-3 right-3 sm:right-4 z-20 flex flex-col items-end gap-2">
         <div
-          className={`inline-flex items-center p-0.5 rounded-xl border ${surfaceToolbarClass}`}
-          role="group"
-          aria-label="Floor plan zoom controls"
+          className={`hidden sm:flex items-center gap-3 px-3 py-1.5 rounded-xl border text-[11px] ${surfaceToolbarClass}`}
         >
-          <button
-            type="button"
-            onClick={() => setZoom((z) => Math.min(2.0, Number((z + 0.15).toFixed(2))))}
-            aria-label="Zoom in floor plan"
-            title="Zoom in"
-            className={`min-h-[32px] min-w-[32px] rounded-lg flex items-center justify-center transition-colors ${toolBtnHover}`}
-          >
-            <Plus className="w-3.5 h-3.5" aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            onClick={() => setZoom(1)}
-            aria-label="Reset floor plan zoom"
-            title="Fit room to viewport"
-            className={`min-h-[32px] px-2 rounded-lg font-mono text-[11px] font-semibold tabular-nums transition-colors ${toolBtnHover}`}
-          >
-            {Math.round(zoom * 100)}%
-          </button>
-          <button
-            type="button"
-            onClick={() => setZoom((z) => Math.max(0.65, Number((z - 0.15).toFixed(2))))}
-            aria-label="Zoom out floor plan"
-            title="Zoom out"
-            className={`min-h-[32px] min-w-[32px] rounded-lg flex items-center justify-center transition-colors ${toolBtnHover}`}
-          >
-            <Minus className="w-3.5 h-3.5" aria-hidden="true" />
-          </button>
+          <span className="font-mono font-semibold tabular-nums">
+            {formatFloorArea(config.roomWidthM, config.roomDepthM, unit)}
+          </span>
+          <span className={isDark ? 'text-zinc-600' : 'text-stone-300'} aria-hidden="true">
+            |
+          </span>
+          <span className={isDark ? 'text-zinc-300' : 'text-stone-600'}>
+            {draggingPoleId
+              ? dragBoundaryHit.pole
+                ? 'Min pole spacing reached'
+                : dragBoundaryHit.wall
+                  ? `Min ${formatFloorPlanDim(wallMarginM, unit)} wall margin`
+                  : `Moving ${activePole.label} · ${activePole.x.toFixed(2)}m, ${activePole.z.toFixed(2)}m`
+              : 'Drag pole to move · Right-click to edit'}
+          </span>
         </div>
 
-        <div
-          className={`inline-flex items-center p-0.5 rounded-xl border ${surfaceToolbarClass}`}
-          role="group"
-          aria-label="Floor plan actions"
-        >
-          <button
-            type="button"
-            onClick={() => setUnit((u) => (u === 'm' ? 'ft' : 'm'))}
-            data-testid="floor-plan-unit-toggle"
-            title="Switch metric / imperial units"
-            className={`min-h-[32px] px-2 sm:px-2.5 rounded-lg font-mono text-[11px] font-semibold transition-colors whitespace-nowrap ${toolBtnHover}`}
+        <div className="flex flex-wrap items-center justify-end gap-1.5">
+          <div
+            className={`inline-flex items-center p-0.5 rounded-xl border ${surfaceToolbarClass}`}
+            role="group"
+            aria-label="Floor plan zoom controls"
           >
-            <span className="sm:hidden">{unit === 'm' ? 'm' : 'ft'}</span>
-            <span className="hidden sm:inline">{unit === 'm' ? 'Metric (m)' : 'Imperial (ft)'}</span>
-          </button>
-          <button
-            type="button"
-            onClick={onCenterActivePole}
-            title="Center active pole in room"
-            className={`min-h-[32px] px-2 sm:px-2.5 rounded-lg text-[11px] font-semibold inline-flex items-center gap-1 transition-colors whitespace-nowrap ${toolBtnHover}`}
-          >
-            <Crosshair className="w-3.5 h-3.5" aria-hidden="true" />
-            <span className="hidden sm:inline">Center</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setZoom(1)}
-            aria-label="Fit room view"
-            title="Fit room"
-            className={`hidden sm:flex min-h-[32px] min-w-[32px] rounded-lg items-center justify-center transition-colors ${toolBtnHover}`}
-          >
-            <Maximize2 className="w-3.5 h-3.5" aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            onClick={onAddPole}
-            disabled={!canAddPole}
-            data-testid="floor-plan-add-pole"
-            title={
-              canAddPole
-                ? 'Add another pole within safe clearance'
-                : `Room full — no open ${formatFloorPlanDim(wallMarginM, unit)} clearance slot left`
-            }
-            className={`min-h-[32px] px-2 sm:px-2.5 rounded-lg text-[11px] font-semibold inline-flex items-center gap-1 transition-colors whitespace-nowrap ${
-              canAddPole ? toolBtnHover : 'opacity-40'
-            }`}
-          >
-            <Plus className="w-3.5 h-3.5" aria-hidden="true" />
-            <span>{canAddPole ? 'Pole' : 'Full'}</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Bottom-Right Quick Lighting Preset Strip (matching reference theme selector) */}
-      <div
-        className={`hidden md:inline-flex absolute bottom-3 right-3 sm:right-4 z-20 items-center gap-0.5 p-1 rounded-xl border ${surfaceToolbarClass}`}
-        role="group"
-        aria-label="Quick floor plan lighting"
-      >
-        {LIGHTING_PRESETS.map((preset) => {
-          const active = config.lighting === preset.id;
-          return (
             <button
-              key={`fp-lit-${preset.id}`}
               type="button"
-              onClick={() => onChangeLighting(preset.id)}
-              aria-pressed={active}
-              title={preset.label}
-              className={`px-2 py-1 rounded-lg text-[11px] font-medium inline-flex items-center gap-1 transition-colors whitespace-nowrap ${
-                active
-                  ? isNeon
-                    ? 'bg-violet-500/25 text-white ring-1 ring-violet-400/50'
-                    : isSunset
-                      ? 'bg-rose-500/25 text-white ring-1 ring-orange-400/55'
-                      : isPulse
-                        ? 'bg-emerald-500/25 text-white ring-1 ring-emerald-400/55'
-                        : isDark
-                          ? 'bg-amber-500/20 text-amber-200 ring-1 ring-amber-400/50'
-                          : 'bg-stone-900 text-white'
-                  : isDark
-                    ? 'text-zinc-400 hover:text-white'
-                    : 'text-stone-600 hover:text-stone-950'
+              onClick={() => setZoom((z) => Math.min(2.0, Number((z + 0.15).toFixed(2))))}
+              aria-label="Zoom in floor plan"
+              title="Zoom in"
+              className={`min-h-[30px] min-w-[30px] rounded-lg flex items-center justify-center transition-colors ${toolBtnHover}`}
+            >
+              <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setZoom(1)}
+              aria-label="Reset floor plan zoom"
+              title="Fit room to viewport"
+              className={`min-h-[30px] px-2 rounded-lg font-mono text-[11px] font-semibold tabular-nums transition-colors ${toolBtnHover}`}
+            >
+              {Math.round(zoom * 100)}%
+            </button>
+            <button
+              type="button"
+              onClick={() => setZoom((z) => Math.max(0.65, Number((z - 0.15).toFixed(2))))}
+              aria-label="Zoom out floor plan"
+              title="Zoom out"
+              className={`min-h-[30px] min-w-[30px] rounded-lg flex items-center justify-center transition-colors ${toolBtnHover}`}
+            >
+              <Minus className="w-3.5 h-3.5" aria-hidden="true" />
+            </button>
+          </div>
+
+          <div
+            className={`inline-flex items-center p-0.5 rounded-xl border ${surfaceToolbarClass}`}
+            role="group"
+            aria-label="Floor plan actions"
+          >
+            <button
+              type="button"
+              onClick={() => setUnit((u) => (u === 'm' ? 'ft' : 'm'))}
+              data-testid="floor-plan-unit-toggle"
+              title="Switch metric / imperial units"
+              className={`min-h-[30px] px-2 sm:px-2.5 rounded-lg font-mono text-[11px] font-semibold transition-colors whitespace-nowrap ${toolBtnHover}`}
+            >
+              <span className="sm:hidden">{unit === 'm' ? 'm' : 'ft'}</span>
+              <span className="hidden sm:inline">{unit === 'm' ? 'Metric (m)' : 'Imperial (ft)'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={onCenterActivePole}
+              title="Center active pole in room"
+              className={`min-h-[30px] px-2 sm:px-2.5 rounded-lg text-[11px] font-semibold inline-flex items-center gap-1 transition-colors whitespace-nowrap ${toolBtnHover}`}
+            >
+              <Crosshair className="w-3.5 h-3.5" aria-hidden="true" />
+              <span className="hidden sm:inline">Center</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setZoom(1)}
+              aria-label="Fit room view"
+              title="Fit room"
+              className={`hidden sm:flex min-h-[30px] min-w-[30px] rounded-lg items-center justify-center transition-colors ${toolBtnHover}`}
+            >
+              <Maximize2 className="w-3.5 h-3.5" aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              onClick={onAddPole}
+              disabled={!canAddPole}
+              data-testid="floor-plan-add-pole"
+              title={
+                canAddPole
+                  ? 'Add another pole within safe clearance'
+                  : `Room full — no open ${formatFloorPlanDim(wallMarginM, unit)} clearance slot left`
+              }
+              className={`min-h-[30px] px-2 sm:px-2.5 rounded-lg text-[11px] font-semibold inline-flex items-center gap-1 transition-colors whitespace-nowrap ${
+                canAddPole ? toolBtnHover : 'opacity-40'
               }`}
             >
-              <LightingSmallIcon preset={preset.id} />
-              <span>{preset.mobileLabel}</span>
+              <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>{canAddPole ? 'Pole' : 'Full'}</span>
             </button>
-          );
-        })}
+          </div>
+        </div>
       </div>
     </div>
   );

@@ -40,7 +40,7 @@ export interface ARMeasurementResult {
   leftWallXM: number;
   rightWallXM: number;
   recommendedMount: BaseMountId;
-  recommendedDiameterMm: 40 | 45 | 50;
+  recommendedDiameterMm: 40 | 45;
   extensionsLabel: string;
   clearanceStatus: 'optimal' | 'caution' | 'restricted';
   clearanceLabel: string;
@@ -198,7 +198,7 @@ export function calculateARMeasurement(
       ? heightSol.extensions.map((e) => `${e.lengthMm}mm`).join(' + ')
       : 'Standard A+B (No Ext.)';
 
-  const recommendedDiameterMm: 40 | 45 | 50 = roomWidthM < 3.4 ? 40 : 45;
+  const recommendedDiameterMm: 40 | 45 = roomWidthM < 3.4 ? 40 : 45;
 
   let recommendationNote = `${BASE_MOUNTS[recommendedMount].shortName} mount · ${extensionsLabel}`;
   if (!isWithinTensionRange && ceilingHeightCm > 335) {

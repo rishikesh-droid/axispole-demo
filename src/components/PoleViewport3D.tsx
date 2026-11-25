@@ -506,6 +506,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
               rig: {
                 ...s.config,
                 finish: active.finish,
+                powderTone: active.powderTone,
                 diameterMm: active.diameterMm,
                 mount: s.arMeasurement.recommendedMount,
                 ceilingType: 'flat',
@@ -540,6 +541,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
           const leftRig: PoleRigConfig = {
             ...s.config,
             finish: active.finish,
+            powderTone: active.powderTone,
             diameterMm: active.diameterMm,
             ceilingHeightCm: leftCeilCm,
             poleHeightCm: Math.min(active.heightCm, leftCeilCm),
@@ -550,6 +552,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
           const rightRig: PoleRigConfig = {
             ...leftRig,
             finish: s.compareFinish,
+            powderTone: s.compareFinish === 'powder' ? 'black' : undefined,
             ceilingHeightCm: rightCeilCm,
             poleHeightCm: Math.min(active.heightCm, rightCeilCm),
           };
@@ -572,6 +575,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
             rig: {
               ...s.config,
               finish: p.finish,
+              powderTone: p.powderTone,
               diameterMm: p.diameterMm,
               ceilingHeightCm: localCeilCm,
               poleHeightCm: Math.min(p.heightCm, localCeilCm),
@@ -602,7 +606,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
           handle.root.visible = true;
           handle.root.position.set(item.x, 0, item.z);
 
-          const gKey = `${item.rig.finish}-${item.rig.diameterMm}-${item.rig.mount}-${item.rig.ceilingType}-${item.rig.ceilingHeightCm}-${item.rig.poleHeightCm}-${item.rig.cushionPlacement}-${item.rig.vaultAngleDeg}-${item.rig.roomWidthM.toFixed(2)}`;
+          const gKey = `${item.rig.finish}-${item.rig.powderTone ?? 'black'}-${item.rig.diameterMm}-${item.rig.mount}-${item.rig.ceilingType}-${item.rig.ceilingHeightCm}-${item.rig.poleHeightCm}-${item.rig.cushionPlacement}-${item.rig.vaultAngleDeg}-${item.rig.roomWidthM.toFixed(2)}`;
           if (poleGeoKeys[i] !== gKey) {
             handle.rebuild(item.rig);
             poleGeoKeys[i] = gKey;

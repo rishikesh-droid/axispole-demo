@@ -387,7 +387,7 @@ export function buildMeasurementFromSurfaceCalibration(
       ? heightSol.extensions.map((e) => `${e.lengthMm}mm`).join(' + ')
       : 'Standard A+B (No Ext.)';
 
-  const recommendedDiameterMm: 40 | 45 | 50 = cal.roomWidthM < 3.4 ? 40 : 45;
+  const recommendedDiameterMm: 40 | 45 = cal.roomWidthM < 3.4 ? 40 : 45;
 
   // Pole lateral shift stays bounded inside the calibrated 4-point floor span
   const lateralRange = Math.max(0.2, Math.abs(br.x - bl.x) * 0.36);

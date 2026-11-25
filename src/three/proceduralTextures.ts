@@ -301,17 +301,19 @@ function createClearanceRingTexture(maxAnisotropy: number): THREE.CanvasTexture 
 
 export function createProceduralTextures(maxAnisotropy: number): ProceduralTextureSet {
   const poleBumps: Record<PoleFinishId, THREE.CanvasTexture> = {
-    brass: createBrushedMetalMap(101, 128, 34, true, maxAnisotropy),
+    chrome: createBrushedMetalMap(151, 128, 6, false, maxAnisotropy),
     stainless: createBrushedMetalMap(202, 128, 16, false, maxAnisotropy),
-    'powder-black': createPowderCoatBump(maxAnisotropy),
+    powder: createPowderCoatBump(maxAnisotropy),
     silicone: createSiliconeGripBump(maxAnisotropy),
+    brass: createBrushedMetalMap(101, 128, 34, true, maxAnisotropy),
   };
 
   const poleRoughness: Record<PoleFinishId, THREE.CanvasTexture> = {
-    brass: createBrushedMetalMap(303, 52, 24, true, maxAnisotropy),
+    chrome: createBrushedMetalMap(353, 14, 6, false, maxAnisotropy),
     stainless: createBrushedMetalMap(404, 28, 12, false, maxAnisotropy),
-    'powder-black': createBrushedMetalMap(505, 118, 22, true, maxAnisotropy),
+    powder: createBrushedMetalMap(505, 118, 22, true, maxAnisotropy),
     silicone: createBrushedMetalMap(606, 212, 26, true, maxAnisotropy),
+    brass: createBrushedMetalMap(303, 52, 24, true, maxAnisotropy),
   };
 
   const studioWoodAlbedo = createWoodPlankTexture(

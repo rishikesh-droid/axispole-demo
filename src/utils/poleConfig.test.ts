@@ -55,38 +55,34 @@ test('calculateHeightSolution solves valid extensions across 2.30m to 3.00m for 
   }
 });
 
-test('calculateHeightSolution enforces 3.00m max pole height and 5.00m max ceiling with automatic cushion', () => {
-  assert.equal(MAX_POLE_HEIGHT_CM, 300);
-  assert.equal(MAX_CEILING_HEIGHT_CM, 500);
+test('calculateHeightSolution enforces 4.34m (14\'3") max PX pole height and supports cushions', () => {
+  assert.equal(MAX_POLE_HEIGHT_CM, 434);
+  assert.equal(MAX_CEILING_HEIGHT_CM, 434);
 
   const tooLow = calculateHeightSolution(120, 'tension', 'stainless');
   assert.equal(tooLow.isValid, false);
   assert.ok(tooLow.warning && tooLow.warning.length > 0);
 
-  // Explicit pole height above 3.00m flags warning
-  const poleTooHigh = calculateHeightSolution(500, 'tension', 'powder-black', 340);
+  // Explicit pole height above 4.34m flags warning
+  const poleTooHigh = calculateHeightSolution(434, 'tension', 'powder', 460);
   assert.equal(poleTooHigh.isValid, false);
-  assert.ok(poleTooHigh.warning && poleTooHigh.warning.includes('3.00m'));
+  assert.ok(poleTooHigh.warning && poleTooHigh.warning.includes('4.34m'));
 
-  // Room ceiling at 5.00m automatically caps pole at 3.00m and adds 2.00m cushion
-  const tallRoom = calculateHeightSolution(500, 'tension', 'brass', undefined, 'top');
+  // Room ceiling at 4.34m fits full X-POLE PX Build-a-Pole (CX1600) cleanly
+  const tallRoom = calculateHeightSolution(434, 'tension', 'chrome', undefined, 'top');
   assert.equal(tallRoom.isValid, true);
   assert.equal(tallRoom.poleHeightCm, MAX_POLE_HEIGHT_CM);
-  assert.equal(tallRoom.cushionHeightCm, 200);
-  assert.equal(tallRoom.cappedAtMaxPoleHeight, true);
-  assert.equal(tallRoom.cushionPlacement, 'top');
-  assert.equal(tallRoom.totalRigHeightMm, 5000);
+  assert.equal(tallRoom.cushionHeightCm, 0);
+  assert.equal(tallRoom.totalRigHeightMm, 4340);
 });
 
-test('vaulted-beam is removed from mounts and global ceilingType (flat/vaulted) prices all 4 finishes cleanly', () => {
-  assert.equal('stage-podium' in BASE_MOUNTS, false);
-  assert.equal('vaulted-beam' in BASE_MOUNTS, false);
+test('global ceilingType (flat/vaulted) prices all 5 official X-POLE finishes from JSON catalog', () => {
   assert.deepEqual(Object.keys(BASE_MOUNTS).sort(), [
     'permanent-ceiling',
     'tension',
   ]);
 
-  const finishes: PoleFinishId[] = ['brass', 'stainless', 'powder-black', 'silicone'];
+  const finishes: PoleFinishId[] = ['chrome', 'stainless', 'powder', 'silicone', 'brass'];
   const mounts: BaseMountId[] = ['tension', 'permanent-ceiling'];
   const ceilings: CeilingType[] = ['flat', 'vaulted'];
 
@@ -98,13 +94,12 @@ test('vaulted-beam is removed from mounts and global ceilingType (flat/vaulted) 
           finish,
           mount,
           ceilingType,
-          ceilingHeightCm: 280,
+          ceilingHeightCm: 274,
+          poleHeightCm: 274,
         });
-        assert.ok(bom.totalPriceUsd >= 469, `Unexpected low BOM price for ${finish}/${mount}/${ceilingType}`);
+        assert.ok(bom.totalPriceUsd >= 749, `Unexpected low BOM price for ${finish}/${mount}/${ceilingType}`);
         assert.ok(bom.totalWeightKg > 8, `Unexpected low BOM weight for ${finish}/${mount}/${ceilingType}`);
-        assert.ok(bom.items.length >= 3);
-        const hasVaultClevis = bom.items.some((i) => i.sku === 'MNT-VAULT-CLV');
-        assert.equal(hasVaultClevis, ceilingType === 'vaulted');
+        assert.ok(bom.items.length >= 5);
       }
     }
   }
@@ -261,7 +256,7 @@ test('two poles maintain independent heights, widths, finishes, and separate top
   const p2 = {
     ...createNextPoleInstance([p1], 5.4, 5.2, true, ceilingCm),
     finish: 'stainless' as PoleFinishId,
-    diameterMm: 50 as const,
+    diameterMm: 40 as const,
     heightCm: 230,
     cushionPlacement: 'top' as const,
   };
@@ -286,11 +281,11 @@ test('two poles maintain independent heights, widths, finishes, and separate top
   assert.equal(lowered[0].heightCm, 200);
   assert.equal(lowered[1].heightCm, 215);
 
-  // Flush pole grows smoothly when ceiling rises past 3.00m and caps at 3.00m with 2.00m cushion at 5.00m
+  // Flush pole grows smoothly when ceiling rises to 4.34m (14'3")
   const flushPole = [{ ...p1, heightCm: 274 }];
-  const tallReconciled = reconcilePolesForCeilingHeight(flushPole, 274, 500);
+  const tallReconciled = reconcilePolesForCeilingHeight(flushPole, 274, 434);
   assert.equal(tallReconciled[0].heightCm, MAX_POLE_HEIGHT_CM);
-  assert.equal(getCushionHeightCm(500, tallReconciled[0].heightCm), 200);
+  assert.equal(getCushionHeightCm(434, tallReconciled[0].heightCm), 0);
 });
 
 test('computeAssemblyOffsets seats all parts to zero when assembled and expands when exploded', () => {
@@ -314,12 +309,12 @@ test('formatHeightMetricAndImperial and exportBOMToCSV output expected structure
   const bom = generateBOM(DEFAULT_CONFIG);
   const csv = exportBOMToCSV(bom, DEFAULT_CONFIG);
   assert.ok(csv.includes('SKU,Component,Material,Qty'));
-  assert.ok(csv.includes('AXP-BRA-45'));
+  assert.ok(csv.includes('XP-125-CHR-45'));
 });
 
-test('cushion automatically bridges difference whenever pole height is below ceiling while enforcing 3.00m pole limit', () => {
+test('cushion automatically bridges difference whenever pole height is below ceiling', () => {
   // 2.19m pole under 2.74m ceiling -> automatic 55cm cushion
-  const sol274 = calculateHeightSolution(274, 'tension', 'powder-black', 219, 'top');
+  const sol274 = calculateHeightSolution(274, 'tension', 'powder', 219, 'top');
   assert.equal(sol274.poleHeightCm, 219);
   assert.equal(sol274.cushionHeightCm, 55);
   assert.equal(getCushionHeightCm(274, 219), 55);
@@ -342,15 +337,9 @@ test('cushion automatically bridges difference whenever pole height is below cei
   assert.equal(sol300Short.cushionHeightCm, 55);
 
   // 3.00m ceiling with 3.00m pole -> flush 0cm cushion
-  const sol300Flush = calculateHeightSolution(300, 'tension', 'brass', 300, 'top');
+  const sol300Flush = calculateHeightSolution(300, 'tension', 'chrome', 300, 'top');
   assert.equal(sol300Flush.poleHeightCm, 300);
   assert.equal(sol300Flush.cushionHeightCm, 0);
-
-  // 3.50m ceiling -> pole capped at 3.00m limit + automatic 50cm cushion
-  const sol350Cap = calculateHeightSolution(350, 'tension', 'brass', 350, 'top');
-  assert.equal(sol350Cap.poleHeightCm, 300);
-  assert.equal(sol350Cap.cushionHeightCm, 50);
-  assert.equal(sol350Cap.cappedAtMaxPoleHeight, true);
 });
 
 test('space-aware pole placement fits more than 4 poles in large rooms while strictly enforcing 1.25m clearance', () => {
