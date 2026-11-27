@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import {
   AlertTriangle,
   Box,
@@ -10,10 +10,13 @@ import {
   Download,
   FileText,
   Lamp,
+  Lock,
+  LogIn,
   Move,
   Orbit,
   Package,
   Plus,
+  Scan,
   Sparkles,
   Sun,
   Sunset,
@@ -88,6 +91,7 @@ interface BottomControlDockProps {
   onToggleSound: () => void;
   arCameraActive: boolean;
   onStartArCamera: () => void;
+  onOpenRoomCapture: () => void;
   hasRoomReplica: boolean;
   onOpenModal: (modal: ModalId) => void;
   compareMode: boolean;
@@ -145,6 +149,7 @@ export function BottomControlDock({
   onToggleSound,
   arCameraActive,
   onStartArCamera,
+  onOpenRoomCapture,
   hasRoomReplica,
   onOpenModal,
   compareMode,
@@ -157,15 +162,17 @@ export function BottomControlDock({
   contextualStrip,
 }: BottomControlDockProps) {
   const materialAvatars = useMemo(() => getPoleMaterialAvatars(), []);
+  const [viewedQuoteTier, setViewedQuoteTier] = useState<PriceTierId>('retail');
+  const isWholesaleLockedView = viewedQuoteTier !== 'retail';
 
   const activeResolution = useMemo(
     () =>
       resolveXPoleConfiguration(
         activePole.heightCm * 10,
         activePole.finish,
-        config.priceTier
+        'retail'
       ),
-    [activePole.heightCm, activePole.finish, config.priceTier]
+    [activePole.heightCm, activePole.finish]
   );
 
   if (arCameraActive) return null;
@@ -304,7 +311,7 @@ export function BottomControlDock({
   ];
 
   return (
-    <div className="fixed bottom-3 left-1/2 -translate-x-1/2 z-30 w-[calc(100%-20px)] max-w-[1040px] flex flex-col items-center gap-2 pointer-events-none">
+    <div className="fixed bottom-2.5 sm:bottom-3 left-1/2 -translate-x-1/2 z-30 w-[calc(100%-16px)] sm:w-[calc(100%-20px)] max-w-[1040px] flex flex-col items-center gap-2 pointer-events-none">
       {/* Contextual Floating Strip (Hardware Inspector / Install Demo / Compare / Move / My Room) */}
       {contextualStrip}
 
@@ -314,16 +321,26 @@ export function BottomControlDock({
         data-testid="bottom-control-dock"
         data-collapsed={dockCollapsed ? 'true' : 'false'}
         className={`pointer-events-auto rounded-2xl border backdrop-blur-2xl backdrop-saturate-150 dock-shell-spring ${
-          dockCollapsed ? 'w-auto max-w-full' : 'w-full'
+          dockCollapsed ? 'w-full sm:w-auto max-w-full' : 'w-full'
         } ${dockShellGlass}`}
       >
-        {/* Dock Top Bar: Step Tabs + AR Measure + Export CAD + Audio + Fluid Collapse/Expand */}
-        <div className="px-2 sm:px-3 py-1.5 flex items-center justify-between gap-2 overflow-x-auto dock-scroll">
+        {/* Dock Top Bar: Responsive Zero-Overflow Mobile & Desktop Layout */}
+        <div
+          className={`px-2 sm:px-3 py-1.5 flex gap-1.5 sm:gap-2 ${
+            dockCollapsed
+              ? 'flex-row items-center justify-between'
+              : 'flex-col sm:flex-row sm:items-center sm:justify-between'
+          }`}
+        >
           {/* Left: Animated Step Tabs (clicking any tab when collapsed smoothly opens that tab) */}
           <div
             role="tablist"
             aria-label="X-POLE configurator sections"
-            className={`inline-flex items-center gap-0.5 p-0.5 rounded-xl shrink-0 ${segTrack}`}
+            className={`${
+              dockCollapsed
+                ? 'inline-flex items-center gap-0.5 p-0.5 rounded-xl min-w-0'
+                : 'grid grid-cols-4 sm:inline-flex items-center gap-0.5 p-0.5 rounded-xl w-full sm:w-auto shrink-0'
+            } ${segTrack}`}
           >
             {dockTabs.map(([tabId, num, label]) => {
               const active = !dockCollapsed && activeTab === tabId;
@@ -338,12 +355,16 @@ export function BottomControlDock({
                     onChangeTab(tabId);
                     if (dockCollapsed) onExpandDock();
                   }}
-                  className={`px-2.5 sm:px-3 py-1.5 text-[11px] font-semibold rounded-lg border inline-flex items-center gap-1.5 transition-all duration-200 whitespace-nowrap shrink-0 active:scale-[0.97] ${
+                  className={`${
+                    dockCollapsed ? 'px-2 sm:px-3 py-1 sm:py-1.5 text-[10.5px] sm:text-[11px]' : 'px-1.5 sm:px-3 py-1.5 text-[11px] justify-center'
+                  } font-semibold rounded-lg border inline-flex items-center gap-1 sm:gap-1.5 transition-all duration-200 whitespace-nowrap shrink-0 active:scale-[0.97] ${
                     active ? `${tabActiveBg} ${tabActiveText}` : `border-transparent ${segIdle}`
                   }`}
                 >
                   <span
-                    className={`w-4 h-4 rounded-full text-[9.5px] font-mono font-bold inline-flex items-center justify-center shrink-0 transition-colors ${
+                    className={`${
+                      dockCollapsed ? 'hidden sm:inline-flex' : 'inline-flex'
+                    } w-3.5 h-3.5 sm:w-4 sm:h-4 rounded-full text-[9px] sm:text-[9.5px] font-mono font-bold items-center justify-center shrink-0 transition-colors ${
                       active
                         ? isDark && !isNeon && !isSunset && !isPulse
                           ? 'bg-stone-950/20 text-stone-950'
@@ -361,79 +382,108 @@ export function BottomControlDock({
             })}
           </div>
 
-          {/* Center Summary Readout (subtle inline spec when expanded on wide desktop) */}
-          {!dockCollapsed && (
-            <div className={`hidden lg:flex items-center gap-1.5 text-[11px] font-mono tabular-nums truncate ${mutedText}`}>
-              <span className="truncate">{POLE_FINISHES[activePole.finish].shortName}</span>
-              <span aria-hidden="true">·</span>
-              <span>{activePole.diameterMm}mm</span>
-              <span aria-hidden="true">·</span>
-              <span>{formatFeetInches(config.ceilingHeightCm)}</span>
-              {poles.length > 1 && (
-                <>
-                  <span aria-hidden="true">·</span>
-                  <span>{poles.length} poles</span>
-                </>
-              )}
-            </div>
-          )}
+          {/* Mobile Row 2 / Desktop Center & Right Group */}
+          <div
+            className={`${
+              dockCollapsed
+                ? 'flex items-center gap-1 sm:gap-1.5 shrink-0'
+                : 'flex sm:contents items-center justify-between gap-2'
+            }`}
+          >
+            {/* Subtle inline active pole summary (mobile row 2 left + wide desktop center) */}
+            {!dockCollapsed && (
+              <div className={`flex sm:hidden lg:flex items-center gap-1.5 text-[10.5px] sm:text-[11px] font-mono tabular-nums truncate min-w-0 ${mutedText}`}>
+                <span className="truncate">{POLE_FINISHES[activePole.finish].shortName}</span>
+                <span aria-hidden="true">·</span>
+                <span>{activePole.diameterMm}mm</span>
+                <span aria-hidden="true">·</span>
+                <span>{formatFeetInches(config.ceilingHeightCm)}</span>
+                {poles.length > 1 && (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <span>{poles.length}p</span>
+                  </>
+                )}
+              </div>
+            )}
 
-          {/* Right: Utility Actions Moved into Dock (AR Measure, Export CAD, Audio, Collapse/Expand) */}
-          <div className="flex items-center gap-1.5 shrink-0">
-            <button
-              type="button"
-              onClick={onStartArCamera}
-              data-testid="dock-ar-button"
-              title="Measure your room with AR Camera"
-              className={`min-h-[32px] px-2.5 py-1 rounded-xl border text-[11px] font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 ${glassBtnIdle}`}
-            >
-              <Camera className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-              <span className="hidden sm:inline">AR Measure</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => onOpenModal('export-ar')}
-              data-testid="dock-cad-button"
-              title="Export 3D CAD (.GLB / .OBJ / .USDZ)"
-              className={`min-h-[32px] px-2.5 py-1 rounded-xl border text-[11px] font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 ${glassBtnIdle}`}
-            >
-              <Box className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-              <span className="hidden sm:inline">Export CAD</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={onToggleSound}
-              aria-label={soundEnabled ? 'Mute audio' : 'Enable audio'}
-              title={soundEnabled ? 'Audio On' : 'Audio Off'}
-              className={`min-h-[32px] min-w-[32px] p-1.5 rounded-xl border flex items-center justify-center shrink-0 ${glassBtnIdle}`}
-            >
-              {soundEnabled ? (
-                <Volume2 className={`w-3.5 h-3.5 ${accentText}`} />
-              ) : (
-                <VolumeX className="w-3.5 h-3.5" />
-              )}
-            </button>
-
-            <button
-              type="button"
-              onClick={onToggleCollapse}
-              aria-expanded={!dockCollapsed}
-              aria-label={dockCollapsed ? 'Expand studio dock' : 'Collapse studio dock'}
-              title={dockCollapsed ? 'Expand Dock (H)' : 'Collapse Dock (H)'}
-              data-testid="dock-collapse-toggle"
-              className={`min-h-[32px] px-2.5 py-1 rounded-xl border text-[11px] font-semibold inline-flex items-center gap-1 whitespace-nowrap shrink-0 ${
-                dockCollapsed ? glassBtnActive : glassBtnIdle
-              }`}
-            >
-              <span
-                className={`inline-flex dock-chevron-spring ${dockCollapsed ? 'rotate-180' : 'rotate-0'}`}
+            {/* Right: Utility Actions Moved into Dock (Capture Room, AR Measure, Export CAD, Audio, Collapse/Expand) */}
+            <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={onOpenRoomCapture}
+                data-testid="dock-capture-room-button"
+                title="Capture Your Room (4 Wall Photos -> 3D Wireframe)"
+                aria-label="Capture Your Room"
+                className={`min-h-[30px] sm:min-h-[32px] px-2 sm:px-2.5 py-1 rounded-xl border text-[11px] font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                  config.environment === 'replica' && hasRoomReplica ? glassBtnActive : glassBtnIdle
+                }`}
               >
-                <ChevronDown className="w-3.5 h-3.5" aria-hidden="true" />
-              </span>
-              <span className="hidden sm:inline">{dockCollapsed ? 'Expand' : 'Hide'}</span>
-            </button>
+                <Scan className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                <span className="hidden md:inline">Capture Room</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={onStartArCamera}
+                data-testid="dock-ar-button"
+                title="Preview Pole Live in AR Camera"
+                aria-label="AR Measure"
+                className={`min-h-[30px] sm:min-h-[32px] px-2 sm:px-2.5 py-1 rounded-xl border text-[11px] font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 ${glassBtnIdle}`}
+              >
+                <Camera className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                <span className="hidden sm:inline">AR Mode</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => onOpenModal('export-ar')}
+                data-testid="dock-cad-button"
+                title="Export 3D CAD (.GLB / .OBJ / .USDZ)"
+                aria-label="Export CAD"
+                className={`${
+                  dockCollapsed ? 'hidden sm:inline-flex' : 'inline-flex'
+                } min-h-[30px] sm:min-h-[32px] px-2 sm:px-2.5 py-1 rounded-xl border text-[11px] font-semibold items-center gap-1.5 whitespace-nowrap shrink-0 ${glassBtnIdle}`}
+              >
+                <Box className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                <span className="hidden lg:inline">Export CAD</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={onToggleSound}
+                aria-label={soundEnabled ? 'Mute audio' : 'Enable audio'}
+                title={soundEnabled ? 'Audio On' : 'Audio Off'}
+                className={`${
+                  dockCollapsed ? 'hidden sm:flex' : 'flex'
+                } min-h-[30px] sm:min-h-[32px] min-w-[30px] sm:min-w-[32px] p-1.5 rounded-xl border items-center justify-center shrink-0 ${glassBtnIdle}`}
+              >
+                {soundEnabled ? (
+                  <Volume2 className={`w-3.5 h-3.5 ${accentText}`} />
+                ) : (
+                  <VolumeX className="w-3.5 h-3.5" />
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={onToggleCollapse}
+                aria-expanded={!dockCollapsed}
+                aria-label={dockCollapsed ? 'Expand studio dock' : 'Collapse studio dock'}
+                title={dockCollapsed ? 'Expand Dock (H)' : 'Collapse Dock (H)'}
+                data-testid="dock-collapse-toggle"
+                className={`min-h-[30px] sm:min-h-[32px] px-2 sm:px-2.5 py-1 rounded-xl border text-[11px] font-semibold inline-flex items-center gap-1 whitespace-nowrap shrink-0 ${
+                  dockCollapsed ? glassBtnActive : glassBtnIdle
+                }`}
+              >
+                <span
+                  className={`inline-flex dock-chevron-spring ${dockCollapsed ? 'rotate-180' : 'rotate-0'}`}
+                >
+                  <ChevronDown className="w-3.5 h-3.5" aria-hidden="true" />
+                </span>
+                <span className="hidden sm:inline">{dockCollapsed ? 'Expand' : 'Hide'}</span>
+              </button>
+            </div>
           </div>
         </div>
 
@@ -447,7 +497,7 @@ export function BottomControlDock({
           }`}
         >
           <div className="overflow-hidden min-h-0">
-            <div className="px-3 sm:px-4 py-3 max-h-[40vh] overflow-y-auto dock-scroll">
+            <div className="px-3 sm:px-4 py-2.5 sm:py-3 max-h-[36vh] sm:max-h-[40vh] overflow-y-auto dock-scroll">
               {/* ==================== TAB 1: ROOM SIZE ==================== */}
               {activeTab === 'room' && (
                 <div
@@ -756,37 +806,49 @@ export function BottomControlDock({
                             </span>
                           </div>
                         ) : (
-                          <div
-                            className={`grid gap-0.5 p-0.5 rounded-lg ${segTrack} ${
-                              hasRoomReplica ? 'grid-cols-3' : 'grid-cols-2'
-                            }`}
-                            role="group"
-                            aria-label="Room backdrop environment"
-                          >
-                            {(
-                              (hasRoomReplica
-                                ? [
-                                    ['studio', 'Studio'],
-                                    ['home', 'Home'],
-                                    ['replica', 'My Room'],
-                                  ]
-                                : [
-                                    ['studio', 'Studio'],
-                                    ['home', 'Home'],
-                                  ]) as [EnvironmentPreset, string][]
-                            ).map(([envId, label]) => (
-                              <button
-                                key={envId}
-                                type="button"
-                                onClick={() => onChangeConfig({ environment: envId })}
-                                aria-pressed={config.environment === envId}
-                                className={`py-1 text-[10.5px] font-semibold rounded-md transition-colors ${
-                                  config.environment === envId ? segActive : segIdle
-                                }`}
-                              >
-                                {label}
-                              </button>
-                            ))}
+                          <div className="flex items-center gap-1.5">
+                            <div
+                              className={`flex-1 grid gap-0.5 p-0.5 rounded-lg ${segTrack} ${
+                                hasRoomReplica ? 'grid-cols-3' : 'grid-cols-2'
+                              }`}
+                              role="group"
+                              aria-label="Room backdrop environment"
+                            >
+                              {(
+                                (hasRoomReplica
+                                  ? [
+                                      ['studio', 'Studio'],
+                                      ['home', 'Home'],
+                                      ['replica', 'My Room'],
+                                    ]
+                                  : [
+                                      ['studio', 'Studio'],
+                                      ['home', 'Home'],
+                                    ]) as [EnvironmentPreset, string][]
+                              ).map(([envId, label]) => (
+                                <button
+                                  key={envId}
+                                  type="button"
+                                  onClick={() => onChangeConfig({ environment: envId })}
+                                  aria-pressed={config.environment === envId}
+                                  className={`py-1 text-[10.5px] font-semibold rounded-md transition-colors ${
+                                    config.environment === envId ? segActive : segIdle
+                                  }`}
+                                >
+                                  {label}
+                                </button>
+                              ))}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={onOpenRoomCapture}
+                              data-testid="room-tab-capture-button"
+                              title="Capture 4 photos of your room walls"
+                              className={`px-2 py-1 rounded-lg border text-[10px] font-semibold inline-flex items-center gap-1 whitespace-nowrap shrink-0 ${glassBtnIdle}`}
+                            >
+                              <Scan className="w-3 h-3 shrink-0" aria-hidden="true" />
+                              <span>{hasRoomReplica ? '4 Walls' : 'Capture'}</span>
+                            </button>
                           </div>
                         )}
                       </div>
@@ -1141,11 +1203,17 @@ export function BottomControlDock({
                     <div
                       key="tab-selection"
                       data-testid="step-selection-panel"
-                      className="grid grid-cols-1 md:grid-cols-[0.9fr_1.25fr_0.95fr] gap-3.5 md:gap-4 animate-dock-panel"
+                      className="grid grid-cols-1 md:grid-cols-[0.95fr_1.2fr_1fr] gap-3.5 md:gap-4 animate-dock-panel"
                     >
                       {/* Col 1: Pricing Tier & Room Specs */}
                       <div className="space-y-2">
-                        <span className={labelText}>X-POLE Pricing Tier</span>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className={labelText}>X-POLE Pricing Tier</span>
+                          <span className={`inline-flex items-center gap-1 text-[9.5px] font-medium ${mutedText}`}>
+                            <Lock className="w-2.5 h-2.5" aria-hidden="true" />
+                            <span>Trade Login</span>
+                          </span>
+                        </div>
                         <div
                           className={`grid grid-cols-3 gap-0.5 p-0.5 rounded-xl ${segTrack}`}
                           role="group"
@@ -1154,19 +1222,41 @@ export function BottomControlDock({
                         >
                           {TIER_ORDER.map((tierId) => {
                             const tier = XPOLE_CATALOG.priceTiers[tierId];
-                            const active = config.priceTier === tierId;
+                            const isWholesaleTier = tierId !== 'retail';
+                            const active = viewedQuoteTier === tierId;
                             return (
                               <button
                                 key={tierId}
                                 type="button"
                                 data-testid={`tier-${tierId}`}
-                                onClick={() => onChangeConfig({ priceTier: tierId })}
+                                onClick={() => {
+                                  setViewedQuoteTier(tierId);
+                                  if (tierId === 'retail') {
+                                    onChangeConfig({ priceTier: 'retail' });
+                                  }
+                                }}
                                 aria-pressed={active}
-                                className={`py-1.5 px-1 text-[10.5px] font-semibold rounded-lg transition-colors whitespace-nowrap ${
+                                title={
+                                  isWholesaleTier
+                                    ? 'Log in on a valid wholesale account to get wholesale rates'
+                                    : 'Standard X-POLE retail pricing'
+                                }
+                                className={`relative py-1.5 px-1 text-[10.5px] font-semibold rounded-lg transition-all whitespace-nowrap inline-flex items-center justify-center gap-1 overflow-hidden ${
                                   active ? segActive : segIdle
                                 }`}
                               >
-                                {tier.shortLabel}
+                                {isWholesaleTier && (
+                                  <Lock className="w-2.5 h-2.5 shrink-0 opacity-85" aria-hidden="true" />
+                                )}
+                                <span
+                                  className={
+                                    isWholesaleTier
+                                      ? 'blur-[1.4px] select-none opacity-85'
+                                      : undefined
+                                  }
+                                >
+                                  {tier.shortLabel}
+                                </span>
                               </button>
                             );
                           })}
@@ -1188,103 +1278,152 @@ export function BottomControlDock({
                         </div>
                       </div>
 
-                      {/* Col 2: Itemized Auto-Matched Poles */}
-                      <div className={`space-y-1.5 md:border-l md:pl-4 ${dividerClass}`}>
-                        <div className="flex items-center justify-between">
-                          <span className={labelText}>Auto-Matched X-POLE Kits</span>
-                          <span className={`font-mono text-[10px] tabular-nums ${mutedText}`}>
-                            {quote.lines.length} {quote.lines.length === 1 ? 'pole' : 'poles'}
-                          </span>
-                        </div>
-                        <div className="space-y-1.5 max-h-[126px] overflow-y-auto dock-scroll pr-1">
-                          {quote.lines.map((line) => (
-                            <div
-                              key={line.poleId}
-                              data-testid={`quote-line-${line.poleId}`}
-                              className={`rounded-xl border px-2.5 py-1.5 flex items-center justify-between gap-2 ${
-                                !line.resolution.available
-                                  ? 'border-amber-400/55 bg-amber-500/15'
-                                  : subCardGlass
-                              }`}
-                            >
-                              <div className="min-w-0">
-                                <div className="flex items-center gap-1.5 text-[11px]">
-                                  <span className="font-bold">{line.poleLabel}</span>
-                                  <span className="truncate font-medium">
-                                    {getXPoleFinishLabel(line.finish, line.powderTone)}
-                                  </span>
-                                </div>
-                                <div className={`text-[10px] font-mono tabular-nums flex items-center gap-1 ${mutedText}`}>
-                                  <Package className="w-2.5 h-2.5 shrink-0" aria-hidden="true" />
-                                  <span className="truncate">{line.resolution.part.id}</span>
-                                  <span>·</span>
-                                  <span>{line.heightMm}mm</span>
-                                </div>
-                              </div>
-                              <div className="text-right shrink-0">
-                                {line.resolution.available ? (
-                                  <>
-                                    <span className="block font-mono text-xs font-bold tabular-nums">
-                                      {formatUsdExact(line.resolution.unitPriceUsd)}
-                                    </span>
-                                    {config.priceTier !== 'retail' && (
-                                      <span className={`block font-mono text-[9.5px] line-through tabular-nums ${mutedText}`}>
-                                        {formatUsdExact(line.resolution.retailPriceUsd)}
+                      {/* Col 2 + Col 3: Itemized Kits & Grand Total (Blurred behind Login Overlay on Wholesale20/30) */}
+                      <div className={`relative md:col-span-2 md:border-l md:pl-4 ${dividerClass}`}>
+                        <div
+                          className={`grid grid-cols-1 md:grid-cols-[1.2fr_1fr] gap-3.5 md:gap-4 transition-all duration-200 ${
+                            isWholesaleLockedView ? 'blur-[6px] opacity-55 select-none pointer-events-none' : ''
+                          }`}
+                          aria-hidden={isWholesaleLockedView}
+                        >
+                          {/* Col 2: Itemized Auto-Matched Poles */}
+                          <div className="space-y-1.5">
+                            <div className="flex items-center justify-between">
+                              <span className={labelText}>Auto-Matched X-POLE Kits</span>
+                              <span className={`font-mono text-[10px] tabular-nums ${mutedText}`}>
+                                {quote.lines.length} {quote.lines.length === 1 ? 'pole' : 'poles'}
+                              </span>
+                            </div>
+                            <div className="space-y-1.5 max-h-[126px] overflow-y-auto dock-scroll pr-1">
+                              {quote.lines.map((line) => (
+                                <div
+                                  key={line.poleId}
+                                  data-testid={`quote-line-${line.poleId}`}
+                                  className={`rounded-xl border px-2.5 py-1.5 flex items-center justify-between gap-2 ${
+                                    !line.resolution.available
+                                      ? 'border-amber-400/55 bg-amber-500/15'
+                                      : subCardGlass
+                                  }`}
+                                >
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-1.5 text-[11px]">
+                                      <span className="font-bold">{line.poleLabel}</span>
+                                      <span className="truncate font-medium">
+                                        {getXPoleFinishLabel(line.finish, line.powderTone)}
+                                      </span>
+                                    </div>
+                                    <div className={`text-[10px] font-mono tabular-nums flex items-center gap-1 ${mutedText}`}>
+                                      <Package className="w-2.5 h-2.5 shrink-0" aria-hidden="true" />
+                                      <span className="truncate">{line.resolution.part.id}</span>
+                                      <span>·</span>
+                                      <span>{line.heightMm}mm</span>
+                                    </div>
+                                  </div>
+                                  <div className="text-right shrink-0">
+                                    {line.resolution.available ? (
+                                      <span className="block font-mono text-xs font-bold tabular-nums">
+                                        {isWholesaleLockedView ? '$•••.••' : formatUsdExact(line.resolution.retailPriceUsd)}
+                                      </span>
+                                    ) : (
+                                      <span className="font-mono text-[10.5px] font-semibold text-amber-400">
+                                        N/A
                                       </span>
                                     )}
-                                  </>
-                                ) : (
-                                  <span className="font-mono text-[10.5px] font-semibold text-amber-400">
-                                    N/A
-                                  </span>
-                                )}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* Col 3: Grand Total + Quote Actions */}
+                          <div className={`space-y-2 md:border-l md:pl-4 flex flex-col justify-between ${dividerClass}`} data-testid="selection-total-card">
+                            <div className="space-y-1">
+                              <div className="flex items-baseline justify-between gap-2">
+                                <span className={labelText}>Estimated Total</span>
+                                <span className={`font-mono text-base font-bold tabular-nums ${accentText}`} data-testid="selection-grand-total">
+                                  {isWholesaleLockedView ? '$•••.••' : formatUsdExact(quote.retailTotalUsd)}
+                                </span>
+                              </div>
+                              <p className={`text-[10.5px] flex items-center gap-1 ${isDark ? 'text-emerald-300/90' : 'text-emerald-700'}`}>
+                                <CheckCircle2 className="w-3 h-3 shrink-0" aria-hidden="true" />
+                                <span>Official X-POLE PX retail pricing</span>
+                              </p>
+                            </div>
+
+                            <div className="grid grid-cols-[1fr_auto] gap-1.5">
+                              <button
+                                type="button"
+                                data-testid="dock-request-quote-button"
+                                onClick={() => onOpenModal('quote')}
+                                className={`py-2 px-3 rounded-xl text-xs font-bold inline-flex items-center justify-center gap-1.5 transition-all active:scale-[0.97] ${primaryCta}`}
+                              >
+                                <FileText className="w-3.5 h-3.5" aria-hidden="true" />
+                                <span>Request Quote</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={handleDownloadCsv}
+                                title="Download CSV Quote"
+                                className={`py-2 px-2.5 rounded-xl border text-[11px] font-semibold inline-flex items-center gap-1 ${glassBtnIdle}`}
+                              >
+                                <Download className="w-3.5 h-3.5" aria-hidden="true" />
+                                <span>CSV</span>
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Frosted Wholesale Login Gate Overlay */}
+                        {isWholesaleLockedView && (
+                          <div
+                            data-testid="wholesale-login-gate"
+                            className={`absolute inset-0 md:left-4 rounded-xl border backdrop-blur-md flex flex-col sm:flex-row items-center justify-between gap-3 px-4 py-3 animate-dock-panel ${
+                              isDark
+                                ? 'bg-[#12101f]/78 border-violet-300/30 shadow-[0_8px_30px_rgba(0,0,0,0.45)]'
+                                : 'bg-white/82 border-violet-300/60 shadow-[0_8px_24px_rgba(109,40,217,0.12)]'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2.5 text-center sm:text-left">
+                              <div
+                                className={`w-8 h-8 rounded-xl border flex items-center justify-center shrink-0 ${
+                                  isDark
+                                    ? 'bg-violet-500/20 border-violet-300/35 text-violet-200'
+                                    : 'bg-violet-100 border-violet-300 text-violet-700'
+                                }`}
+                              >
+                                <Lock className="w-4 h-4" aria-hidden="true" />
+                              </div>
+                              <div className="space-y-0.5">
+                                <div className="text-xs font-bold">
+                                  {XPOLE_CATALOG.priceTiers[viewedQuoteTier].label} Rates Locked
+                                </div>
+                                <p className={`text-[11px] leading-snug ${mutedText}`}>
+                                  Log in on a valid wholesale account to get the wholesale rates.
+                                </p>
                               </div>
                             </div>
-                          ))}
-                        </div>
-                      </div>
 
-                      {/* Col 3: Grand Total + Quote Actions */}
-                      <div className={`space-y-2 md:border-l md:pl-4 flex flex-col justify-between ${dividerClass}`} data-testid="selection-total-card">
-                        <div className="space-y-1">
-                          <div className="flex items-baseline justify-between gap-2">
-                            <span className={labelText}>Estimated Total</span>
-                            <span className={`font-mono text-base font-bold tabular-nums ${accentText}`} data-testid="selection-grand-total">
-                              {formatUsdExact(quote.totalUsd)}
-                            </span>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <button
+                                type="button"
+                                data-testid="wholesale-signin-trigger"
+                                onClick={() => onOpenModal('wholesale-login')}
+                                className={`px-3 py-1.5 rounded-xl text-[11px] font-bold inline-flex items-center gap-1.5 whitespace-nowrap transition-all active:scale-[0.97] ${primaryCta}`}
+                              >
+                                <LogIn className="w-3.5 h-3.5" aria-hidden="true" />
+                                <span>Wholesale Login</span>
+                              </button>
+                              <button
+                                type="button"
+                                data-testid="wholesale-back-retail"
+                                onClick={() => setViewedQuoteTier('retail')}
+                                className={`px-2.5 py-1.5 rounded-xl border text-[11px] font-semibold whitespace-nowrap ${glassBtnIdle}`}
+                              >
+                                Retail
+                              </button>
+                            </div>
                           </div>
-                          {quote.savingsUsd > 0 ? (
-                            <p className="text-[10.5px] font-mono text-emerald-400 tabular-nums">
-                              Saves {formatUsdExact(quote.savingsUsd)} ({XPOLE_CATALOG.priceTiers[config.priceTier].shortLabel})
-                            </p>
-                          ) : (
-                            <p className={`text-[10.5px] flex items-center gap-1 ${isDark ? 'text-emerald-300/90' : 'text-emerald-700'}`}>
-                              <CheckCircle2 className="w-3 h-3 shrink-0" aria-hidden="true" />
-                              <span>Official X-POLE PX pricing</span>
-                            </p>
-                          )}
-                        </div>
-
-                        <div className="grid grid-cols-[1fr_auto] gap-1.5">
-                          <button
-                            type="button"
-                            data-testid="dock-request-quote-button"
-                            onClick={() => onOpenModal('quote')}
-                            className={`py-2 px-3 rounded-xl text-xs font-bold inline-flex items-center justify-center gap-1.5 transition-all active:scale-[0.97] ${primaryCta}`}
-                          >
-                            <FileText className="w-3.5 h-3.5" aria-hidden="true" />
-                            <span>Request Quote</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={handleDownloadCsv}
-                            title="Download CSV Quote"
-                            className={`py-2 px-2.5 rounded-xl border text-[11px] font-semibold inline-flex items-center gap-1 ${glassBtnIdle}`}
-                          >
-                            <Download className="w-3.5 h-3.5" aria-hidden="true" />
-                            <span>CSV</span>
-                          </button>
-                        </div>
+                        )}
                       </div>
                     </div>
                   )}

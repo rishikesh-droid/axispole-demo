@@ -12,6 +12,8 @@ import type {
   PoleRigConfig,
   ReplicaRenderMode,
   RoomReplicaScene,
+  RoomWallSlotId,
+  RoomWallViewMode,
   ViewportMode,
 } from './types/pole';
 import {
@@ -54,6 +56,7 @@ import { FloorPlanView } from './components/FloorPlanView';
 import { PoleContextMenu } from './components/PoleContextMenu';
 import { Modals } from './components/Modals';
 import { ARMeasurementOverlay } from './components/ARMeasurementOverlay';
+import { RoomCaptureModal } from './components/RoomCaptureModal';
 import type { CadFormat } from './three/cadExporter';
 
 export default function App() {
@@ -97,7 +100,18 @@ export default function App() {
   const [roomReplica, setRoomReplica] = useState<RoomReplicaScene | null>(null);
   const [showInferredObjects, setShowInferredObjects] = useState(true);
   const [replicaRenderMode, setReplicaRenderMode] = useState<ReplicaRenderMode>('wireframe');
+  const [replicaWallViewMode, setReplicaWallViewMode] = useState<RoomWallViewMode>('full');
   const [showReplicaDimensions, setShowReplicaDimensions] = useState(false);
+
+  // Separate Lightweight 4-Wall Room Capture State (decoupled from live AR pole camera)
+  const [captureRoomOpen, setCaptureRoomOpen] = useState(false);
+  const [capturedWallPhotos, setCapturedWallPhotos] = useState<Record<RoomWallSlotId, string | null>>({
+    back: null,
+    right: null,
+    front: null,
+    left: null,
+  });
+
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const viewportRef = useRef<PoleViewportHandle | null>(null);
@@ -468,6 +482,29 @@ export default function App() {
     [handleChangeConfig, handleChangeActivePole]
   );
 
+  const handleApplyFourWallRoom = useCallback(
+    (replica: RoomReplicaScene) => {
+      soundFx.playMetalSeat();
+      setRoomReplica(replica);
+      setReplicaRenderMode('wireframe');
+      setReplicaWallViewMode('full');
+      setShowReplicaDimensions(false);
+      setCaptureRoomOpen(false);
+      setViewportMode('3d');
+      setCompareMode(false);
+      setInstallDemoActive(false);
+
+      handleChangeConfig({
+        environment: 'replica',
+        roomWidthM: replica.roomWidthM,
+        roomDepthM: replica.roomDepthM,
+        ceilingType: 'flat',
+        lighting: 'studio-daylight',
+      });
+    },
+    [handleChangeConfig]
+  );
+
   const handleApplyRoomReplica = useCallback(
     (result: ARMeasurementResult, replica: RoomReplicaScene) => {
       soundFx.playMetalSeat();
@@ -657,6 +694,7 @@ export default function App() {
       data-cushion-placement={activePole.cushionPlacement}
       data-environment={config.environment}
       data-replica-objects={String(roomReplica?.objects.length ?? 0)}
+      data-wall-view-mode={replicaWallViewMode}
       data-viewport-mode={viewportMode}
       data-dock-collapsed={dockCollapsed ? 'true' : 'false'}
       data-active-pole-pos={`${activePole.x.toFixed(2)},${activePole.z.toFixed(2)}`}
@@ -752,6 +790,7 @@ export default function App() {
             roomReplica={roomReplica}
             showInferredObjects={showInferredObjects}
             replicaRenderMode={replicaRenderMode}
+            replicaWallViewMode={replicaWallViewMode}
             showReplicaDimensions={showReplicaDimensions}
             paused={viewportMode === 'floor-plan' && !arCameraActive}
             onOpenContextMenu={setContextMenu}
@@ -760,7 +799,7 @@ export default function App() {
 
         {/* Interactive 2D Architectural Floor Plan View (directly synced with 3D pole positions) */}
         {viewportMode === 'floor-plan' && !arCameraActive && (
-          <div className="absolute inset-0 z-10 pt-13">
+          <div className="absolute inset-0 z-10 pt-12 sm:pt-13">
             <FloorPlanView
               config={activeRigConfig}
               poles={poles}
@@ -848,6 +887,10 @@ export default function App() {
           onToggleSound={handleToggleSound}
           arCameraActive={arCameraActive}
           onStartArCamera={startArCamera}
+          onOpenRoomCapture={() => {
+            soundFx.playDetent();
+            setCaptureRoomOpen(true);
+          }}
           hasRoomReplica={Boolean(roomReplica)}
           onOpenModal={(m) => {
             soundFx.playDetent();
@@ -926,6 +969,19 @@ export default function App() {
               onChangeReplicaRenderMode={(mode) => {
                 soundFx.playDetent();
                 setReplicaRenderMode(mode);
+              }}
+              replicaWallViewMode={replicaWallViewMode}
+              onChangeReplicaWallViewMode={(mode) => {
+                soundFx.playDetent();
+                setReplicaWallViewMode(mode);
+              }}
+              onOpenRoomCapture={() => {
+                soundFx.playDetent();
+                setCaptureRoomOpen(true);
+              }}
+              onExitReplica={() => {
+                soundFx.playDetent();
+                handleChangeConfig({ environment: 'studio' });
               }}
               showReplicaDimensions={showReplicaDimensions}
               onToggleReplicaDimensions={() => {
@@ -1017,10 +1073,22 @@ export default function App() {
         }}
       />
 
-      {/* Official X-POLE Request Quote & CAD Export Modals */}
+      {/* Standalone 4-Wall Room Capture Modal (Separate from Live AR Pole Mode) */}
+      <RoomCaptureModal
+        open={captureRoomOpen}
+        lighting={config.lighting}
+        ceilingHeightCm={config.ceilingHeightCm}
+        photos={capturedWallPhotos}
+        onChangePhotos={setCapturedWallPhotos}
+        onClose={() => setCaptureRoomOpen(false)}
+        onGenerateRoom={handleApplyFourWallRoom}
+      />
+
+      {/* Official X-POLE Request Quote, Wholesale Login & CAD Export Modals */}
       <Modals
         activeModal={activeModal}
         onClose={() => setActiveModal('none')}
+        onOpenModal={(m) => setActiveModal(m)}
         config={activeRigConfig}
         quote={quote}
         onChangePriceTier={(priceTier) => handleChangeConfig({ priceTier })}

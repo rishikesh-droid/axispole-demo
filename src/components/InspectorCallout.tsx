@@ -25,6 +25,7 @@ import type {
   PoleRigConfig,
   ReplicaRenderMode,
   RoomReplicaScene,
+  RoomWallViewMode,
   ViewportMode,
 } from '../types/pole';
 import {
@@ -34,6 +35,7 @@ import {
   isDarkLighting,
   POLE_FINISHES,
 } from '../utils/poleConfig';
+import { ROOM_WALL_VIEW_OPTIONS } from '../utils/fourWallReconstructor';
 import {
   formatUsdExact,
   resolveXPoleConfiguration,
@@ -68,6 +70,10 @@ interface InspectorCalloutProps {
   onToggleInferredObjects: () => void;
   replicaRenderMode: ReplicaRenderMode;
   onChangeReplicaRenderMode: (mode: ReplicaRenderMode) => void;
+  replicaWallViewMode: RoomWallViewMode;
+  onChangeReplicaWallViewMode: (mode: RoomWallViewMode) => void;
+  onOpenRoomCapture: () => void;
+  onExitReplica: () => void;
   showReplicaDimensions: boolean;
   onToggleReplicaDimensions: () => void;
   onMatchReplicaCamera: () => void;
@@ -102,6 +108,10 @@ export function InspectorCallout({
   onToggleInferredObjects,
   replicaRenderMode,
   onChangeReplicaRenderMode,
+  replicaWallViewMode,
+  onChangeReplicaWallViewMode,
+  onOpenRoomCapture,
+  onExitReplica,
   showReplicaDimensions,
   onToggleReplicaDimensions,
   onMatchReplicaCamera,
@@ -472,84 +482,172 @@ export function InspectorCallout({
             </div>
           ) : config.environment === 'replica' && roomReplica ? (
             <div
-              className={`rounded-2xl border px-3 py-1.5 backdrop-blur-2xl backdrop-saturate-150 ${surfaceClass}`}
+              className={`rounded-2xl border px-3 py-1.5 backdrop-blur-2xl backdrop-saturate-150 max-w-full ${surfaceClass}`}
               data-testid="room-replica-hud"
             >
-              <div className="flex items-center gap-2 text-[11px] whitespace-nowrap">
-                <span className={`inline-flex items-center gap-1 font-semibold ${accentTextClass}`}>
-                  {roomReplica.depthMesh ? (
+              {roomReplica.fourWallRoom ? (
+                <div className="flex flex-wrap items-center justify-center gap-1.5 sm:gap-2 text-[11px]">
+                  <span className={`inline-flex items-center gap-1 font-semibold whitespace-nowrap ${accentTextClass}`}>
                     <Box className="w-3 h-3 shrink-0" aria-hidden="true" />
-                  ) : (
-                    <Sparkles className="w-3 h-3 shrink-0" aria-hidden="true" />
-                  )}
-                  <span>My Room · {roomReplica.roomType}</span>
-                </span>
+                    <span>My Room (4 Walls)</span>
+                  </span>
 
-                {roomReplica.depthMesh ? (
-                  <>
-                    <span className={`h-3 w-px shrink-0 ${dividerBg}`} aria-hidden="true" />
-                    <div className="inline-flex items-center gap-0.5 rounded-lg border border-white/15 p-0.5">
-                      {(
-                        [
-                          ['wireframe', 'Wireframe'],
-                          ['blueprint', 'Blueprint'],
-                          ['textured', 'Photo 3D'],
-                        ] as [ReplicaRenderMode, string][]
-                      ).map(([modeId, label]) => (
-                        <button
-                          key={modeId}
-                          type="button"
-                          data-testid={`replica-mode-${modeId}`}
-                          onClick={() => onChangeReplicaRenderMode(modeId)}
-                          aria-pressed={replicaRenderMode === modeId}
-                          className={`px-1.5 py-0.5 rounded-md text-[10px] font-semibold transition-colors ${
-                            replicaRenderMode === modeId ? btnActive : btnIdle
-                          }`}
-                        >
-                          {label}
-                        </button>
-                      ))}
-                    </div>
+                  <span className={`hidden sm:inline h-3 w-px shrink-0 ${dividerBg}`} aria-hidden="true" />
 
-                    <button
-                      type="button"
-                      onClick={onToggleReplicaDimensions}
-                      data-testid="hud-toggle-dimensions"
-                      aria-pressed={showReplicaDimensions}
-                      className={`px-1.5 py-0.5 rounded-md border text-[10px] font-semibold inline-flex items-center gap-1 shrink-0 ${
-                        showReplicaDimensions ? btnActive : btnIdle
-                      }`}
-                    >
-                      <Ruler className="w-2.5 h-2.5" aria-hidden="true" />
-                      <span>Dims ({roomReplica.depthMesh.measuredObjects.length})</span>
-                    </button>
+                  {/* 4-Wall Cutaway View Modes: Full Room | From Front | Back + Left | Back + Right */}
+                  <div
+                    className="inline-flex items-center gap-0.5 rounded-lg border border-white/15 p-0.5"
+                    role="group"
+                    aria-label="Room wall visibility view mode"
+                    data-testid="four-wall-view-switcher"
+                  >
+                    {ROOM_WALL_VIEW_OPTIONS.map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        data-testid={`wall-view-${opt.id}`}
+                        onClick={() => onChangeReplicaWallViewMode(opt.id)}
+                        aria-pressed={replicaWallViewMode === opt.id}
+                        title={opt.description}
+                        className={`px-2 py-0.5 rounded-md text-[10px] font-semibold whitespace-nowrap transition-colors ${
+                          replicaWallViewMode === opt.id ? btnActive : btnIdle
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
 
-                    <button
-                      type="button"
-                      onClick={onMatchReplicaCamera}
-                      data-testid="hud-match-camera"
-                      className={`px-1.5 py-0.5 rounded-md border text-[10px] font-semibold inline-flex items-center gap-1 shrink-0 ${btnIdle}`}
-                    >
-                      <Camera className="w-2.5 h-2.5" aria-hidden="true" />
-                      <span className="hidden sm:inline">Match Cam</span>
-                    </button>
-                  </>
-                ) : (
+                  <span className={`hidden md:inline h-3 w-px shrink-0 ${dividerBg}`} aria-hidden="true" />
+
+                  {/* Render Style: Wireframe | Blueprint | Photo */}
+                  <div
+                    className="inline-flex items-center gap-0.5 rounded-lg border border-white/15 p-0.5"
+                    role="group"
+                    aria-label="Room render style"
+                  >
+                    {(
+                      [
+                        ['wireframe', 'Wireframe'],
+                        ['blueprint', 'Blueprint'],
+                        ['textured', 'Photo'],
+                      ] as [ReplicaRenderMode, string][]
+                    ).map(([modeId, label]) => (
+                      <button
+                        key={modeId}
+                        type="button"
+                        data-testid={`replica-mode-${modeId}`}
+                        onClick={() => onChangeReplicaRenderMode(modeId)}
+                        aria-pressed={replicaRenderMode === modeId}
+                        className={`px-1.5 py-0.5 rounded-md text-[10px] font-semibold whitespace-nowrap transition-colors ${
+                          replicaRenderMode === modeId ? btnActive : btnIdle
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+
                   <button
                     type="button"
-                    onClick={onToggleInferredObjects}
-                    data-testid="hud-toggle-inferred"
-                    className={`px-1.5 py-0.5 rounded-md border text-[10px] font-semibold inline-flex items-center gap-1 shrink-0 ${btnIdle}`}
+                    onClick={onOpenRoomCapture}
+                    data-testid="hud-edit-4walls"
+                    className={`px-2 py-0.5 rounded-md border text-[10px] font-semibold inline-flex items-center gap-1 whitespace-nowrap shrink-0 ${btnIdle}`}
                   >
-                    {showInferredObjects ? (
-                      <Eye className="w-2.5 h-2.5" aria-hidden="true" />
-                    ) : (
-                      <EyeOff className="w-2.5 h-2.5" aria-hidden="true" />
-                    )}
-                    <span>Unseen {showInferredObjects ? 'On' : 'Off'}</span>
+                    <Camera className="w-2.5 h-2.5" aria-hidden="true" />
+                    <span>Edit Walls</span>
                   </button>
-                )}
-              </div>
+
+                  <button
+                    type="button"
+                    onClick={onExitReplica}
+                    data-testid="hud-exit-replica"
+                    title="Switch back to Studio backdrop"
+                    className={`p-0.5 rounded-md transition-colors shrink-0 ${
+                      isDark ? 'hover:bg-white/10 text-zinc-300' : 'hover:bg-stone-200 text-stone-600'
+                    }`}
+                    aria-label="Return to Studio backdrop"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 text-[11px] whitespace-nowrap">
+                  <span className={`inline-flex items-center gap-1 font-semibold ${accentTextClass}`}>
+                    {roomReplica.depthMesh ? (
+                      <Box className="w-3 h-3 shrink-0" aria-hidden="true" />
+                    ) : (
+                      <Sparkles className="w-3 h-3 shrink-0" aria-hidden="true" />
+                    )}
+                    <span>My Room · {roomReplica.roomType}</span>
+                  </span>
+
+                  {roomReplica.depthMesh ? (
+                    <>
+                      <span className={`h-3 w-px shrink-0 ${dividerBg}`} aria-hidden="true" />
+                      <div className="inline-flex items-center gap-0.5 rounded-lg border border-white/15 p-0.5">
+                        {(
+                          [
+                            ['wireframe', 'Wireframe'],
+                            ['blueprint', 'Blueprint'],
+                            ['textured', 'Photo 3D'],
+                          ] as [ReplicaRenderMode, string][]
+                        ).map(([modeId, label]) => (
+                          <button
+                            key={modeId}
+                            type="button"
+                            data-testid={`replica-mode-${modeId}`}
+                            onClick={() => onChangeReplicaRenderMode(modeId)}
+                            aria-pressed={replicaRenderMode === modeId}
+                            className={`px-1.5 py-0.5 rounded-md text-[10px] font-semibold transition-colors ${
+                              replicaRenderMode === modeId ? btnActive : btnIdle
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={onToggleReplicaDimensions}
+                        data-testid="hud-toggle-dimensions"
+                        aria-pressed={showReplicaDimensions}
+                        className={`px-1.5 py-0.5 rounded-md border text-[10px] font-semibold inline-flex items-center gap-1 shrink-0 ${
+                          showReplicaDimensions ? btnActive : btnIdle
+                        }`}
+                      >
+                        <Ruler className="w-2.5 h-2.5" aria-hidden="true" />
+                        <span>Dims ({roomReplica.depthMesh.measuredObjects.length})</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={onMatchReplicaCamera}
+                        data-testid="hud-match-camera"
+                        className={`px-1.5 py-0.5 rounded-md border text-[10px] font-semibold inline-flex items-center gap-1 shrink-0 ${btnIdle}`}
+                      >
+                        <Camera className="w-2.5 h-2.5" aria-hidden="true" />
+                        <span className="hidden sm:inline">Match Cam</span>
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={onToggleInferredObjects}
+                      data-testid="hud-toggle-inferred"
+                      className={`px-1.5 py-0.5 rounded-md border text-[10px] font-semibold inline-flex items-center gap-1 shrink-0 ${btnIdle}`}
+                    >
+                      {showInferredObjects ? (
+                        <Eye className="w-2.5 h-2.5" aria-hidden="true" />
+                      ) : (
+                        <EyeOff className="w-2.5 h-2.5" aria-hidden="true" />
+                      )}
+                      <span>Unseen {showInferredObjects ? 'On' : 'Off'}</span>
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           ) : null}
     </div>

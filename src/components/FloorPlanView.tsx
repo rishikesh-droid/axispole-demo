@@ -114,23 +114,36 @@ export function FloorPlanView({
   }, []);
 
   const isCompactViewport = viewportSize.width < 640;
-  const padX = isCompactViewport ? 56 : 112;
-  const padY = isCompactViewport ? 64 : 68;
-  const dockSafeBottom = isCompactViewport ? 140 : 196;
+  const padX = isCompactViewport ? 44 : 112;
+  const padY = isCompactViewport ? 38 : 68;
+  const dockSafeBottom = isCompactViewport ? 420 : 196;
+  const mobileTopOffset = isCompactViewport ? 72 : 0;
 
-  const planRect = useMemo(
-    () =>
-      computeFloorPlanRect(
-        viewportSize.width,
-        Math.max(280, viewportSize.height - dockSafeBottom),
-        config.roomWidthM,
-        config.roomDepthM,
-        zoom,
-        padX,
-        padY
-      ),
-    [viewportSize.width, viewportSize.height, dockSafeBottom, config.roomWidthM, config.roomDepthM, zoom, padX, padY]
-  );
+  const planRect = useMemo(() => {
+    const raw = computeFloorPlanRect(
+      viewportSize.width,
+      Math.max(210, viewportSize.height - dockSafeBottom),
+      config.roomWidthM,
+      config.roomDepthM,
+      zoom,
+      padX,
+      padY
+    );
+    return {
+      ...raw,
+      y: raw.y + mobileTopOffset,
+    };
+  }, [
+    viewportSize.width,
+    viewportSize.height,
+    dockSafeBottom,
+    mobileTopOffset,
+    config.roomWidthM,
+    config.roomDepthM,
+    zoom,
+    padX,
+    padY,
+  ]);
 
   const gridLines = useMemo(
     () => computeFloorPlanGridLines(config.roomWidthM, config.roomDepthM, 0.5),
@@ -910,8 +923,8 @@ export function FloorPlanView({
         })}
       </svg>
 
-      {/* Top-Right Frosted Floor Area, Hint & Blueprint Controls (clear of bottom dock) */}
-      <div className="absolute top-3 right-3 sm:right-4 z-20 flex flex-col items-end gap-2">
+      {/* Top-Right (Desktop) / Top-Center below Mode Bar (Mobile) Frosted Blueprint Controls */}
+      <div className="absolute top-[50px] sm:top-3 left-1/2 -translate-x-1/2 sm:left-auto sm:translate-x-0 sm:right-4 z-20 flex flex-col items-center sm:items-end gap-2 max-w-[calc(100vw-16px)]">
         <div
           className={`hidden sm:flex items-center gap-3 px-3 py-1.5 rounded-xl border text-[11px] ${surfaceToolbarClass}`}
         >
@@ -932,7 +945,7 @@ export function FloorPlanView({
           </span>
         </div>
 
-        <div className="flex flex-wrap items-center justify-end gap-1.5">
+        <div className="flex flex-nowrap items-center justify-center sm:justify-end gap-1.5">
           <div
             className={`inline-flex items-center p-0.5 rounded-xl border ${surfaceToolbarClass}`}
             role="group"

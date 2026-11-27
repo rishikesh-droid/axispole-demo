@@ -32,6 +32,10 @@ export type CameraFocusId =
 
 export type ReplicaRenderMode = 'wireframe' | 'blueprint' | 'textured';
 
+export type RoomWallSlotId = 'back' | 'right' | 'front' | 'left';
+
+export type RoomWallViewMode = 'full' | 'front-open' | 'back-left' | 'back-right';
+
 export type CameraMotionMode = 'manual' | 'orbit' | 'crane';
 
 export type CushionPlacement = 'top' | 'below';
@@ -55,7 +59,7 @@ export type SidebarDensity = 'full' | 'minimal';
 
 export type FloorPlanUnit = 'm' | 'ft';
 
-export type ModalId = 'none' | 'quote' | 'export-ar';
+export type ModalId = 'none' | 'quote' | 'export-ar' | 'wholesale-login';
 
 export interface PoleContextMenuState {
   screenX: number;
@@ -396,6 +400,40 @@ export interface ReplicaDepthMeshData {
   measuredObjects: MeasuredRoomObject3D[];
 }
 
+export interface WallDetectedObstacle {
+  id: string;
+  wall: RoomWallSlotId;
+  label: string;
+  /** Horizontal center along the wall (0 = left edge, 1 = right edge when facing wall) */
+  uCenter: number;
+  /** Fraction of the wall width occupied by this obstacle (0..1) */
+  uWidth: number;
+  /** Fraction of the room ceiling height occupied from floor up (0..1) */
+  heightRatio: number;
+  /** Estimated protrusion depth into the room in meters */
+  depthM: number;
+}
+
+export interface CapturedWallImage {
+  slot: RoomWallSlotId;
+  sourceDataUrl: string;
+  cadWireframeDataUrl: string;
+  blueprintDataUrl: string;
+  aspectRatio: number;
+  dominantHex: string;
+  detectedObstacles: WallDetectedObstacle[];
+}
+
+export interface FourWallRoomData {
+  walls: Record<RoomWallSlotId, CapturedWallImage | null>;
+  capturedCount: number;
+  estimatedWidthM: number;
+  estimatedDepthM: number;
+  estimatedCeilingCm: number;
+  floorColorHex: string;
+  ceilingColorHex: string;
+}
+
 export interface RoomReplicaScene {
   roomType: string;
   summary: string;
@@ -422,6 +460,7 @@ export interface RoomReplicaScene {
   overallAccuracyPct: number;
   previewDataUrl?: string;
   depthMesh?: ReplicaDepthMeshData;
+  fourWallRoom?: FourWallRoomData;
 }
 
 

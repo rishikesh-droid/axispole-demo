@@ -8,6 +8,7 @@ import type {
   PoleRigConfig,
   ReplicaRenderMode,
   RoomReplicaScene,
+  RoomWallViewMode,
 } from '../types/pole';
 import {
   analyzeFloorClearance,
@@ -35,7 +36,8 @@ export interface EnvironmentRigHandle {
     roomReplica?: RoomReplicaScene | null,
     showInferredObjects?: boolean,
     replicaRenderMode?: ReplicaRenderMode,
-    showReplicaDimensions?: boolean
+    showReplicaDimensions?: boolean,
+    replicaWallViewMode?: RoomWallViewMode
   ) => void;
   dispose: () => void;
 }
@@ -361,7 +363,7 @@ export function createEnvironmentRig(
       wallBrandMesh.visible = shouldShowWallBrand;
       onAssetLoaded?.();
     };
-    logoImg.src = '/assets/aistudio/logo-xpole_ae18a8c2.png';
+    logoImg.src = '/assets/aistudio/logo-xpole-removebg-preview_fe7bd6d2.png';
   }
 
   // Dynamically pooled floor contact shadows & clearance rings (grows lazily as poles are added)
@@ -912,7 +914,8 @@ export function createEnvironmentRig(
     roomReplica?: RoomReplicaScene | null,
     showInferredObjects = true,
     replicaRenderMode: ReplicaRenderMode = 'wireframe',
-    showReplicaDimensions = false
+    showReplicaDimensions = false,
+    replicaWallViewMode: RoomWallViewMode = 'full'
   ): void {
     const W = config.roomWidthM;
     const D = config.roomDepthM;
@@ -926,12 +929,14 @@ export function createEnvironmentRig(
     }
 
     const isReplica = config.environment === 'replica' && Boolean(roomReplica);
+    const hasFourWallReplica = isReplica && Boolean(roomReplica?.fourWallRoom);
     const hasDepthMeshReplica = isReplica && Boolean(roomReplica?.depthMesh);
+    const hasCustomReplicaShell = hasFourWallReplica || hasDepthMeshReplica;
 
     group.visible = true;
     applyLightingPreset(config.environment, config.lighting, H, W, D, renderer);
 
-    if (hasDepthMeshReplica) {
+    if (hasCustomReplicaShell) {
       const bgHex =
         replicaRenderMode === 'blueprint'
           ? 0x0a1120
@@ -943,8 +948,8 @@ export function createEnvironmentRig(
       renderer.toneMappingExposure = replicaRenderMode === 'blueprint' ? 1.06 : 1.02;
     }
 
-    // Show studio box shell only when NOT rendering a dense 3D CAD depth-mesh room replica
-    const showBoxShell = !hasDepthMeshReplica;
+    // Show studio box shell only when NOT rendering a custom 4-wall or depth-mesh CAD room replica
+    const showBoxShell = !hasCustomReplicaShell;
     floorMesh.visible = showBoxShell;
     apronMesh.visible = showBoxShell;
     backWall.visible = showBoxShell;
@@ -1200,14 +1205,15 @@ export function createEnvironmentRig(
       wallBrandMesh.visible = false;
     }
 
-    // Scanned 3D Room Replica (Dense 3D CAD Wireframe or Procedural Fallback)
+    // Scanned 3D Room Replica (4-Wall Architectural Wireframe, Depth Mesh, or Procedural Fallback)
     roomReplicaRig.update(
       roomReplica ?? null,
       isReplica,
       showInferredObjects,
       replicaRenderMode,
       showReplicaDimensions,
-      renderer.capabilities.getMaxAnisotropy()
+      renderer.capabilities.getMaxAnisotropy(),
+      replicaWallViewMode
     );
 
     // Contact shadows, clearance safety rings & active-pole base ring

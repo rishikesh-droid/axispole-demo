@@ -1,12 +1,16 @@
 import * as THREE from 'three';
 import type {
+  FourWallRoomData,
   MeasuredRoomObject3D,
   ReplicaDepthMeshData,
   ReplicaRenderMode,
   RoomArchitecturalFeature,
   RoomReplicaObject,
   RoomReplicaScene,
+  RoomWallSlotId,
+  RoomWallViewMode,
 } from '../types/pole';
+import { getVisibleWallSlots, WALL_SLOT_ORDER } from '../utils/fourWallReconstructor';
 
 export interface RoomReplicaRigHandle {
   group: THREE.Group;
@@ -16,7 +20,8 @@ export interface RoomReplicaRigHandle {
     showInferred: boolean,
     renderMode?: ReplicaRenderMode,
     showDimensions?: boolean,
-    maxAnisotropy?: number
+    maxAnisotropy?: number,
+    wallViewMode?: RoomWallViewMode
   ) => void;
   dispose: () => void;
 }
@@ -1521,6 +1526,213 @@ function buildDepthWireframeReplicaGroup(
   return root;
 }
 
+function buildFourWallWireframeRoomGroup(
+  sceneData: RoomReplicaScene,
+  fourWallRoom: FourWallRoomData,
+  renderMode: ReplicaRenderMode,
+  maxAnisotropy: number,
+  onTextureReady?: () => void
+): THREE.Group {
+  const root = new THREE.Group();
+  root.name = 'Replica_FourWallCADRoom';
+
+  const W = Math.max(2.6, sceneData.roomWidthM);
+  const D = Math.max(2.6, sceneData.roomDepthM);
+  const H = Math.max(2.1, sceneData.ceilingHeightCm / 100);
+  const isBp = renderMode === 'blueprint';
+  const isTextured = renderMode === 'textured';
+
+  const lineColor = isBp ? 0x38bdf8 : 0x1e293b;
+  const strongLineColor = isBp ? 0x7dd3fc : 0x0f172a;
+
+  // 1. Exact-Footprint W x D Architectural Floor Tile Grid grounded cleanly at Y = 0 (zero overhang!)
+  const floorGroup = new THREE.Group();
+  floorGroup.name = 'Replica_FourWallFloor';
+  const halfW = W * 0.5;
+  const halfD = D * 0.5;
+
+  const baseGeo = new THREE.PlaneGeometry(W, D);
+  baseGeo.rotateX(-Math.PI / 2);
+  const baseMat = new THREE.MeshBasicMaterial({
+    color: isBp ? 0x0b1324 : isTextured ? new THREE.Color(sceneData.floorColor) : 0xf9fafb,
+    polygonOffset: true,
+    polygonOffsetFactor: 3,
+    polygonOffsetUnits: 3,
+  });
+  const basePlane = new THREE.Mesh(baseGeo, baseMat);
+  basePlane.position.set(0, -0.002, 0);
+  floorGroup.add(basePlane);
+
+  const tileSize = 0.6;
+  const gridVerts: number[] = [];
+  for (let x = -halfW + tileSize; x < halfW - 0.05; x += tileSize) {
+    gridVerts.push(x, 0.002, -halfD, x, 0.002, halfD);
+  }
+  for (let z = -halfD + tileSize; z < halfD - 0.05; z += tileSize) {
+    gridVerts.push(-halfW, 0.002, z, halfW, 0.002, z);
+  }
+  const gridGeo = new THREE.BufferGeometry();
+  gridGeo.setAttribute('position', new THREE.Float32BufferAttribute(gridVerts, 3));
+  const gridLines = new THREE.LineSegments(
+    gridGeo,
+    new THREE.LineBasicMaterial({
+      color: isBp ? 0x38bdf8 : 0x64748b,
+      transparent: true,
+      opacity: isTextured ? 0.22 : isBp ? 0.34 : 0.3,
+      depthWrite: false,
+    })
+  );
+  gridLines.renderOrder = 3;
+  floorGroup.add(gridLines);
+
+  const floorBorderVerts = [
+    -halfW, 0.003, -halfD, halfW, 0.003, -halfD,
+    halfW, 0.003, -halfD, halfW, 0.003, halfD,
+    halfW, 0.003, halfD, -halfW, 0.003, halfD,
+    -halfW, 0.003, halfD, -halfW, 0.003, -halfD,
+  ];
+  const floorBorderGeo = new THREE.BufferGeometry();
+  floorBorderGeo.setAttribute('position', new THREE.Float32BufferAttribute(floorBorderVerts, 3));
+  floorGroup.add(
+    new THREE.LineSegments(
+      floorBorderGeo,
+      new THREE.LineBasicMaterial({
+        color: strongLineColor,
+        transparent: true,
+        opacity: isBp ? 0.65 : 0.58,
+        depthWrite: false,
+      })
+    )
+  );
+  root.add(floorGroup);
+
+  // 2. Architectural Ceiling Soffit (FrontSide facing downward so top-down orbit never blocks view)
+  const ceilingGroup = new THREE.Group();
+  ceilingGroup.name = 'Replica_FourWallCeiling';
+  const ceilGeo = new THREE.PlaneGeometry(W, D);
+  ceilGeo.rotateX(Math.PI / 2);
+  const ceilMat = new THREE.MeshBasicMaterial({
+    color: isBp ? 0x0d1629 : isTextured ? new THREE.Color(sceneData.ceilingColor) : 0xf8fafc,
+    side: THREE.FrontSide,
+    transparent: true,
+    opacity: isBp ? 0.92 : 0.96,
+    polygonOffset: true,
+    polygonOffsetFactor: 2,
+    polygonOffsetUnits: 2,
+  });
+  const ceilPlane = new THREE.Mesh(ceilGeo, ceilMat);
+  ceilPlane.position.set(0, H, 0);
+  ceilingGroup.add(ceilPlane);
+
+  const ceilBorderVerts = [
+    -halfW, H, -halfD, halfW, H, -halfD,
+    halfW, H, -halfD, halfW, H, halfD,
+    halfW, H, halfD, -halfW, H, halfD,
+    -halfW, H, halfD, -halfW, H, -halfD,
+  ];
+  const ceilBorderGeo = new THREE.BufferGeometry();
+  ceilBorderGeo.setAttribute('position', new THREE.Float32BufferAttribute(ceilBorderVerts, 3));
+  ceilingGroup.add(
+    new THREE.LineSegments(
+      ceilBorderGeo,
+      new THREE.LineBasicMaterial({
+        color: strongLineColor,
+        transparent: true,
+        opacity: isBp ? 0.65 : 0.55,
+        depthWrite: false,
+      })
+    )
+  );
+  root.add(ceilingGroup);
+
+  // 3. Four Inward-Facing Wall Sub-Groups (FrontSide enables seamless automatic 360° cutaway in Full Room mode)
+  const wallTransforms: Record<
+    RoomWallSlotId,
+    { span: number; pos: [number, number, number]; rotY: number }
+  > = {
+    back: { span: W, pos: [0, H * 0.5, -halfD], rotY: 0 },
+    front: { span: W, pos: [0, H * 0.5, halfD], rotY: Math.PI },
+    left: { span: D, pos: [-halfW, H * 0.5, 0], rotY: Math.PI / 2 },
+    right: { span: D, pos: [halfW, H * 0.5, 0], rotY: -Math.PI / 2 },
+  };
+
+  for (const slot of WALL_SLOT_ORDER) {
+    const wallData = fourWallRoom.walls[slot];
+    const tf = wallTransforms[slot];
+    const wallGroup = new THREE.Group();
+    wallGroup.name = `Replica_Wall_${slot}`;
+    wallGroup.userData.wallSlot = slot;
+    wallGroup.position.set(tf.pos[0], tf.pos[1], tf.pos[2]);
+    wallGroup.rotation.y = tf.rotY;
+
+    const wallGeo = new THREE.PlaneGeometry(tf.span, H);
+    const texUrl = wallData
+      ? isBp
+        ? wallData.blueprintDataUrl
+        : isTextured
+          ? wallData.sourceDataUrl
+          : wallData.cadWireframeDataUrl
+      : '';
+
+    const wallMat = new THREE.MeshBasicMaterial({
+      color: texUrl ? 0xffffff : isBp ? 0x0f1a2e : 0xf8fafc,
+      side: THREE.FrontSide,
+      polygonOffset: true,
+      polygonOffsetFactor: 2,
+      polygonOffsetUnits: 2,
+    });
+
+    if (texUrl) {
+      const img = new Image();
+      img.onload = () => {
+        const tex = new THREE.Texture(img);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.anisotropy = Math.min(8, Math.max(1, maxAnisotropy));
+        tex.minFilter = THREE.LinearMipmapLinearFilter;
+        tex.magFilter = THREE.LinearFilter;
+        tex.generateMipmaps = true;
+        tex.needsUpdate = true;
+        wallMat.map = tex;
+        wallMat.needsUpdate = true;
+        onTextureReady?.();
+      };
+      img.src = texUrl;
+    }
+
+    const wallPlane = new THREE.Mesh(wallGeo, wallMat);
+    wallPlane.renderOrder = 2;
+    wallGroup.add(wallPlane);
+
+    // Crisp architectural wall perimeter border (only rendered as a thin inward-facing frame)
+    const hw = tf.span * 0.5;
+    const hh = H * 0.5;
+    const zOff = 0.004;
+    const frameVerts = [
+      -hw, -hh, zOff, hw, -hh, zOff,
+      hw, -hh, zOff, hw, hh, zOff,
+      hw, hh, zOff, -hw, hh, zOff,
+      -hw, hh, zOff, -hw, -hh, zOff,
+    ];
+    const frameGeo = new THREE.BufferGeometry();
+    frameGeo.setAttribute('position', new THREE.Float32BufferAttribute(frameVerts, 3));
+    const frameLines = new THREE.LineSegments(
+      frameGeo,
+      new THREE.LineBasicMaterial({
+        color: lineColor,
+        transparent: true,
+        opacity: isTextured ? 0.35 : isBp ? 0.65 : 0.55,
+        depthWrite: false,
+      })
+    );
+    frameLines.renderOrder = 5;
+    wallGroup.add(frameLines);
+
+    root.add(wallGroup);
+  }
+
+  return root;
+}
+
 function disposeGroupChildren(parent: THREE.Group): void {
   while (parent.children.length > 0) {
     const child = parent.children[0];
@@ -1552,9 +1764,10 @@ function disposeGroupChildren(parent: THREE.Group): void {
 
 /**
  * Manages the 3D Room Replica inside the viewport:
- * - When `sceneData.depthMesh` is available (all new scans), renders the high-precision
- *   metric 3D depth-displaced architectural CAD wireframe + measured W x D x H volumes.
- * - Falls back gracefully to procedural furniture meshes for legacy scenes without depthMesh.
+ * - When `sceneData.fourWallRoom` is available (4-Wall Room Capture), renders the 4-wall
+ *   architectural CAD wireframe room with O(1) cutaway wall visibility switching.
+ * - When `sceneData.depthMesh` is available, renders the single-view 3D depth-displaced CAD wireframe.
+ * - Falls back gracefully to procedural furniture meshes for legacy scenes.
  */
 export function createRoomReplicaRig(
   parent: THREE.Group,
@@ -1573,22 +1786,36 @@ export function createRoomReplicaRig(
     showInferred: boolean,
     renderMode: ReplicaRenderMode = 'wireframe',
     showDimensions = false,
-    maxAnisotropy = 4
+    maxAnisotropy = 4,
+    wallViewMode: RoomWallViewMode = 'full'
   ): void {
     if (!visible || !sceneData) {
       group.visible = false;
       return;
     }
 
-    const hasDepthMesh = Boolean(sceneData.depthMesh);
+    const hasFourWall = Boolean(sceneData.fourWallRoom);
+    const hasDepthMesh = !hasFourWall && Boolean(sceneData.depthMesh);
     const featCount = sceneData.architecturalFeatures?.length ?? 0;
-    const nextKey = hasDepthMesh
-      ? `depth|${sceneData.capturedAt}|${renderMode}|${sceneData.ceilingHeightCm}|${sceneData.depthMesh!.gridW}x${sceneData.depthMesh!.gridH}`
-      : `proc|${sceneData.capturedAt}|${sceneData.objects.length}|${featCount}|${sceneData.ceilingHeightCm}`;
+    const nextKey = hasFourWall
+      ? `fourwall|${sceneData.capturedAt}|${renderMode}|${sceneData.roomWidthM.toFixed(2)}|${sceneData.roomDepthM.toFixed(2)}|${sceneData.ceilingHeightCm}`
+      : hasDepthMesh
+        ? `depth|${sceneData.capturedAt}|${renderMode}|${sceneData.ceilingHeightCm}|${sceneData.depthMesh!.gridW}x${sceneData.depthMesh!.gridH}`
+        : `proc|${sceneData.capturedAt}|${sceneData.objects.length}|${featCount}|${sceneData.ceilingHeightCm}`;
 
     if (builtKey !== nextKey) {
       disposeGroupChildren(group);
-      if (hasDepthMesh && sceneData.depthMesh) {
+      if (hasFourWall && sceneData.fourWallRoom) {
+        group.add(
+          buildFourWallWireframeRoomGroup(
+            sceneData,
+            sceneData.fourWallRoom,
+            renderMode,
+            maxAnisotropy,
+            onTextureReady
+          )
+        );
+      } else if (hasDepthMesh && sceneData.depthMesh) {
         group.add(
           buildDepthWireframeReplicaGroup(
             sceneData,
@@ -1613,8 +1840,18 @@ export function createRoomReplicaRig(
     }
 
     group.visible = true;
+    const wallVis = hasFourWall ? getVisibleWallSlots(wallViewMode) : null;
+
     for (const child of group.children) {
-      if (hasDepthMesh) {
+      if (hasFourWall && wallVis) {
+        child.visible = true;
+        child.traverse((node) => {
+          const slot = node.userData.wallSlot as RoomWallSlotId | undefined;
+          if (slot && slot in wallVis) {
+            node.visible = wallVis[slot];
+          }
+        });
+      } else if (hasDepthMesh) {
         child.visible = true;
         child.traverse((node) => {
           if (node.userData.isDimensionOverlay) {

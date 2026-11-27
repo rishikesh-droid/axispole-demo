@@ -59,34 +59,30 @@ export function TopBar({
 
   return (
     <header
-      className={`fixed top-0 left-0 right-0 z-30 h-13 px-4 sm:px-6 flex items-center justify-between gap-4 border-b backdrop-blur-xl backdrop-saturate-150 transition-colors duration-200 ${headerGlass}`}
+      className={`fixed top-0 left-0 right-0 z-30 h-12 sm:h-13 px-3 sm:px-6 flex items-center justify-between gap-2 sm:gap-4 border-b backdrop-blur-xl backdrop-saturate-150 transition-colors duration-200 ${headerGlass}`}
     >
-      {/* Zone 1: Minimal Official X-POLE Logo */}
+      {/* Zone 1: Minimal Official X-POLE Transparent Logo */}
       <div className="flex items-center shrink-0">
-        <div
-          className={`inline-flex items-center rounded-lg transition-colors ${
+        <img
+          src="/assets/aistudio/logo-xpole-removebg-preview_fe7bd6d2.png"
+          alt="X-POLE — Leaders in Pole & Aerial Fitness"
+          referrerPolicy="no-referrer"
+          className={`h-5 sm:h-[26px] w-auto object-contain select-none transition-all duration-200 ${
             isDark
-              ? 'bg-white/92 backdrop-blur-md px-2.5 py-1 shadow-[0_2px_10px_rgba(0,0,0,0.28)] ring-1 ring-white/50'
-              : 'px-0.5 py-0.5'
+              ? 'brightness-[1.3] contrast-[1.08] drop-shadow-[0_0_1.5px_rgba(255,255,255,0.68)] drop-shadow-[0_2px_10px_rgba(167,139,250,0.35)]'
+              : 'drop-shadow-[0_1px_2px_rgba(255,255,255,0.55)]'
           }`}
-        >
-          <img
-            src="/assets/aistudio/logo-xpole_ae18a8c2.png"
-            alt="X-POLE — Leaders in Pole & Aerial Fitness"
-            referrerPolicy="no-referrer"
-            className="h-6 sm:h-[26px] w-auto object-contain select-none"
-          />
-        </div>
+        />
       </div>
 
       {/* Zone 2: Estimated Price + Request Quote Primary CTA */}
-      <div className="flex items-center gap-2.5 sm:gap-3.5 shrink-0">
+      <div className="flex items-center gap-1.5 sm:gap-3.5 shrink-0">
         <button
           type="button"
           onClick={onJumpToSelection}
           data-testid="topbar-estimated-total"
           title="View itemized X-POLE quotation & pricing tiers"
-          className={`flex items-baseline gap-2 text-right rounded-lg border px-2.5 py-1 backdrop-blur-md transition-all duration-150 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 ${priceBtnHover}`}
+          className={`flex items-baseline gap-1.5 sm:gap-2 text-right rounded-lg border px-2 sm:px-2.5 py-1 backdrop-blur-md transition-all duration-150 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 ${priceBtnHover}`}
         >
           <span
             className={`hidden sm:inline text-[11px] font-medium ${
@@ -95,7 +91,7 @@ export function TopBar({
           >
             Total
           </span>
-          <span className={`font-mono text-sm sm:text-base font-bold tabular-nums tracking-tight ${priceAccent}`}>
+          <span className={`font-mono text-[13px] sm:text-base font-bold tabular-nums tracking-tight ${priceAccent}`}>
             {formatUsdExact(totalPriceUsd)}
           </span>
           {priceTier !== 'retail' && (
@@ -113,10 +109,11 @@ export function TopBar({
           type="button"
           onClick={() => onOpenModal('quote')}
           data-testid="topbar-request-quote"
-          className={`min-h-[36px] px-3.5 sm:px-4 py-1.5 text-xs font-semibold rounded-xl border backdrop-blur-md whitespace-nowrap shrink-0 inline-flex items-center gap-1.5 transition-all duration-150 active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 ${ctaGlass}`}
+          className={`min-h-[32px] sm:min-h-[36px] px-2.5 sm:px-4 py-1 sm:py-1.5 text-[11px] sm:text-xs font-semibold rounded-xl border backdrop-blur-md whitespace-nowrap shrink-0 inline-flex items-center gap-1.5 transition-all duration-150 active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 ${ctaGlass}`}
         >
           <FileText className="w-3.5 h-3.5 hidden sm:inline" aria-hidden="true" />
-          <span>Request Quote</span>
+          <span className="sm:hidden">Quote</span>
+          <span className="hidden sm:inline">Request Quote</span>
         </button>
       </div>
     </header>

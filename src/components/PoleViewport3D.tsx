@@ -19,6 +19,7 @@ import type {
   PoleRigConfig,
   ReplicaRenderMode,
   RoomReplicaScene,
+  RoomWallViewMode,
 } from '../types/pole';
 import {
   ASSEMBLY_STEPS,
@@ -91,6 +92,7 @@ interface PoleViewport3DProps {
   roomReplica: RoomReplicaScene | null;
   showInferredObjects: boolean;
   replicaRenderMode?: ReplicaRenderMode;
+  replicaWallViewMode?: RoomWallViewMode;
   showReplicaDimensions?: boolean;
   paused?: boolean;
   onOpenContextMenu?: (menu: PoleContextMenuState) => void;
@@ -148,6 +150,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       roomReplica,
       showInferredObjects,
       replicaRenderMode = 'wireframe',
+      replicaWallViewMode = 'full',
       showReplicaDimensions = false,
       paused = false,
       onOpenContextMenu,
@@ -184,6 +187,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       roomReplica,
       showInferredObjects,
       replicaRenderMode,
+      replicaWallViewMode,
       showReplicaDimensions,
       paused,
       onSelectPart,
@@ -217,6 +221,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       roomReplica,
       showInferredObjects,
       replicaRenderMode,
+      replicaWallViewMode,
       showReplicaDimensions,
       paused,
       onSelectPart,
@@ -639,7 +644,8 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
           s.roomReplica,
           s.showInferredObjects,
           s.replicaRenderMode,
-          s.showReplicaDimensions
+          s.showReplicaDimensions,
+          s.replicaWallViewMode
         );
         arCloudRig.update(
           s.arCameraActive,
@@ -1292,6 +1298,7 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
       roomReplica,
       showInferredObjects,
       replicaRenderMode,
+      replicaWallViewMode,
       showReplicaDimensions,
     ]);
 
@@ -1301,6 +1308,43 @@ export const PoleViewport3D = forwardRef<PoleViewportHandle, PoleViewport3DProps
         sceneApiRef.current.requestRender();
       }
     }, [assemblyProgress, explodedFactor, highlightFasteners, selectedPart, playbackMode, cameraMotion, paused]);
+
+    useEffect(() => {
+      if (config.environment !== 'replica' || !roomReplica?.fourWallRoom) return;
+      const api = sceneApiRef.current;
+      if (!api.camera) return;
+
+      const W = Math.max(2.6, config.roomWidthM);
+      const D = Math.max(2.6, config.roomDepthM);
+      const H = Math.max(2.1, config.ceilingHeightCm / 100);
+      const isPortrait =
+        typeof window !== 'undefined' &&
+        window.innerWidth < 640 &&
+        window.innerHeight > window.innerWidth;
+      const distMult = isPortrait ? 1.48 : 1.08;
+      const target = new THREE.Vector3(0, H * 0.44, -D * 0.04);
+
+      let pos: THREE.Vector3;
+      if (replicaWallViewMode === 'front-open') {
+        pos = new THREE.Vector3(0, H * 0.56, D * 1.12 * distMult);
+      } else if (replicaWallViewMode === 'back-left') {
+        pos = new THREE.Vector3(W * 0.72 * distMult, H * 0.64, D * 0.92 * distMult);
+      } else if (replicaWallViewMode === 'back-right') {
+        pos = new THREE.Vector3(-W * 0.72 * distMult, H * 0.64, D * 0.92 * distMult);
+      } else {
+        // Full 4-wall room: gentle 3/4 perspective showcasing back, side walls & floor grid
+        pos = new THREE.Vector3(W * 0.34 * distMult, H * 0.6, D * 1.08 * distMult);
+      }
+      api.startCameraTransition(pos, target);
+    }, [
+      config.environment,
+      config.roomWidthM,
+      config.roomDepthM,
+      config.ceilingHeightCm,
+      roomReplica?.capturedAt,
+      roomReplica?.fourWallRoom,
+      replicaWallViewMode,
+    ]);
 
     return (
       <div className="relative w-full h-full select-none" data-testid="pole-viewport-3d">

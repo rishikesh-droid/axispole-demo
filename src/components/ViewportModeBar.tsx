@@ -89,7 +89,7 @@ export function ViewportModeBar({
       role="tablist"
       aria-label="Workspace view mode"
       data-testid="viewport-mode-bar"
-      className={`fixed top-16 left-4 z-20 inline-flex items-center gap-1 p-1 rounded-2xl border backdrop-blur-xl backdrop-saturate-150 transition-all duration-200 ${containerClass}`}
+      className={`fixed top-[56px] sm:top-16 left-1/2 -translate-x-1/2 sm:left-4 sm:translate-x-0 z-20 inline-flex items-center gap-1 p-1 rounded-2xl border backdrop-blur-xl backdrop-saturate-150 transition-all duration-200 max-w-[calc(100vw-16px)] ${containerClass}`}
     >
       {tabs.map((tab) => (
         <button
@@ -99,7 +99,7 @@ export function ViewportModeBar({
           aria-selected={tab.active}
           data-testid={tab.testId}
           onClick={tab.onClick}
-          className={`min-h-[32px] px-2.5 sm:px-3 py-1.5 rounded-xl border text-[11px] font-semibold inline-flex items-center gap-1.5 transition-all duration-200 whitespace-nowrap shrink-0 active:scale-[0.97] ${
+          className={`min-h-[30px] sm:min-h-[32px] px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-xl border text-[11px] font-semibold inline-flex items-center gap-1.5 transition-all duration-200 whitespace-nowrap shrink-0 active:scale-[0.97] ${
             tab.active ? activePillClass : idleClass
           }`}
         >

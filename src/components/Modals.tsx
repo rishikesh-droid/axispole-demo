@@ -7,6 +7,8 @@ import {
   CheckCircle2,
   Download,
   FileSpreadsheet,
+  Lock,
+  LogIn,
   Send,
   Smartphone,
   X,
@@ -25,6 +27,7 @@ import type { CadFormat } from '../three/cadExporter';
 interface ModalsProps {
   activeModal: ModalId;
   onClose: () => void;
+  onOpenModal?: (modal: ModalId) => void;
   config: PoleRigConfig;
   quote: XPoleQuoteSummary;
   onChangePriceTier: (tier: PriceTierId) => void;
@@ -39,6 +42,7 @@ const TIER_ORDER: PriceTierId[] = ['retail', 'wholesale20', 'wholesale30'];
 export function Modals({
   activeModal,
   onClose,
+  onOpenModal,
   config,
   quote,
   onChangePriceTier,
@@ -50,6 +54,12 @@ export function Modals({
   const [exportStatus, setExportStatus] = useState<string | null>(null);
   const [exportingFormat, setExportingFormat] = useState<CadFormat | null>(null);
   const [quickLookUrl, setQuickLookUrl] = useState<string | null>(null);
+  const [viewedQuoteTier, setViewedQuoteTier] = useState<PriceTierId>('retail');
+
+  // Wholesale Account Login form state
+  const [wholesaleEmail, setWholesaleEmail] = useState('');
+  const [wholesaleAccountId, setWholesaleAccountId] = useState('');
+  const [wholesaleMessage, setWholesaleMessage] = useState<string | null>(null);
 
   // Request Quote form state
   const [customerName, setCustomerName] = useState('');
@@ -63,6 +73,8 @@ export function Modals({
     setExportStatus(null);
     setFormError(null);
     setSubmittedRef(null);
+    setWholesaleMessage(null);
+    setViewedQuoteTier('retail');
     return () => {
       if (quickLookUrl) {
         URL.revokeObjectURL(quickLookUrl);
@@ -71,6 +83,8 @@ export function Modals({
   }, [activeModal, quickLookUrl]);
 
   if (activeModal === 'none') return null;
+
+  const isWholesaleLocked = viewedQuoteTier !== 'retail';
 
   const finish = POLE_FINISHES[config.finish];
   const mount = BASE_MOUNTS[config.mount];
@@ -162,13 +176,14 @@ export function Modals({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="w-full max-w-3xl max-h-[88vh] flex flex-col rounded-xl border border-stone-300 bg-[#faf9f6] text-stone-900 shadow-2xl overflow-hidden">
+      <div className="w-full max-w-3xl max-h-[88vh] flex flex-col rounded-2xl border border-white/25 bg-[#faf9f6]/95 backdrop-blur-2xl text-stone-900 shadow-2xl overflow-hidden">
         {/* Modal Header */}
-        <div className="px-6 py-4 border-b border-stone-200 flex items-center justify-between gap-4 bg-white">
+        <div className="px-5 sm:px-6 py-4 border-b border-stone-200/80 flex items-center justify-between gap-4 bg-white/85 backdrop-blur-md">
           <div>
-            <h2 id="modal-heading" className="text-lg font-bold tracking-tight">
+            <h2 id="modal-heading" className="text-base sm:text-lg font-bold tracking-tight">
               {activeModal === 'quote' && 'X-POLE Build a Pole — Official Quotation Request'}
               {activeModal === 'export-ar' && 'Export 3D CAD & AR Room Preview'}
+              {activeModal === 'wholesale-login' && 'X-POLE Wholesale Account Login'}
             </h2>
             <p className="text-xs text-stone-600 mt-0.5">
               Room {config.roomWidthM.toFixed(1)}m × {config.roomDepthM.toFixed(1)}m · Ceiling{' '}
@@ -196,22 +211,34 @@ export function Modals({
             <div className="space-y-5" data-testid="quote-modal-content">
               {/* Pricing Tier Switcher + Export Tools */}
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="inline-flex items-center gap-1 p-1 rounded-lg bg-stone-200/80" role="group" aria-label="Quotation pricing tier">
+                <div className="inline-flex items-center gap-1 p-1 rounded-xl bg-stone-200/80" role="group" aria-label="Quotation pricing tier">
                   {TIER_ORDER.map((tierId) => {
                     const meta = XPOLE_CATALOG.priceTiers[tierId];
-                    const active = quote.priceTier === tierId;
+                    const isWholesaleTier = tierId !== 'retail';
+                    const active = viewedQuoteTier === tierId;
                     return (
                       <button
                         key={tierId}
                         type="button"
-                        onClick={() => onChangePriceTier(tierId)}
-                        className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${
+                        onClick={() => {
+                          setViewedQuoteTier(tierId);
+                          if (tierId === 'retail') onChangePriceTier('retail');
+                        }}
+                        title={
+                          isWholesaleTier
+                            ? 'Log in on a valid wholesale account to get the wholesale rates'
+                            : 'Standard X-POLE retail pricing'
+                        }
+                        className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors inline-flex items-center gap-1.5 ${
                           active
                             ? 'bg-violet-700 text-white shadow-xs'
                             : 'text-stone-700 hover:text-stone-950'
                         }`}
                       >
-                        {meta.label}
+                        {isWholesaleTier && <Lock className="w-3 h-3 shrink-0 opacity-85" aria-hidden="true" />}
+                        <span className={isWholesaleTier ? 'blur-[1.3px] select-none opacity-90' : undefined}>
+                          {meta.label}
+                        </span>
                       </button>
                     );
                   })}
@@ -229,8 +256,11 @@ export function Modals({
                   <button
                     type="button"
                     onClick={handleDownloadQuoteCSV}
+                    disabled={isWholesaleLocked}
                     data-testid="quote-download-csv"
-                    className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-stone-300 bg-white hover:bg-stone-100 inline-flex items-center gap-1.5"
+                    className={`px-3 py-1.5 text-xs font-semibold rounded-lg border border-stone-300 bg-white inline-flex items-center gap-1.5 ${
+                      isWholesaleLocked ? 'opacity-45 cursor-not-allowed' : 'hover:bg-stone-100'
+                    }`}
                   >
                     <FileSpreadsheet className="w-3.5 h-3.5" aria-hidden="true" />
                     <span>Download CSV</span>
@@ -239,82 +269,104 @@ export function Modals({
               </div>
 
               {/* Itemized X-POLE PX Table */}
-              <div className="rounded-lg border border-stone-200 bg-white overflow-x-auto">
-                <table className="w-full text-left text-xs">
-                  <thead className="bg-stone-50 border-b border-stone-200 text-stone-600">
-                    <tr>
-                      <th className="py-2.5 px-3 font-semibold">Pole</th>
-                      <th className="py-2.5 px-3 font-semibold">Auto-Matched PX Kit</th>
-                      <th className="py-2.5 px-3 font-semibold">Finish &amp; Spec</th>
-                      <th className="py-2.5 px-3 font-semibold">Included Hardware</th>
-                      <th className="py-2.5 px-3 font-semibold text-right">Price ({quote.priceTierLabel})</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-stone-100">
-                    {quote.lines.map((line) => (
-                      <tr key={line.poleId}>
-                        <td className="py-2.5 px-3 font-semibold text-stone-950 whitespace-nowrap">
-                          {line.poleLabel}
-                        </td>
-                        <td className="py-2.5 px-3">
-                          <span className="font-mono font-bold text-violet-800 block">
-                            {line.resolution.part.id}
-                          </span>
-                          <span className="font-mono text-[10.5px] text-stone-500">
-                            {formatFeetInches(line.heightCm)} · {line.heightMm}mm
-                          </span>
-                        </td>
-                        <td className="py-2.5 px-3">
-                          <span className="font-medium text-stone-900 block">
-                            {line.finishLabel} · {line.diameterMm}mm
-                          </span>
-                          {line.resolution.notes.length > 0 && (
-                            <span className="text-[10.5px] text-amber-700 block mt-0.5">
-                              {line.resolution.notes[0]}
-                            </span>
-                          )}
-                        </td>
-                        <td className="py-2.5 px-3 text-[11px] text-stone-600">
-                          {line.resolution.includedHardware.join(', ')}
-                        </td>
-                        <td className="py-2.5 px-3 font-mono tabular-nums text-right font-semibold whitespace-nowrap">
-                          {line.resolution.available ? (
-                            <>
-                              {quote.priceTier !== 'retail' && (
-                                <span className="block text-[10px] line-through text-stone-400 font-normal">
-                                  {formatUsdExact(line.lineRetailUsd)}
-                                </span>
-                              )}
-                              <span className="text-stone-950">{formatUsdExact(line.lineTotalUsd)}</span>
-                            </>
-                          ) : (
-                            <span className="text-rose-600">Unavailable</span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                  <tfoot className="bg-stone-50 border-t border-stone-200">
-                    {quote.savingsUsd > 0 && (
+              <div className="relative rounded-xl border border-stone-200 bg-white overflow-hidden">
+                <div className={`overflow-x-auto transition-all duration-200 ${isWholesaleLocked ? 'blur-[6px] opacity-50 select-none pointer-events-none' : ''}`}>
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-stone-50 border-b border-stone-200 text-stone-600">
                       <tr>
-                        <td colSpan={4} className="py-2 px-3 text-right text-emerald-700 font-semibold">
-                          {quote.priceTierLabel} Savings vs Retail
+                        <th className="py-2.5 px-3 font-semibold">Pole</th>
+                        <th className="py-2.5 px-3 font-semibold">Auto-Matched PX Kit</th>
+                        <th className="py-2.5 px-3 font-semibold">Finish &amp; Spec</th>
+                        <th className="py-2.5 px-3 font-semibold">Included Hardware</th>
+                        <th className="py-2.5 px-3 font-semibold text-right">Price ({XPOLE_CATALOG.priceTiers[viewedQuoteTier].label})</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-stone-100">
+                      {quote.lines.map((line) => (
+                        <tr key={line.poleId}>
+                          <td className="py-2.5 px-3 font-semibold text-stone-950 whitespace-nowrap">
+                            {line.poleLabel}
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <span className="font-mono font-bold text-violet-800 block">
+                              {line.resolution.part.id}
+                            </span>
+                            <span className="font-mono text-[10.5px] text-stone-500">
+                              {formatFeetInches(line.heightCm)} · {line.heightMm}mm
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <span className="font-medium text-stone-900 block">
+                              {line.finishLabel} · {line.diameterMm}mm
+                            </span>
+                            {line.resolution.notes.length > 0 && (
+                              <span className="text-[10.5px] text-amber-700 block mt-0.5">
+                                {line.resolution.notes[0]}
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3 text-[11px] text-stone-600">
+                            {line.resolution.includedHardware.join(', ')}
+                          </td>
+                          <td className="py-2.5 px-3 font-mono tabular-nums text-right font-semibold whitespace-nowrap">
+                            {line.resolution.available ? (
+                              <span className="text-stone-950">
+                                {isWholesaleLocked ? '$•••.••' : formatUsdExact(line.lineRetailUsd)}
+                              </span>
+                            ) : (
+                              <span className="text-rose-600">Unavailable</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot className="bg-stone-50 border-t border-stone-200">
+                      <tr>
+                        <td colSpan={4} className="py-3 px-3 font-semibold text-stone-950">
+                          Estimated Total ({quote.lines.length} {quote.lines.length === 1 ? 'Pole' : 'Poles'} · {XPOLE_CATALOG.priceTiers[viewedQuoteTier].label})
                         </td>
-                        <td className="py-2 px-3 text-right font-mono tabular-nums font-bold text-emerald-700">
-                          -{formatUsdExact(quote.savingsUsd)}
+                        <td className="py-3 px-3 font-mono tabular-nums text-right text-sm font-bold text-violet-800">
+                          {isWholesaleLocked ? '$•••.•• USD' : `${formatUsdExact(quote.retailTotalUsd)} USD`}
                         </td>
                       </tr>
-                    )}
-                    <tr>
-                      <td colSpan={4} className="py-3 px-3 font-semibold text-stone-950">
-                        Estimated Total ({quote.lines.length} {quote.lines.length === 1 ? 'Pole' : 'Poles'} · {quote.priceTierLabel})
-                      </td>
-                      <td className="py-3 px-3 font-mono tabular-nums text-right text-sm font-bold text-violet-800">
-                        {formatUsdExact(quote.totalUsd)} USD
-                      </td>
-                    </tr>
-                  </tfoot>
-                </table>
+                    </tfoot>
+                  </table>
+                </div>
+
+                {isWholesaleLocked && (
+                  <div className="absolute inset-0 bg-white/75 backdrop-blur-md flex flex-col items-center justify-center gap-3 p-5 text-center">
+                    <div className="w-10 h-10 rounded-xl bg-violet-100 border border-violet-300 text-violet-700 flex items-center justify-center">
+                      <Lock className="w-5 h-5" aria-hidden="true" />
+                    </div>
+                    <div className="space-y-1 max-w-sm">
+                      <h3 className="text-sm font-bold text-stone-950">
+                        {XPOLE_CATALOG.priceTiers[viewedQuoteTier].label} Pricing Requires Login
+                      </h3>
+                      <p className="text-xs text-stone-600">
+                        Log in on a valid wholesale account to get the wholesale rates.
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {onOpenModal && (
+                        <button
+                          type="button"
+                          onClick={() => onOpenModal('wholesale-login')}
+                          className="px-3.5 py-2 rounded-xl bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold inline-flex items-center gap-1.5"
+                        >
+                          <LogIn className="w-3.5 h-3.5" aria-hidden="true" />
+                          <span>Wholesale Account Login</span>
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setViewedQuoteTier('retail')}
+                        className="px-3 py-2 rounded-xl border border-stone-300 bg-white hover:bg-stone-100 text-stone-800 text-xs font-semibold"
+                      >
+                        Back to Retail
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {!quote.allAvailable && (
@@ -554,6 +606,88 @@ export function Modals({
                 </div>
               )}
             </div>
+          )}
+
+          {/* 3. WHOLESALE ACCOUNT LOGIN MODAL */}
+          {activeModal === 'wholesale-login' && (
+            <form
+              data-testid="wholesale-login-modal"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!wholesaleEmail.trim() || !wholesaleAccountId.trim()) {
+                  setWholesaleMessage('Please enter both your trade email address and your X-POLE Wholesale Account ID.');
+                  return;
+                }
+                setWholesaleMessage(
+                  'Wholesale authentication requires a verified X-POLE Trade Account backend connection. Contact your X-POLE Wholesale Representative or continue using Retail pricing.'
+                );
+              }}
+              className="space-y-4 max-w-md mx-auto py-2"
+            >
+              <div className="flex flex-col items-center text-center space-y-2">
+                <img
+                  src="/assets/aistudio/logo-xpole-removebg-preview_fe7bd6d2.png"
+                  alt="X-POLE"
+                  className="h-7 w-auto object-contain"
+                />
+                <p className="text-xs text-stone-600">
+                  Log in on a valid X-POLE wholesale or studio trade account to unlock <strong>Wholesale 20%</strong> and <strong>Wholesale 30%</strong> rates.
+                </p>
+              </div>
+
+              <div className="space-y-3 p-4 rounded-xl border border-stone-200 bg-white">
+                <div>
+                  <label htmlFor="wholesale-email" className="block text-[11px] font-semibold text-stone-700 mb-1">
+                    Wholesale Account Email
+                  </label>
+                  <input
+                    id="wholesale-email"
+                    type="email"
+                    value={wholesaleEmail}
+                    onChange={(e) => setWholesaleEmail(e.target.value)}
+                    placeholder="buyer@yourstudio.com"
+                    className="w-full px-3 py-2 text-xs rounded-lg border border-stone-300 bg-white text-stone-950 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="wholesale-account-id" className="block text-[11px] font-semibold text-stone-700 mb-1">
+                    X-POLE Partner / Trade ID
+                  </label>
+                  <input
+                    id="wholesale-account-id"
+                    type="text"
+                    value={wholesaleAccountId}
+                    onChange={(e) => setWholesaleAccountId(e.target.value)}
+                    placeholder="XP-TRADE-XXXX"
+                    className="w-full px-3 py-2 text-xs rounded-lg border border-stone-300 bg-white text-stone-950 font-mono focus:outline-none focus:ring-2 focus:ring-violet-500"
+                  />
+                </div>
+              </div>
+
+              {wholesaleMessage && (
+                <div className="p-3 rounded-xl border border-amber-200 bg-amber-50 text-amber-900 text-xs flex items-start gap-2">
+                  <Lock className="w-4 h-4 shrink-0 mt-0.5 text-amber-700" aria-hidden="true" />
+                  <span>{wholesaleMessage}</span>
+                </div>
+              )}
+
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="px-3.5 py-2 rounded-xl border border-stone-300 bg-white hover:bg-stone-100 text-xs font-semibold text-stone-700"
+                >
+                  Continue with Retail
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 rounded-xl bg-violet-700 hover:bg-violet-600 text-white text-xs font-semibold inline-flex items-center gap-1.5"
+                >
+                  <LogIn className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Verify Wholesale Account</span>
+                </button>
+              </div>
+            </form>
           )}
         </div>
       </div>
